@@ -1760,6 +1760,33 @@ async fn composition_scope_changes_and_failed_frames_preserve_documents_in_both_
             )
             .unwrap();
         assert_eq!(actions.source(), "new account");
+        let source = "new account\r\n文😀\rlast";
+        mounted.state.workspace.content.set(source.into());
+        settle().await;
+        let selection = Selection::caret(source.len());
+        actions.record_selection(selection).unwrap();
+        let before = mounted
+            .state
+            .workspace
+            .editor_documents
+            .with_untracked(|documents| documents[&(1, "ime.rs".into())].clone());
+        actions
+            .native_input(
+                "new account\n文😀\nlast".into(),
+                Selection::caret(0),
+                "insertFromComposition",
+                10.0,
+            )
+            .unwrap();
+        assert_eq!(actions.source(), source);
+        assert_eq!(actions.current_selections(), [selection]);
+        mounted
+            .state
+            .workspace
+            .editor_documents
+            .with_untracked(|documents| {
+                assert_eq!(documents[&(1, "ime.rs".into())], before);
+            });
     }
 }
 

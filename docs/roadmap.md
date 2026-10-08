@@ -138,7 +138,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   cancellation restores the original allocations. Commands, clipboard edits,
   search replacements and composition completion move their text into shared state
   and return selections without retaining a second publication copy. Reduce remaining
-  buffer/projection publication. History snapshots
+  buffer/projection publication. Complete-native replacement compares borrowed,
+  newline-normalized source characters and maps edit boundaries directly to source
+  bytes; duplicate composition commits reuse that comparison. Complete-value
+  comparison still scans unchanged prefix/suffix characters. History snapshots
   share immutable steps and transaction payloads rather than copying retained edits,
   and document/composition snapshots share saved-text baselines. Cancellation now
   borrows preview/restored source and copies only matching UI destinations. Admission now skips

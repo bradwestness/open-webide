@@ -1461,7 +1461,9 @@ impl EditorActions {
     ) -> Result<(), EditError> {
         if input_type == "insertFromComposition"
             && !self.is_composing()
-            && text == self.source().replace("\r\n", "\n").replace('\r', "\n")
+            && self.workspace.content.with_untracked(|source| {
+                openwebide_core::editor::textarea_value_matches(source, &text)
+            })
         {
             return Ok(());
         }

@@ -5,6 +5,75 @@ use super::{Document, Edit, EditError, Selection, text_change};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Source characters with the newline normalization performed by a textarea.
+struct TextareaCharacters<'a>(std::str::CharIndices<'a>);
+impl<'a> TextareaCharacters<'a> {
+    fn new(source: &'a str) -> Self {
+        Self(source.char_indices())
+    }
+}
+impl Iterator for TextareaCharacters<'_> {
+    type Item = (Range<usize>, char);
+    fn next(&mut self) -> Option<Self::Item> {
+        let (start, mut ch) = self.0.next()?;
+        let mut end = start + ch.len_utf8();
+        if ch == '\r' {
+            if self.0.as_str().starts_with('\n') {
+                self.0.next();
+                end += 1;
+            }
+            ch = '\n';
+        }
+        Some((start..end, ch))
+    }
+}
+impl DoubleEndedIterator for TextareaCharacters<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let (mut start, mut ch) = self.0.next_back()?;
+        let end = start + ch.len_utf8();
+        if ch == '\n' && self.0.as_str().ends_with('\r') {
+            self.0.next_back();
+            start -= 1;
+        } else if ch == '\r' {
+            ch = '\n';
+        }
+        Some((start..end, ch))
+    }
+}
+
+/// Compare complete native text without materializing normalized source copies.
+pub fn textarea_value_matches(source: &str, value: &str) -> bool {
+    TextareaCharacters::new(source)
+        .map(|(_, ch)| ch)
+        .eq(value.chars())
+}
+
+fn textarea_change(source: &str, value: &str) -> Option<(Range<usize>, Range<usize>)> {
+    let (mut source_start, mut value_start) = (0, 0);
+    for ((range, old), (offset, new)) in TextareaCharacters::new(source).zip(value.char_indices()) {
+        if old != new {
+            break;
+        }
+        source_start = range.end;
+        value_start = offset + new.len_utf8();
+    }
+    if source_start == source.len() && value_start == value.len() {
+        return None;
+    }
+    let (mut source_end, mut value_end) = (source.len(), value.len());
+    for ((range, old), (offset, new)) in TextareaCharacters::new(&source[source_start..])
+        .rev()
+        .zip(value[value_start..].char_indices().rev())
+    {
+        if old != new {
+            break;
+        }
+        source_end = source_start + range.start;
+        value_end = value_start + offset;
+    }
+    Some((source_start..source_end, value_start..value_end))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeInputKind {
     Insert,
@@ -212,16 +281,10 @@ impl Document {
     /// Convert a complete normalized textarea value to a minimal source edit.
     /// Non-cancellable input and IME share insertion newline policy with direct typing.
     pub fn native_replacement(&self, value: &str) -> Option<Edit> {
-        let normalized = self.text.replace("\r\n", "\n").replace('\r', "\n");
-        let change = text_change(&normalized, value)?;
-        let start = change.range.start;
-        let end = change.range.end;
-        let start_doc =
-            super::textarea_to_byte(&self.text, normalized[..start].encode_utf16().count());
-        let end_doc = super::textarea_to_byte(&self.text, normalized[..end].encode_utf16().count());
+        let (range, inserted) = textarea_change(&self.text, value)?;
         Some(Edit::replace(
-            start_doc..end_doc,
-            native_inserted_text(&self.text, &value[start..change.new_end]),
+            range,
+            native_inserted_text(&self.text, &value[inserted]),
         ))
     }
 
@@ -405,6 +468,90 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        Document, Edit, TextareaCharacters, native_inserted_text, text_change,
+        textarea_value_matches,
+    };
+
+    #[test]
+    fn borrowed_textarea_changes_match_normalized_diff_and_source_offsets() {
+        for source in [
+            "",
+            "a",
+            "\r\n",
+            "\r\r\n\n",
+            "文😀\r\na\u{301}\rb\n",
+            "same same\r\nsame",
+        ] {
+            let document = Document::new(source);
+            let normalized = source.replace("\r\n", "\n").replace('\r', "\n");
+            let boundaries: Vec<_> = normalized
+                .char_indices()
+                .map(|(at, _)| at)
+                .chain([normalized.len()])
+                .collect();
+            for (index, start) in boundaries.iter().copied().enumerate() {
+                for end in boundaries[index..].iter().copied() {
+                    for inserted in ["", "文😀", "\n", "\r\n", "\r", "same", "e\u{301}\n"] {
+                        let mut value = normalized.clone();
+                        value.replace_range(start..end, inserted);
+                        let expected = text_change(&normalized, &value).map(|change| {
+                            let start = super::super::textarea_to_byte(
+                                source,
+                                normalized[..change.range.start].encode_utf16().count(),
+                            );
+                            let end = super::super::textarea_to_byte(
+                                source,
+                                normalized[..change.range.end].encode_utf16().count(),
+                            );
+                            Edit::replace(
+                                start..end,
+                                native_inserted_text(
+                                    source,
+                                    &value[change.range.start..change.new_end],
+                                ),
+                            )
+                        });
+                        assert_eq!(
+                            document.native_replacement(&value),
+                            expected,
+                            "source={source:?}, value={value:?}"
+                        );
+                        assert_eq!(textarea_value_matches(source, &value), normalized == value);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn textarea_characters_keep_source_spans_in_both_directions() {
+        let source = "\r文\r\n😀\n\r\r\n";
+        let expected = vec![
+            (0..1, '\n'),
+            (1..4, '文'),
+            (4..6, '\n'),
+            (6..10, '😀'),
+            (10..11, '\n'),
+            (11..12, '\n'),
+            (12..14, '\n'),
+        ];
+        assert_eq!(
+            TextareaCharacters::new(source).collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            TextareaCharacters::new(source).rev().collect::<Vec<_>>(),
+            expected.iter().rev().cloned().collect::<Vec<_>>()
+        );
+        let mut characters = TextareaCharacters::new(source);
+        assert_eq!(characters.next(), Some(expected[0].clone()));
+        assert_eq!(characters.next_back(), Some(expected[6].clone()));
+        assert_eq!(characters.next_back(), Some(expected[5].clone()));
+        assert_eq!(characters.next(), Some(expected[1].clone()));
+        assert_eq!(characters.collect::<Vec<_>>(), expected[2..5]);
+    }
+
     #[test]
     fn cancellation_publishes_borrowed_preview_after_restoring_committed_history() {
         let mut document = super::Document::new("文\r\n😀");

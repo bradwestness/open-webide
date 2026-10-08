@@ -34,7 +34,7 @@ mod native_value;
 pub use clipboard::{CLIPBOARD_SELECTIONS_MIME, ClipboardContent};
 pub use motion::SelectionMotion;
 mod selections;
-pub use native::NativeInputKind;
+pub use native::{NativeInputKind, textarea_value_matches};
 pub use selections::{
     ColumnSelection, MAX_SELECTIONS, SelectionCommand, SelectionError, column_selections,
     normalize_selections,

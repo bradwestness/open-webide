@@ -424,7 +424,12 @@ Direct insertion and native replay share newline normalization; rejected edits
 preserve source and selections. Non-cancellable input and IME map projected changes
 into source replacements and validate their resulting selections against borrowed
 prefix/insertion/suffix pieces. Replay constructs no complete replacement value;
-ambiguous repeated-text edits retain the original selected occurrence. IME previews
+complete textarea diffing scans borrowed normalized characters and returns source
+byte boundaries directly, without constructing normalized source copies or
+rescanning prefixes for UTF-16 conversion. Duplicate composition commits use the
+same borrowed comparison and leave selections/history unchanged. Complete-value
+comparison still scans unchanged prefix/suffix characters.
+Ambiguous repeated-text edits retain the original selected occurrence. IME previews
 validate eventual secondary edits against the same byte, line and long-line limits
 before publishing the primary change, and failed
 frames restore the pre-composition source, selections and redo history.
