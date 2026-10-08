@@ -1862,7 +1862,7 @@ release build. All 444 browser checks pass: 442 ordinary checks (18 unit,
 near-limit plain-text contract (13.22 seconds). The component suite took 140.92
 seconds. Both-mode complete-renderer and fallback comparisons remain unchanged.
 These local checks do not establish Linux PSS or physical input readiness; CI
-for this paragraph replay checkpoint will run after push.
+for paragraph replay checkpoint `37797735516` passed all five jobs.
 
 
 ### Probe-scoped sparse anchor lookup
@@ -1889,3 +1889,33 @@ the font matrix (15.26 seconds) and the near-limit plain-text contract (13.35
 seconds). Both-mode load/scroll/edit geometry, failed-proof and stale ownership
 assertions are unchanged. Linux CI and the broader responsiveness/device gates
 remain separate requirements.
+
+
+### Parser spans from resolved worker source replacements
+
+The shared syntax service now passes a validated replacement span to the same
+parser preparation implementation used by direct preparation. It uses the span
+only when the parser's cached source is the exact immutable allocation retained
+by the advertised worker publication. The resolver constructs the new source
+from that base before preparation; a separate equal-content base cannot authorize
+the shortcut. Full requests, changed languages/caches and mismatched bases retain
+complete source comparison. Cancellation, request limits, missing-base resync,
+line-table updates, injection parsing and publication validation are unchanged.
+
+This removes duplicate unchanged-content comparison and changed-span discovery
+inside eligible worker parser updates. Source reconstruction, initial/changed
+admission scans and reply/publication source comparisons still traverse source;
+this is not a complete source-ownership or memory result. Tests compare broad
+(nonminimal) worker replacements with fresh language analysis under LF/CRLF,
+including folds, token rows and structural data. A parser-level contract checks
+that exact retained bases use the supplied broad span while equal-content distinct
+allocations use the independently discovered minimal span, preserving old snapshots.
+
+
+Verification passes 455 all-feature core tests, 114 native frontend tests,
+strict core/all-feature and WASM frontend lint, formatting and Trunk/PWA release
+build. All 444 browser checks pass: 442 ordinary checks (component suite 142.15
+seconds), the font matrix (15.69 seconds) and the near-limit plain-text contract
+(13.67 seconds). Existing worker cancellation/resync, both-mode complete geometry
+and fallback assertions remain intact. These correctness checks do not quantify
+parser scan savings or complete the remaining performance/device gates.

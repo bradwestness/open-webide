@@ -12,6 +12,10 @@ for what's still ahead.
 - Use compact file-tree rows automatically outside phone mode and larger touch rows in phone mode; remove the density menu option and ignore its legacy saved setting.
 - Keep pointer focus from scrolling file tabs, retain keyboard focus navigation, and skip redundant project-tab list and selection updates.
 
+- Reuse validated worker replacement spans during shared syntax parsing when the
+  exact retained source base matches, preserving complete comparison fallback,
+  cancellation, source limits and stale-base resynchronization.
+
 - Look up sparse editor paragraph anchors within each measured glyph range,
   avoiding repeated whole-line anchor scans while preserving exact geometry and
   terminal-anchor behavior.

@@ -81,6 +81,20 @@ impl<K: Eq> SyntaxPreparations<K> {
         })
     }
 
+    pub(super) fn prepare_resolved(
+        &mut self,
+        key: K,
+        language: Language,
+        source: Arc<String>,
+        tab_width: usize,
+        should_continue: impl FnMut() -> bool,
+        change: Option<(&Arc<String>, &super::super::TextChange)>,
+    ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
+        self.prepare_with(key, language, source.len(), |document| {
+            document.prepare_resolved(source, tab_width, should_continue, change)
+        })
+    }
+
     fn prepare_with(
         &mut self,
         key: K,
