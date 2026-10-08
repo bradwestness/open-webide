@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Validate embedded-language range points through the parser’s incremental source-row index instead of rebuilding whole-file line starts. Share point mapping with parser edits and preserve invalid-range and cancellation fallbacks.
+
 - Stream grammar paint segments from ordered protected regions, embedded scopes and semantic spans, removing the full boundary set/vector allocation while preserving disjoint paint and duplicate-edge handling.
 
 - Compare shared editor source changes in byte chunks and adjust only the differing edges to UTF-8 boundaries. Preserve minimal edit spans across typing, folds, parser updates and worker deltas; record native and browser before/after measurements.

@@ -180,7 +180,13 @@ impl SyntaxDocument {
             &mut should_continue,
         )
         .and_then(|tree| {
-            let selected = select_injections(&tree, self.provider, text, &mut should_continue)?;
+            let selected = select_injections(
+                &tree,
+                self.provider,
+                text,
+                &self.source_lines,
+                &mut should_continue,
+            )?;
             self.update_embedded(text, selected, &edit, &mut checks, &mut should_continue)?;
             Ok(tree)
         });
@@ -622,6 +628,7 @@ fn select_injections(
     tree: &Tree,
     provider: Option<SyntaxProvider>,
     text: &str,
+    rows: &[super::lines::Line],
     should_continue: &mut impl FnMut() -> bool,
 ) -> Result<Vec<(Language, Range)>, SyntaxStatus> {
     if !should_continue() {
@@ -630,22 +637,7 @@ fn select_injections(
     let Some(select) = provider.and_then(|provider| provider.injection) else {
         return Ok(Vec::new());
     };
-    let starts: Vec<_> = std::iter::once(0)
-        .chain(
-            text.bytes()
-                .enumerate()
-                .filter_map(|(i, b)| (b == b'\n').then_some(i + 1)),
-        )
-        .collect();
-    let source_point = |offset: usize| {
-        let row = starts
-            .partition_point(|start| *start <= offset)
-            .saturating_sub(1);
-        Point {
-            row,
-            column: offset - starts[row],
-        }
-    };
+    let source_point = |offset| indexed_point(rows, offset);
     let mut selected = Vec::new();
     let mut visited = 0;
     let mut until_check = 0;
@@ -681,6 +673,14 @@ fn select_injections(
     Ok(selected)
 }
 
+fn indexed_point(rows: &[super::lines::Line], offset: usize) -> Point {
+    let row = super::lines::row_at(rows, offset);
+    Point {
+        row,
+        column: offset - rows[row].start,
+    }
+}
+
 fn point(text: &str, offset: usize) -> Point {
     let before = &text[..offset];
     Point {
@@ -704,13 +704,6 @@ fn input_edit(
     let old_end = change.range.end;
     let new_end = change.new_end;
     let (start_position, old_end_position, new_end_position) = if let Some(rows) = source_lines {
-        let indexed_point = |rows: &[super::lines::Line], offset| {
-            let row = super::lines::row_at(rows, offset);
-            Point {
-                row,
-                column: offset - rows[row].start,
-            }
-        };
         let start_position = indexed_point(rows, start);
         let old_end_position = indexed_point(rows, old_end);
         let edit = super::lines::LineEdit::new(rows, old.len(), new.len(), change.range, new_end);
@@ -741,6 +734,44 @@ fn input_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_range_points_reuse_updated_unicode_crlf_source_rows() {
+        for ending in ["\n", "\r\n"] {
+            let base = format!(
+                "<section>文😀</section>{ending}<script>const value = 1;{ending}console.log(value);</script>{ending}<style>body {{color:red;}}</style>{ending}"
+            );
+            let mut syntax = SyntaxDocument::new(Language::Html).unwrap();
+            for prefix in [
+                format!("外 文😀{ending}").repeat(3000),
+                format!("short{ending}"),
+                "文😀".into(),
+                String::new(),
+            ] {
+                let source = format!("{prefix}{base}");
+                assert!(matches!(
+                    syntax.update(&source, || true),
+                    SyntaxStatus::Ready { .. }
+                ));
+                assert_eq!(syntax.source_lines, super::super::lines::lines(&source));
+                assert_eq!(syntax.embedded.len(), 2);
+                for embedded in &syntax.embedded {
+                    assert_eq!(
+                        embedded.range.start_point,
+                        point(&source, embedded.range.start_byte)
+                    );
+                    assert_eq!(
+                        embedded.range.end_point,
+                        point(&source, embedded.range.end_byte)
+                    );
+                }
+                assert_eq!(
+                    indexed_point(&syntax.source_lines, source.len()),
+                    point(&source, source.len())
+                );
+            }
+        }
+    }
 
     #[test]
     fn incremental_parser_points_match_complete_unicode_line_scans() {

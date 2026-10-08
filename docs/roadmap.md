@@ -78,7 +78,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Grammar paint now shares the parser’s source-change span for matching retained bases
   instead of recomputing it or comparing unchanged piece/row bytes again; skipped paint
   versions use the complete retained-source comparison.
-  Parser edit positions now query incremental logical-line coordinates; grammar paint
+  Parser edit and embedded-language validation positions now query incremental
+  logical-line coordinates without rebuilding temporary line starts; grammar paint
   and parser fold validation read the same row boundaries. Shared fold assembly
   borrows those indexed rows for grammar-backed files.
   Parser and document indexes share changed-row
