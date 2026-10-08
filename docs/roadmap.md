@@ -148,7 +148,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   source, including LF native text; folded views reserve visible bytes and move
   assembled strings into shared storage. Unused projection caches release source
   before edits, while retained views and composition baselines detach on change.
-  Native normalization uses one pass. Unfolded projections share document
+  Native normalization uses one pass; normalization eligibility and uniform-row
+  checks query existing indexed UTF-16/display-break spans, with constant-time
+  unfolded queries and visible-row aggregation for folds. Bounded windows inspect
+  their own slices. Unfolded projections share document
   coordinate tables; retained views detach on edits, and folded/bounded views own
   their visible coordinates. Unfolded visible-row tables prepare lazily and share
   the document index; changed batches update affected rows and shifted suffixes,

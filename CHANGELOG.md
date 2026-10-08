@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse indexed line-ending summaries for native normalization and row-height eligibility, avoiding full projection-text scans in unfolded and folded editor views.
+
 - Share lazily prepared visible-row tables with unfolded editor projections. Edit batches update changed rows and shifted suffixes, retain unchanged prefixes and preserve immutable older views; row growth uses bounded headroom and large deletions release excess capacity; folded and bounded projections keep their own visible rows.
 
 - Share unfolded editor coordinate tables with the document index. Retained views detach on edits; folded and bounded views keep their own row coordinates, while unused projection caches allow in-place index updates.

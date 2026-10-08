@@ -19,6 +19,12 @@ pub(super) struct LineIndex {
     guides: RowCache<CachedGuides>,
     visible_rows: RowCache<Arc<Vec<super::VisibleLine>>>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct LineEndings {
+    pub carriage_returns: bool,
+    pub uniform_rows: bool,
+}
+
 #[derive(Clone, Debug)]
 struct CachedGuides {
     limited: bool,
@@ -311,6 +317,22 @@ impl LineIndex {
 
     pub fn row_breaks(&self, start: usize, end: usize) -> usize {
         self.offsets.get(end).map_or(self.breaks, |offset| offset.2) - self.offsets[start].2
+    }
+
+    /// Derive native normalization and fixed-row eligibility from indexed
+    /// CRLF suppression and display-break counts, without reading source bytes.
+    pub fn line_endings(&self, rows: Range<usize>) -> LineEndings {
+        debug_assert!(rows.start <= rows.end && rows.end <= self.rows.len());
+        let total = (self.utf16_len, self.textarea_len, self.breaks);
+        let first = self.offsets.get(rows.start).copied().unwrap_or(total);
+        let last = self.offsets.get(rows.end).copied().unwrap_or(total);
+        let logical_breaks =
+            rows.end.min(self.rows.len() - 1) - rows.start.min(self.rows.len() - 1);
+        let uniform_rows = last.2 - first.2 == logical_breaks;
+        LineEndings {
+            carriage_returns: last.0 - first.0 != last.1 - first.1 || !uniform_rows,
+            uniform_rows,
+        }
     }
 
     pub fn native_line_len(&self, row: usize) -> usize {
@@ -819,6 +841,17 @@ mod tests {
             drop(unique.visible_rows());
             unique.update(old.len(), &new, changed.clone(), changed.start + inserted.len());
             proptest::prop_assert_eq!(unique.visible_rows(), rebuilt.visible_rows());
+            for first in 0..=index.rows.len() {
+                for last in first..=index.rows.len() {
+                    let start = index.rows.get(first).map_or(new.len(), |row| row.start);
+                    let end = index.rows.get(last).map_or(new.len(), |row| row.start);
+                    let text = &new[start..end];
+                    let endings = index.line_endings(first..last);
+                    proptest::prop_assert_eq!(endings.carriage_returns, text.contains('\r'));
+                    proptest::prop_assert_eq!(endings.uniform_rows, !text.as_bytes().iter().enumerate().any(|(offset, byte)| *byte == b'\r' && text.as_bytes().get(offset + 1) != Some(&b'\n')));
+                    proptest::prop_assert_eq!(endings, rebuilt.line_endings(first..last));
+                }
+            }
             for offset in new.char_indices().map(|(offset, _)| offset).chain(std::iter::once(new.len())) {
                 proptest::prop_assert_eq!(index.byte_to_textarea(&new, offset), super::super::byte_to_textarea(&new, offset));
                 proptest::prop_assert_eq!(index.line_column(&new, offset), super::super::line_column(&new, offset));

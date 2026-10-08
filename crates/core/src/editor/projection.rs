@@ -88,6 +88,13 @@ impl FoldProjection {
     ) -> Self {
         let shared_lines = shared.as_ref().map(|_| index.visible_rows());
         let logical = &index.rows;
+        let mut endings = index.line_endings(
+            0..if shared_lines.is_some() {
+                logical.len()
+            } else {
+                0
+            },
+        );
         let mut visible_len = 0;
         let mut visible = Vec::new();
         let mut coordinates = shared.is_none().then(Vec::new);
@@ -96,6 +103,9 @@ impl FoldProjection {
         let mut textarea_start = 0;
         while shared_lines.is_none() && row < logical.len() {
             let line = &logical[row];
+            let row_endings = index.line_endings(row..row + 1);
+            endings.carriage_returns |= row_endings.carriage_returns;
+            endings.uniform_rows &= row_endings.uniform_rows;
             visible.push(VisibleLine {
                 source_line: row,
                 source: line.start..line.end,
@@ -148,12 +158,10 @@ impl FoldProjection {
                 textarea_start,
             });
         }
-        // Lone CR normalizes to a native line break inside one logical source
-        // row. Such rows need measured heights rather than fixed-row windowing.
-        let uniform_rows = !text.as_bytes().iter().enumerate().any(|(offset, byte)| {
-            *byte == b'\r' && text.as_bytes().get(offset + 1) != Some(&b'\n')
-        });
-        let textarea_text = if text.contains('\r') {
+        // Indexed display breaks include lone CR; hidden rows do not affect
+        // the visible view's measured-height or normalization requirements.
+        let uniform_rows = endings.uniform_rows;
+        let textarea_text = if endings.carriage_returns {
             Arc::new(super::native::textarea_text(&text))
         } else {
             text.clone()
@@ -1425,6 +1433,58 @@ mod tests {
                     proptest::prop_assert_eq!(projection.visible_offset(original).unwrap(), offset);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn hidden_carriage_returns_do_not_change_visible_native_layout() {
+        use crate::editor::{Document, FoldCommand};
+        for (source, end, expected, uniform) in [
+            (
+                "head\nhidden\rbroken\nhidden\r\nlast\n",
+                2,
+                "head\nlast\n",
+                true,
+            ),
+            (
+                "head\rinside\nhidden\r\nlast\n",
+                1,
+                "head\rinside\nlast\n",
+                false,
+            ),
+            ("head\r\nhidden\rthing\nlast\n", 1, "head\r\nlast\n", true),
+            ("head\nhidden\rthing", 1, "head\n", true),
+        ] {
+            let mut document = Document::new(source);
+            let rows = source.split('\n').count();
+            document.fold_state_mut().set_ranges(
+                vec![FoldRange {
+                    start_line: 0,
+                    end_line: end,
+                }],
+                rows,
+            );
+            document.fold_command(FoldCommand::CollapseAll);
+            for projection in [
+                document.projection(),
+                FoldProjection::new(source, document.fold_state()),
+            ] {
+                assert_eq!(projection.text(), expected);
+                assert_eq!(projection.has_uniform_rows(), uniform);
+                assert_eq!(
+                    projection.textarea_text(),
+                    expected.replace("\r\n", "\n").replace('\r', "\n")
+                );
+                assert_eq!(
+                    Arc::ptr_eq(&projection.text, &projection.textarea_text),
+                    !expected.contains('\r')
+                );
+            }
+            document.fold_command(FoldCommand::ExpandAll);
+            assert_eq!(
+                document.projection(),
+                FoldProjection::new(source, document.fold_state())
+            );
         }
     }
 

@@ -589,8 +589,10 @@ Growth reserves 256 rows of headroom rather than doubling a large table; major
 deletions release excess capacity.
 Folded and bounded views keep their own visible-row and coordinate tables.
 LF textarea text shares the source storage too. Folded text reserves only visible
-bytes and moves its assembled String into shared storage. CR/LF normalization uses one pass with a source-size
-capacity bound. Unused projection caches release their source before edits;
+bytes and moves its assembled String into shared storage. Native normalization
+and fixed-row eligibility query indexed UTF-16/display-break spans; full unfolded views use a constant-time query,
+and folded views combine only visible rows. Bounded windows inspect their own
+small slices. CR/LF normalization uses one pass with a source-size capacity bound. Unused projection caches release their source before edits;
 retained views and composition baselines remain immutable through copy-on-write.
 Projection provenance compares immutable allocations, including empty text whose
 String buffer pointer cannot distinguish document replacements.
