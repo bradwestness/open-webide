@@ -787,6 +787,7 @@ thread_local! {
     static VIEWPORT_HIGHLIGHT_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static HIGHLIGHT_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static HIGHLIGHT_SOURCE_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static HIGHLIGHT_SEGMENT_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// HTML generations including temporary probes, for browser performance regressions.
@@ -805,6 +806,12 @@ pub fn viewport_highlight_count() -> usize {
 #[cfg(feature = "test-support")]
 pub fn take_highlight_source_bytes() -> usize {
     HIGHLIGHT_SOURCE_BYTES.replace(0)
+}
+
+/// Largest token prefix actually visited by paint-run segmentation in this audit.
+#[cfg(feature = "test-support")]
+pub fn take_highlight_segment_bytes() -> usize {
+    HIGHLIGHT_SEGMENT_BYTES.replace(0)
 }
 
 /// Differential browser oracle: compare bounded preparation with the complete
@@ -883,6 +890,12 @@ fn paint_text_range(
         // selected source, preserving the complete paint's span topology.
         let start = if starts_paint_run { range.start } else { 0 };
         return openwebide_core::editor::visual_text_run_ranges(&text[start..])
+            .inspect(|run| {
+                #[cfg(feature = "test-support")]
+                HIGHLIGHT_SEGMENT_BYTES.set(HIGHLIGHT_SEGMENT_BYTES.get().max(run.end));
+                #[cfg(not(feature = "test-support"))]
+                let _ = run;
+            })
             .map(|run| run.start + start..run.end + start)
             .take_while(|run| run.start < range.end)
             .filter(|run| run.end > range.start)

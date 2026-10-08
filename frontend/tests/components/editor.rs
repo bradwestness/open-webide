@@ -11765,6 +11765,137 @@ async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
 }
 
 #[wasm_bindgen_test]
+async fn styled_horizontal_slices_resume_original_runs_without_scanning_token_prefixes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::components::{
+        take_highlight_segment_bytes, take_highlight_source_bytes,
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
+        let source = format!(
+            "let value = \"{}\";\r\n",
+            "word 文😀e\u{301} -> == tail ".repeat(6000)
+        );
+        let original = source.clone();
+        let native: Vec<_> = source.replace("\r\n", "\n").encode_utf16().collect();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state
+                .workspace
+                .open_file
+                .set(Some("styled-slice.rs".into()));
+            state.workspace.content.set(source.into());
+            openwebide_frontend::state_actions::editor::EditorActions::new(state.workspace)
+                .install_syntax_transport(installed);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        super::support::wait_until_with_timeout(
+            "styled paragraph source boundaries",
+            30_000,
+            || {
+                if !transport.pending.borrow().is_empty() {
+                    transport.respond(true);
+                }
+                mounted
+                    .state
+                    .workspace
+                    .editor_paragraph_cache
+                    .with_untracked(|cache| {
+                        cache.as_ref().is_some_and(|cache| {
+                            cache.paint.prepared_source
+                                && !cache.rows.is_empty()
+                                && cache.paint.tokens[0].iter().any(|token| {
+                                    token.kind == openwebide_core::highlight::TokenKind::String
+                                })
+                        })
+                    })
+                    && mounted
+                        .root
+                        .query_selector(".editor-code.highlight-ready")
+                        .unwrap()
+                        .is_some()
+            },
+        )
+        .await;
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let scroll = openwebide_frontend::viewport::editor_scroll(&input);
+        let width = scroll.scroll_width();
+        assert!(width > 100_000);
+        for fraction in [0.3, 0.7, 0.98] {
+            take_highlight_segment_bytes();
+            take_highlight_source_bytes();
+            openwebide_frontend::viewport::set_editor_scroll_left(
+                &input,
+                f64::from(width) * fraction,
+            );
+            input
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            wait_until("styled viewport follows horizontal source interval", || {
+                mounted
+                    .root
+                    .query_selector(".editor-source-line[data-paint-left]")
+                    .unwrap()
+                    .and_then(|row| row.get_attribute("data-paint-left"))
+                    .and_then(|left| left.parse::<f64>().ok())
+                    .is_some_and(|left| {
+                        left <= scroll.scroll_left() + 30.0
+                            && scroll.scroll_left() - left
+                                < f64::from(input.client_width()) * 2.0 + 30.0
+                    })
+            })
+            .await;
+            let segmented = take_highlight_segment_bytes();
+            let painted = take_highlight_source_bytes();
+            assert!(
+                segmented > 0 && segmented <= 65_536 + 1024,
+                "{mode:?} fraction={fraction} segmented={segmented}"
+            );
+            assert!(
+                painted > 0 && painted <= 65_536,
+                "{mode:?} painted={painted}"
+            );
+            let row = mounted.element(".editor-source-line");
+            let fragment = row
+                .query_selector(":scope > .editor-source-fragment")
+                .unwrap()
+                .unwrap();
+            let start: usize = fragment
+                .get_attribute("data-paint-start")
+                .unwrap()
+                .parse()
+                .unwrap();
+            let end: usize = fragment
+                .get_attribute("data-paint-end")
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(
+                fragment.text_content().unwrap(),
+                String::from_utf16(&native[start..end]).unwrap()
+            );
+            assert!(fragment.query_selector(".tok-string").unwrap().is_some());
+            assert_eq!(scroll.scroll_width(), width);
+            assert_editor_native_source(&input, mounted.state.workspace, &original);
+            let bounds = input.get_bounding_client_rect();
+            let hit = openwebide_frontend::viewport::editor_caret_from_point(
+                &input,
+                bounds.left() + 8.0,
+                bounds.top() + 20.0,
+            )
+            .unwrap() as usize;
+            assert!((start..end).contains(&hit));
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn paragraph_changed_prefix_reuse_matches_complete_geometry_and_rejects_stale_scopes() {
     use openwebide_core::{WorkspaceMode, editor::Selection};
     use openwebide_frontend::state_actions::editor::EditorActions;
@@ -11937,6 +12068,8 @@ async fn bounded_paragraph_geometry_preserves_fonts_features_and_whitespace_in_b
     use openwebide_core::{WorkspaceMode, editor::EditorFont};
     let loaded = load_all_editor_fonts().await;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
         let body = "alpha_beta_long_name -> != 文😀  ".repeat(2000);
         let source = format!("let value = \"{body}\";\r\n// {body}\r\n");
         let mounted = mount_test(move |state| {
@@ -11947,6 +12080,8 @@ async fn bounded_paragraph_geometry_preserves_fonts_features_and_whitespace_in_b
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("paragraph.rs".into()));
             state.workspace.content.set(source.into());
+            openwebide_frontend::state_actions::editor::EditorActions::new(state.workspace)
+                .install_syntax_transport(installed);
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
         });
         for font in EditorFont::ALL {
@@ -11969,9 +12104,12 @@ async fn bounded_paragraph_geometry_preserves_fonts_features_and_whitespace_in_b
                 settle().await;
                 let scope = std::cell::RefCell::new(None);
                 super::support::wait_until_with_timeout(
-                    "font-owned paragraph measurements",
+                    &format!("font-owned paragraph measurements {mode:?} {font:?} healing={healing} ligatures={ligatures} whitespace={whitespace}"),
                     30_000,
                     || {
+                        if !transport.pending.borrow().is_empty() {
+                            transport.respond(true);
+                        }
                         mounted
                             .state
                             .workspace
@@ -11980,6 +12118,8 @@ async fn bounded_paragraph_geometry_preserves_fonts_features_and_whitespace_in_b
                                 cache.as_ref().is_some_and(|cache| {
                                     let ready = cache.paint.whitespace == whitespace
                                         && cache.paint.prepared_source
+                                        && cache.paint.tokens[0].iter().any(|token| token.kind == openwebide_core::highlight::TokenKind::String)
+                                        && cache.paint.tokens[1].iter().any(|token| token.kind == openwebide_core::highlight::TokenKind::Comment)
                                         && cache.paint.metrics.contains(font.name())
                                         && cache.paint.font_epoch
                                             == mounted

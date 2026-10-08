@@ -546,6 +546,14 @@ Full-paragraph measurement remains the fallback for invalid geometry, oversized
 cluster slices, bidi paragraphs or reshaping differences. Cold height measurement
 supplies horizontal and wrapped paint with these anchors while they
 remain in the bounded cache, avoiding a second complete-row shaping pass.
+Eligible unwrapped styled viewport slices reuse the paragraph preparation's
+original run boundaries, guarded by immutable source/token/guide identity and
+account/project/font/metric ownership. They include the preceding original run
+before DOM cropping, so segmentation need not revisit the unused token prefix.
+The 64 KiB slice limit and exact anchor/full-fragment checks remain. Unsupported
+or uncached scopes retain the original segmentation path. Range crops preserve
+inline token/run ancestors while rebuilding absolute fragment geometry, retaining
+colors and italic comment styles.
 Ordinary cold horizontal paint waits for the active geometry probe while native
 input stays visible; explicit caret/movement probes can still reconcile source.
 Equivalent syntax results preserve proven geometry for identical styled rows;
@@ -622,9 +630,9 @@ metadata records; bracket and embedded-body limits still apply. Wire envelopes
 are versioned and bounded before JSON parsing. These are preparation/cache limits,
 not a measurement of total editor memory or final large-file performance.
 Full viewport rendering and end-to-end latency/memory measurements remain roadmap
-work. Edit paint retains the same
-10,000-byte plain-line fallback as the lexical renderer and falls back after
-cancelled, oversized or unavailable analysis.
+work. Prepared grammar paint retains token styles on long rows within those
+source/work limits. Cancelled, oversized or unavailable analysis still uses the
+lexical renderer, whose 10,000-byte plain-line fallback remains unchanged.
 
 The shared document now owns fold state independently of undo history. Commands
 can collapse/expand at the caret, recursively or all, and reveal a navigation target.

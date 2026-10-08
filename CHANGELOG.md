@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Retain grammar colors on long prepared code lines; keep source/work admission and lexical fallback limits. Resume eligible styled viewport slices at retained original paint-run boundaries and preserve token wrappers when cropping, with exact geometry and source checks in both workspace modes.
+
 - Extend the isolated native/WASM editor layout probe with identical-glyph advance precision and missing-glyph diagnostics; record the rejected early native bootstrap and retain exact production geometry.
 
 - Use the explicit boundary-size readiness budget for the debug-WASM paragraph font matrix, retaining exact geometry assertions, the whole-run deadline and ordinary short UI timeouts.

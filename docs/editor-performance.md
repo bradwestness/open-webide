@@ -1303,7 +1303,9 @@ bash tools/measure-editor-view-linux.sh --cases long-line --repeat 1 --input-pos
 The docs-only `f4937a6` CI run failed its isolated font matrix after 3.63 s:
 `Timed out waiting for font-owned paragraph measurements`. All other jobs passed;
 the preceding implementation run was entirely green. This is the debug-WASM
-matrix of two long styled paragraphs, not a production latency assertion. Its
+matrix with two long string/comment source paragraphs, not a production latency assertion.
+The then-current 10 KB grammar cutoff could make their rendered tokens plain;
+the stronger styled contract is described below. Its
 ownership/preparation wait now uses the same explicit 30-second boundary-size
 budget as the near-1-MiB oracle. Source/font ownership and every exact geometry
 comparison remain unchanged. The 300-second whole-run deadline and ordinary
@@ -1365,3 +1367,60 @@ limitations as the preceding probe. Production latency remains unproved.
 Reproduce with the existing layout tool command above; each record now includes
 `advances`. Exact early source extents, tab stops, explicit fallback font ownership,
 a painter with matching geometry and full native-input contracts remain required.
+
+
+### Prepared long-line styles and viewport run reuse
+
+Prepared grammar rows no longer inherit the lexical renderer's 10,000-byte
+plain-line cutoff. Grammar source/work limits remain unchanged (including
+2 MiB/50,000-row preparation admission and bounded metadata); unavailable or
+cancelled grammar still uses the independently limited lexical fallback. The
+shared row assembler preserves exact source text and token-piece reuse. Native
+contracts cover long Unicode strings in Rust, the requested ten GitHub languages,
+JSX/TSX, HTML and CSS, plus unavailable/oversized analysis and lexical fallback.
+
+Eligible styled viewport slices reuse the completed paragraph's immutable run
+boundaries, using binary search rather than segmenting a long token's unused
+prefix. The facade requires the same document version, source/token/guide
+allocations, account/project/read/font/metric scope and whitespace/indentation
+settings. Layout reconciliation alone may retain those source-owned boundaries.
+Slices include the preceding original run before exact DOM range cropping and
+retain the 64 KiB cap. Uncached or unsupported scopes keep the original path.
+
+DOM range cloning omits its common ancestor. Cropping now preserves the original
+inline token/run wrappers, retaining color and italic style, while rebuilding
+absolute fragment geometry instead of nesting the previous fragment's position.
+Existing anchor and every-glyph checks, complete-source fallback, scroll extents
+and source/native mapping remain.
+
+A 162,016-byte Unicode/CRLF Rust string fixture runs through the shared syntax
+service in both adapters and scrolls to 30%, 70% and 98% of the document width.
+It requires actual String tokens, source-exact fragments, retained token wrappers,
+unchanged complete scroll extent and native source, and pointer hits in the
+painted interval. A test-only counter checks actual segmentation stays below
+64 KiB plus one run of lookahead, rather than counting only escaped output.
+Ownership contracts reject replacement documents even with identical bytes,
+new token/guide allocations, account/project/read/font/style changes and stale
+view revisions.
+
+The five-family/feature/whitespace matrix now also uses the shared syntax service
+and requires actual long String and Comment tokens before comparing exact
+geometry with complete production paint. Earlier source-shaped matrix samples
+could pass with plain fallback; they do not prove long-token color/italic parity.
+Two fresh strengthened matrix runs pass in 17.42 and 17.40 s; the isolated
+near-1-MiB oracle passes in 22.04 s. The preceding docs-only
+`c3dd901` CI font matrix timed out at its existing 30-second readiness boundary;
+readiness now names the exact mode/font/settings case and separates grammar
+preparation from font/geometry ownership. No readiness deadline or geometry
+assertion is relaxed.
+
+This change does not prove production latency or memory improvement. Initial
+native shaping, uncached styled slices, tabbed/wrapped/bidi preparation and
+incremental suffix measurements remain open; release-app measurements must
+continue to distinguish those cases.
+
+Validation: 447 core native tests, 114 frontend native tests, 15 WASM library /
+401 ordinary component / 4 integration contracts, plus the two isolated matrices
+(422 unique browser tests). Strict core and WASM frontend Clippy and the complete
+Trunk release/PWA build pass. These are correctness checks, not production
+latency samples.

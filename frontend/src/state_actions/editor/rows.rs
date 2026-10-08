@@ -147,6 +147,14 @@ fn same_paint_scope(old: &EditorRowPaint, paint: &EditorRowPaint) -> bool {
         && Arc::ptr_eq(&old.tokens, &paint.tokens)
         && Arc::ptr_eq(&old.guides, &paint.guides)
 }
+fn same_paint_runs(old: &EditorRowPaint, paint: &EditorRowPaint) -> bool {
+    same_measurement_environment(old, paint)
+        && old.view_revision == paint.view_revision
+        && old.prepared_source == paint.prepared_source
+        && old.projection.shares_text_version(&paint.projection)
+        && Arc::ptr_eq(&old.tokens, &paint.tokens)
+        && Arc::ptr_eq(&old.guides, &paint.guides)
+}
 /// Exact source interval selected from immutable styled anchors before HTML generation.
 #[derive(Clone, Debug)]
 pub struct EditorRowSourceSlice {
@@ -539,13 +547,27 @@ impl EditorActions {
             return None;
         }
         let interval = geometry.source_interval(window, line_height)?;
-        let (start, native_start) = index.at(body, interval.start)?;
+        let (mut start, mut native_start) = index.at(body, interval.start)?;
         let (end, _) = index.at(body, interval.end)?;
         if end.checked_sub(start)? > openwebide_core::editor::MAX_MEASURE_BYTES {
             return None;
         }
-        let starts_paint_run =
+        let mut starts_paint_run =
             paint_row(paint, row)?.plain.is_some() && index.is_text_run_boundary(start);
+        if !starts_paint_run
+            && let Some(run_start) = self.paragraph_paint_run_start(paint, row, start)
+            && end.checked_sub(run_start)? <= openwebide_core::editor::MAX_MEASURE_BYTES
+        {
+            // Include the small preceding part of the original run. The DOM
+            // adapter still crops to and validates the measured source interval.
+            let glyph = index.index_at_byte(body, run_start)?;
+            let (byte, native) = index.at(body, glyph)?;
+            if byte == run_start {
+                start = byte;
+                native_start = native;
+                starts_paint_run = true;
+            }
+        }
         Some(EditorRowSourceSlice {
             source_line: line.source_line,
             bytes: start..end,
@@ -553,6 +575,30 @@ impl EditorActions {
             reaches_end: end == body.len(),
             starts_paint_run,
         })
+    }
+    fn paragraph_paint_run_start(
+        self,
+        paint: &EditorRowPaint,
+        row: usize,
+        byte: usize,
+    ) -> Option<usize> {
+        self.workspace
+            .editor_paragraph_cache
+            .with_untracked(|cache| {
+                let cache = cache.as_ref()?;
+                let old = &cache.paint;
+                // Finishing row preparation can advance layout reconciliation. Run
+                // boundaries depend on exact source/style ownership, not that epoch.
+                if !same_paint_runs(old, paint) {
+                    return None;
+                }
+                cache
+                    .rows
+                    .iter()
+                    .find(|(index, _)| *index == row)?
+                    .1
+                    .paint_run_start(byte)
+            })
     }
     pub fn forget_measured_row_geometry(self, cache: &mut EditorFragmentCache, row: usize) {
         cache.geometry.retain(|(index, _)| *index != row);
@@ -638,6 +684,53 @@ impl EditorActions {
 mod tests {
     use super::*;
     use openwebide_core::highlight::TokenKind;
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn paint_run_ownership_survives_reconciliation_but_rejects_stale_inputs() {
+        let old = EditorRowPaint {
+            view_revision: 1,
+            layout_epoch: 2,
+            font_epoch: 3,
+            key: (1, "file.rs".into()),
+            epoch: 4,
+            read_revision: 5,
+            account_generation: 6,
+            metrics: "font and width".into(),
+            projection: FoldProjection::new("let value = 1;", &Default::default()),
+            tokens: Arc::new(Vec::new()),
+            prepared_source: true,
+            guides: Arc::from([0]),
+            indentation: Indentation::default(),
+            whitespace: false,
+        };
+        let mut fresh = old.clone();
+        fresh.layout_epoch += 1;
+        assert!(same_paint_runs(&old, &fresh));
+        for change in 0..14 {
+            let mut stale = fresh.clone();
+            match change {
+                0 => stale.view_revision += 1,
+                1 => stale.font_epoch += 1,
+                2 => stale.key.0 += 1,
+                3 => stale.key.1 = "other.rs".into(),
+                4 => stale.epoch += 1,
+                5 => stale.read_revision += 1,
+                6 => stale.account_generation += 1,
+                7 => stale.metrics.push_str("changed"),
+                8 => stale.prepared_source = false,
+                9 => {
+                    stale.projection =
+                        FoldProjection::new(old.projection.text(), &Default::default());
+                }
+                10 => stale.tokens = Arc::new((*old.tokens).clone()),
+                11 => stale.guides = Arc::from([0]),
+                12 => stale.indentation.width += 1,
+                _ => stale.whitespace = true,
+            }
+            assert!(!same_paint_runs(&old, &stale), "change {change}");
+        }
+    }
 
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn paragraph_prefix_stops_before_a_changed_token_style_or_span_topology() {

@@ -63,8 +63,13 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   coordinate table per probe; ordinary viewport queries retain sparse indexes.
   Unsupported boundaries and failed proofs
   use complete measurement. Continuation probes and indexed plain viewport
-  slices resume segmentation at proven original run boundaries. Tabbed/wrapped/bidi
-  preparation, styled viewport prefix segmentation and initial native shaping remain.
+  slices resume segmentation at proven original run boundaries. Eligible styled
+  viewport slices now reuse retained paragraph run boundaries with exact immutable
+  source/token/guide and environment ownership; uncached styled slices retain the
+  original scan. Cropped ranges retain token wrappers, including italic comments.
+  Prepared grammar rows retain colors beyond the lexical fallback's 10 KB cutoff,
+  within unchanged source/work admission. Tabbed/wrapped/bidi preparation,
+  uncached styled viewport prefix segmentation and initial native shaping remain.
   Changed paragraphs now replay validated unchanged probe prefixes with matching
   source, paint runs and styles; the first changed probe retains fresh overlap
   checks. Incremental changed suffixes and remaining long-row latency remain.

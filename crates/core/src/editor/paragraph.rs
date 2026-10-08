@@ -20,6 +20,17 @@ pub struct ParagraphMeasurements {
     runs: Arc<[usize]>,
     records: Vec<ParagraphMeasurement>,
 }
+impl ParagraphMeasurements {
+    /// Original paint-run start at or before a source byte. The caller retains
+    /// the exact source/style scope that supplied these boundaries.
+    pub fn paint_run_start(&self, byte: usize) -> Option<usize> {
+        if byte > *self.runs.last()? {
+            return None;
+        }
+        let end = self.runs.partition_point(|end| *end <= byte);
+        Some(end.checked_sub(1).map_or(0, |index| self.runs[index]))
+    }
+}
 #[derive(Clone, Debug)]
 struct ParagraphMeasurement {
     bytes: Range<usize>,
@@ -454,6 +465,25 @@ mod tests {
             ));
         }
         plan.finish_with_measurements().unwrap()
+    }
+    #[test]
+    fn retained_paint_runs_locate_original_unicode_boundaries() {
+        let source = format!(
+            "{}e{}tail",
+            "文😀e\u{301} words ".repeat(5000),
+            "\u{301}".repeat(600)
+        );
+        let (_, _, measurements) = measured(&source);
+        for run in super::super::visual_text_run_ranges(&source) {
+            assert_eq!(measurements.paint_run_start(run.start), Some(run.start));
+            assert_eq!(measurements.paint_run_start(run.end - 1), Some(run.start));
+            assert!(source.is_char_boundary(run.start));
+        }
+        assert_eq!(
+            measurements.paint_run_start(source.len()),
+            Some(source.len())
+        );
+        assert_eq!(measurements.paint_run_start(source.len() + 1), None);
     }
     #[test]
     fn changed_paragraph_prefix_reuses_exact_probes_and_finishes_with_fresh_overlaps() {

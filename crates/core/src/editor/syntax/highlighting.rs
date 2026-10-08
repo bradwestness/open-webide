@@ -69,7 +69,6 @@ struct RowPaint {
     parts: Vec<(Arc<PaintedPiece>, usize)>,
     matched: usize,
     changed: bool,
-    plain: bool,
 }
 
 impl RowPaint {
@@ -90,14 +89,10 @@ impl RowPaint {
             parts: Vec::new(),
             matched: 0,
             changed: false,
-            plain: end - row.start > crate::highlight::MAX_HIGHLIGHT_LINE_BYTES,
         }
     }
 
     fn append(&mut self, piece: &Arc<PaintedPiece>, index: usize) {
-        if self.plain {
-            return;
-        }
         if !self.changed {
             if self
                 .previous
@@ -131,12 +126,10 @@ impl RowPaint {
             row.pieces.truncate(self.matched);
             self.parts = row.pieces;
         }
-        let tokens = if self.plain {
-            Arc::from(vec![Token {
-                kind: TokenKind::Plain,
-                text: source.into(),
-            }])
-        } else if let [(piece, row)] = self.parts.as_slice() {
+        // Grammar analysis already owns source/work admission. Long prepared
+        // rows retain their styles; the renderer bounds their paint probes.
+        // Unavailable grammar still uses the independently limited lexical path.
+        let tokens = if let [(piece, row)] = self.parts.as_slice() {
             piece.rows[*row].clone()
         } else {
             Arc::from(
@@ -486,7 +479,6 @@ mod tests {
                 parts: Vec::new(),
                 matched: 0,
                 changed: false,
-                plain: false,
             };
             let source = indices
                 .iter()
@@ -771,7 +763,50 @@ mod tests {
     }
 
     #[test]
-    fn failed_analysis_and_long_lines_retain_shared_fallback_limits() {
+    fn prepared_long_unicode_tokens_keep_styles_in_every_builtin_code_language() {
+        let body = "word 文😀e\u{301} ".repeat(1500);
+        for (language, before, after) in [
+            (Language::Rust, "fn main() { let value = \"", "\"; }"),
+            (Language::Python, "value = \"", "\""),
+            (Language::JavaScript, "const value = \"", "\";"),
+            (Language::Jsx, "const value = <div title=\"", "\" />;"),
+            (Language::TypeScript, "const value: string = \"", "\";"),
+            (Language::Tsx, "const value = <div title=\"", "\" />;"),
+            (Language::Java, "class A { String value = \"", "\"; }"),
+            (Language::CSharp, "class A { string value = \"", "\"; }"),
+            (Language::Cpp, "const char* value = \"", "\";"),
+            (Language::Php, "<?php $value = \"", "\";"),
+            (Language::Shell, "value=\"", "\""),
+            (Language::C, "const char* value = \"", "\";"),
+            (Language::Go, "package main\nvar value = \"", "\""),
+            (Language::Html, "<div title=\"", "\"></div>"),
+            (Language::Css, ".value { content: \"", "\"; }"),
+        ] {
+            let source = format!("{before}{body}{after}");
+            let mut document = SyntaxDocument::new(language).unwrap();
+            document.update(&source, || true);
+            let rows = document.highlight_lines().unwrap();
+            assert!(
+                rows.iter()
+                    .flat_map(|row| row.iter())
+                    .any(|token| { token.kind == TokenKind::String && token.text.contains(&body) }),
+                "{language:?}"
+            );
+            assert_eq!(
+                rows.iter()
+                    .map(|row| row
+                        .iter()
+                        .map(|token| token.text.as_str())
+                        .collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                source,
+                "{language:?}"
+            );
+        }
+    }
+    #[test]
+    fn prepared_long_rows_keep_styles_and_failed_analysis_retains_fallback_limits() {
         let mut document = SyntaxDocument::new(Language::Rust).unwrap();
         let source = format!(
             "let s = \"{}\";\nfn next() {{}}",
@@ -779,9 +814,22 @@ mod tests {
         );
         document.update(&source, || true);
         let painted = document.highlight_lines().unwrap();
-        assert_eq!(painted[0].len(), 1);
-        assert_eq!(painted[0][0].kind, TokenKind::Plain);
-        assert_eq!(painted[0][0].text, source.split('\n').next().unwrap());
+        assert!(
+            painted[0]
+                .iter()
+                .any(|token| token.kind == TokenKind::String
+                    && token.text.len() > crate::highlight::MAX_HIGHLIGHT_LINE_BYTES)
+        );
+        assert_eq!(
+            painted[0]
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<String>(),
+            source.split('\n').next().unwrap()
+        );
+        let fallback = highlight_lines(&source, Language::Rust);
+        assert_eq!(fallback[0].len(), 1);
+        assert_eq!(fallback[0][0].kind, TokenKind::Plain);
         assert!(
             painted[1]
                 .iter()

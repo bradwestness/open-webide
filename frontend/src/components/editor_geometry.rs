@@ -6,6 +6,31 @@ use openwebide_core::editor::{MAX_VISUAL_CARETS, VisualCaret, VisualLayout, Visu
 use std::collections::BTreeMap;
 use wasm_bindgen::JsCast;
 
+/// Range cloning omits its common ancestor. Preserve every inline paint wrapper
+/// between that ancestor and the logical row, including token color/run spans.
+fn clone_paint_range(row: &web_sys::Element, range: &web_sys::Range) -> Option<web_sys::Node> {
+    let mut result: web_sys::Node = range.clone_contents().ok()?.into();
+    let mut ancestor = range.common_ancestor_container().ok()?;
+    if ancestor.node_type() == web_sys::Node::TEXT_NODE {
+        ancestor = ancestor.parent_node()?;
+    }
+    while !ancestor.is_same_node(Some(row.as_ref())) {
+        // A retained fragment supplies absolute geometry to the caller. It is
+        // rebuilt around the new range; nesting its old position would move text.
+        if ancestor
+            .dyn_ref::<web_sys::Element>()
+            .is_some_and(|element| element.class_list().contains("editor-source-fragment"))
+        {
+            break;
+        }
+        let wrapper = ancestor.clone_node().ok()?;
+        wrapper.append_child(&result).ok()?;
+        result = wrapper;
+        ancestor = ancestor.parent_node()?;
+    }
+    Some(result)
+}
+
 /// DOM values are rounded first and bounded well inside exact integer precision.
 #[allow(
     clippy::cast_possible_truncation,
@@ -374,7 +399,7 @@ fn window_paint_row(
         fragment.append_child(&gap).ok()?;
     }
     fragment
-        .append_child(&range.clone_contents().ok()?.into())
+        .append_child(&clone_paint_range(row, &range)?)
         .ok()?;
     let original = row.inner_html();
     let original_style = row.get_attribute("style").unwrap_or_default();
@@ -498,7 +523,7 @@ fn anchored_row(
         .ok()?;
     fragment.append_child(&gap).ok()?;
     fragment
-        .append_child(&range.clone_contents().ok()?.into())
+        .append_child(&clone_paint_range(row, &range)?)
         .ok()?;
     // No geometry read occurred while the complete row was attached.
     row.set_attribute(
