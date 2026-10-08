@@ -940,3 +940,69 @@ async fn narrow_chat_keeps_model_approval_and_context_controls_accessible_in_bot
         assert!(mounted.state.ui.context_open.get_untracked());
     }
 }
+
+#[wasm_bindgen_test]
+async fn pointer_tab_focus_and_editor_scroll_do_not_reopen_tooltips() {
+    use super::support::wait_until;
+    let mounted = mount_test(|_| {
+        openwebide_frontend::viewport::install_action_tooltips();
+        view! { <button title="File path">"File"</button><div class="scroll-source"></div> }
+    });
+    settle().await;
+    let button = mounted.element("button");
+    let event = |name| {
+        let init = web_sys::MouseEventInit::new();
+        init.set_bubbles(true);
+        button
+            .dispatch_event(
+                &web_sys::MouseEvent::new_with_mouse_event_init_dict(name, &init).unwrap(),
+            )
+            .unwrap();
+    };
+    event("pointerover");
+    let tip = document().get_element_by_id("ui-action-tooltip").unwrap();
+    wait_until("hovered file tooltip", || !tip.has_attribute("hidden")).await;
+    event("pointerdown");
+    button.focus().unwrap();
+    button
+        .dispatch_event(&web_sys::Event::new("focus").unwrap())
+        .unwrap();
+    mounted
+        .element(".scroll-source")
+        .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+        .unwrap();
+    openwebide_frontend::util::sleep_ms(250).await;
+    settle().await;
+    assert!(
+        tip.has_attribute("hidden"),
+        "pointer focus/scroll reopened the tooltip"
+    );
+    assert!(
+        !button.has_attribute("title"),
+        "native tooltip can reopen while the pointer is still over the clicked tab"
+    );
+    event("pointerout");
+    assert_eq!(button.get_attribute("title").as_deref(), Some("File path"));
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_key("Tab");
+    init.set_bubbles(true);
+    button
+        .dispatch_event(
+            &web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap(),
+        )
+        .unwrap();
+    button
+        .dispatch_event(&web_sys::Event::new("focus").unwrap())
+        .unwrap();
+    wait_until("keyboard file tooltip", || !tip.has_attribute("hidden")).await;
+    mounted
+        .element(".scroll-source")
+        .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+        .unwrap();
+    settle().await;
+    openwebide_frontend::util::sleep_ms(20).await;
+    assert!(
+        tip.has_attribute("hidden"),
+        "scroll reopened a keyboard tooltip"
+    );
+}

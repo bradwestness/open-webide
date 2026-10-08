@@ -109,6 +109,11 @@ export function install_tooltips() {
     tip.className = 'ui-tooltip'; tip.id = 'ui-action-tooltip'; tip.setAttribute('role', 'tooltip'); tip.hidden = true;
     document.body.append(tip);
     let current = null, timer = 0, title = null, described = null;
+    let keyboardFocus = true, dismissed = null, dismissedTitle = null;
+    const restoreDismissed = () => {
+        if (dismissed && dismissedTitle !== null) dismissed.setAttribute('title', dismissedTitle);
+        dismissed = null; dismissedTitle = null;
+    };
     const hide = () => {
         clearTimeout(timer); tip.hidden = true;
         if (current) {
@@ -119,7 +124,7 @@ export function install_tooltips() {
     };
     const enter = event => {
         const target = event.target instanceof Element ? event.target.closest('button[title],button[data-tooltip]') : null;
-        if (!target || current === target) return;
+        if (!target || current === target || target === dismissed || (event.type === 'focus' && !keyboardFocus)) return;
         hide(); current = target; title = target.getAttribute('title'); described = target.getAttribute('aria-describedby');
         const text = target.getAttribute('data-tooltip') || title;
         if (!text) return;
@@ -135,17 +140,32 @@ export function install_tooltips() {
             target.setAttribute('aria-describedby', [described, tip.id].filter(Boolean).join(' '));
         }, event.type === 'focus' ? 0 : 200);
     };
-    const leave = event => { if (current && !(event.relatedTarget instanceof Node && current.contains(event.relatedTarget))) hide(); };
-    const key = event => { if (event.key === 'Escape') hide(); };
+    const leave = event => {
+        if (event.type === 'pointerout' && dismissed && !(event.relatedTarget instanceof Node && dismissed.contains(event.relatedTarget))) restoreDismissed();
+        if (current && !(event.relatedTarget instanceof Node && current.contains(event.relatedTarget))) hide();
+    };
+    const pointerDown = event => {
+        keyboardFocus = false;
+        const target = event.target instanceof Element ? event.target.closest('button[title],button[data-tooltip]') : null;
+        const hovered = current;
+        hide(); restoreDismissed();
+        dismissed = target || hovered;
+        dismissedTitle = dismissed ? dismissed.getAttribute('title') : null;
+        if (dismissed) dismissed.removeAttribute('title');
+    };
+    const key = event => {
+        if (event.key === 'Escape') { hide(); return; }
+        keyboardFocus = true; restoreDismissed();
+    };
     document.addEventListener('pointerover', enter); document.addEventListener('pointerout', leave);
     document.addEventListener('focus', enter, true); document.addEventListener('blur', leave, true);
-    document.addEventListener('pointerdown', hide); document.addEventListener('keydown', key);
-    const scroll = () => { const target = current; hide(); if (target && document.activeElement === target) enter({target, type: 'focus'}); };
+    document.addEventListener('pointerdown', pointerDown); document.addEventListener('keydown', key);
+    const scroll = hide;
     window.addEventListener('scroll', scroll, true); window.addEventListener('resize', hide);
     return () => {
-        hide(); tip.remove(); document.removeEventListener('pointerover', enter); document.removeEventListener('pointerout', leave);
+        hide(); restoreDismissed(); tip.remove(); document.removeEventListener('pointerover', enter); document.removeEventListener('pointerout', leave);
         document.removeEventListener('focus', enter, true); document.removeEventListener('blur', leave, true);
-        document.removeEventListener('pointerdown', hide); document.removeEventListener('keydown', key);
+        document.removeEventListener('pointerdown', pointerDown); document.removeEventListener('keydown', key);
         window.removeEventListener('scroll', scroll, true); window.removeEventListener('resize', hide);
     };
 }

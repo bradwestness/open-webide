@@ -14,6 +14,8 @@ for what's still ahead.
   measured paint, preserve saved scroll during preparation, and restore complete
   native input on measurement failure after any active composition finishes.
 
+- Keep tooltips dismissed after pointer activation and editor scroll restoration, preserving keyboard focus tooltips without reopening native title bubbles over clicked tabs.
+
 - Keep editor view controls mounted and reserve consistent toolbar width across file switches, preserving file-tab positions and scroll offset when Preview availability changes. Limit segmented-control transitions to paint properties, and truncate long project names before they overlap neighboring tabs.
 
 - Retain current in-flight editor measurements when a trusted font notification

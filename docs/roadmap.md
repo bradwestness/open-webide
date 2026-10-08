@@ -213,7 +213,7 @@ autocomplete) into the editor while keeping the core diagnostics engine
 The compact app/editor rows, universal search, logo drawer, single status footer,
 on-demand pane controls, grouped menus, responsive dialogs, tree controls and Git icons/counts are implemented in
 both modes, with browser coverage for narrow layouts, focus restoration, keyboard
-navigation, stable file-tab geometry across preview availability changes and review safeguards. Remaining checks need physical devices:
+navigation, stable file-tab geometry across preview availability changes, tooltip dismissal during pointer activation and scroll restoration, and review safeguards. Remaining checks need physical devices:
 
 - Verify density, model/approval controls, activity-group touch controls and the
   compact context indicator on real phones in both modes.
