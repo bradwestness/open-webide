@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse unchanged embedded syntax trees across paragraph insertion, removal and
+  shifted Unicode/CRLF positions. Reparse only affected bodies; retain provider,
+  range, cancellation and fresh-output validation.
+
 - Prepare large Markdown prose with independent paragraph trees and shared
   per-language parsers. Keep inline prose outside the 64 embedded-code-body limit,
   retaining source/node/record limits, cancellation and fresh/incremental parity.

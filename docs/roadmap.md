@@ -77,7 +77,8 @@ tracks the remaining work rather than every optimization already shipped.
   capped metadata attempts now stop once their run budget is exceeded.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
-  fallback context assembly, larger fenced-code workloads and incremental reuse of unchanged Markdown inline trees
+  fallback context assembly, bounded continuation for cold Markdown parsing and
+  larger fenced-code workloads
   and changed-source plain row-table
   reconstruction/validation. Source-change comparison still traverses retained
   text; resolved worker parser replacements now reuse their validated spans only

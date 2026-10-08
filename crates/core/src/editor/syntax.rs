@@ -92,6 +92,8 @@ pub struct SyntaxDocument {
     tree: Option<Tree>,
     embedded: Vec<EmbeddedSyntax>,
     embedded_parsers: Vec<(Language, Parser)>,
+    #[cfg(test)]
+    embedded_parses: usize,
     text: Arc<String>,
     source_lines: Vec<super::lines::Line>,
     prepared: Option<(usize, Arc<SyntaxAnalysis>)>,
@@ -121,6 +123,8 @@ impl SyntaxDocument {
             tree: None,
             embedded: Vec::new(),
             embedded_parsers: Vec::new(),
+            #[cfg(test)]
+            embedded_parses: 0,
             text: Arc::new(String::new()),
             source_lines: provider.map_or_else(Vec::new, |_| super::lines::lines("")),
             prepared: None,
@@ -342,9 +346,61 @@ impl SyntaxDocument {
         checks: &mut usize,
         should_continue: &mut impl FnMut() -> bool,
     ) -> Result<(), SyntaxStatus> {
-        let mut old = std::mem::take(&mut self.embedded).into_iter();
+        let mut unchanged: HashMap<(usize, usize), Vec<EmbeddedSyntax>> = HashMap::new();
+        let mut changed = Vec::new();
+        for mut body in std::mem::take(&mut self.embedded) {
+            if !should_continue() {
+                return Err(SyntaxStatus::Cancelled);
+            }
+            let bytes = if body.range.end_byte <= edit.start_byte {
+                Some(body.range.start_byte..body.range.end_byte)
+            } else if body.range.start_byte >= edit.old_end_byte {
+                Some(
+                    edit.new_end_byte + (body.range.start_byte - edit.old_end_byte)
+                        ..edit.new_end_byte + (body.range.end_byte - edit.old_end_byte),
+                )
+            } else {
+                None
+            };
+            if let Some(bytes) = bytes {
+                let range = Range {
+                    start_byte: bytes.start,
+                    end_byte: bytes.end,
+                    start_point: indexed_point(&self.source_lines, bytes.start),
+                    end_point: indexed_point(&self.source_lines, bytes.end),
+                };
+                if body.range != range
+                    && let Some(tree) = body.tree.as_mut()
+                {
+                    tree.edit(edit);
+                }
+                body.range = range;
+                unchanged
+                    .entry((bytes.start, bytes.end))
+                    .or_default()
+                    .push(body);
+            } else {
+                changed.push(body);
+            }
+        }
+        let mut old = changed.into_iter();
+        #[cfg(test)]
+        {
+            self.embedded_parses = 0;
+        }
         let mut next = Vec::with_capacity(selected.len());
         for (language, range) in selected {
+            if !should_continue() {
+                return Err(SyntaxStatus::Cancelled);
+            }
+            if let Some(bodies) = unchanged.get_mut(&(range.start_byte, range.end_byte))
+                && let Some(index) = bodies
+                    .iter()
+                    .position(|body| body.provider.language == language && body.range == range)
+            {
+                next.push(bodies.swap_remove(index));
+                continue;
+            }
             let provider = syntax_provider(language).ok_or(SyntaxStatus::Cancelled)?;
             let mut embedded = if let Some(previous) = old
                 .next()
@@ -387,6 +443,10 @@ impl SyntaxDocument {
                 checks,
                 should_continue,
             )?);
+            #[cfg(test)]
+            {
+                self.embedded_parses += 1;
+            }
             embedded.range = range;
             next.push(embedded);
         }
@@ -810,14 +870,25 @@ mod tests {
                 "Unclosed `marker{ending}{ending}{source}Closing marker`{ending}{ending}```rust{ending}fn main() {{}}{ending}```{ending}"
             );
             let mut warm = SyntaxDocument::new(Language::Markdown).unwrap();
-            for text in [
+            for (revision, text) in [
                 source.clone(),
                 source.replacen("Paragraph 500", "Changed 500", 1),
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let (status, actual) = warm.prepare(&text, 4, || true);
                 assert!(matches!(status, SyntaxStatus::Ready { .. }), "{status:?}");
                 assert!(warm.embedded.len() > 1_000);
                 assert_eq!(warm.embedded_parsers.len(), 2);
+                assert_eq!(
+                    warm.embedded_parses,
+                    if revision == 0 {
+                        warm.embedded.len()
+                    } else {
+                        1
+                    }
+                );
                 let mut fresh = SyntaxDocument::new(Language::Markdown).unwrap();
                 let (_, expected) = fresh.prepare(&text, 4, || true);
                 let actual = actual.unwrap();
@@ -855,6 +926,41 @@ mod tests {
                 warm.prepare(&source, 4, || true).0,
                 SyntaxStatus::Ready { incremental: false }
             ));
+        }
+    }
+
+    #[test]
+    fn embedded_reuse_tracks_shifted_ranges_and_provider_changes() {
+        for ending in ["\n", "\r\n"] {
+            let base = format!(
+                "first **文😀**{ending}{ending}second `code`{ending}{ending}```rust{ending}fn main() {{}}{ending}```{ending}"
+            );
+            let inserted = format!("new paragraph 文😀{ending}{ending}{base}");
+            let after_first = base.replacen(
+                "first **文😀**",
+                &format!("first **文😀**{ending}{ending}new paragraph"),
+                1,
+            );
+            let changed = base.replace("```rust", "```go");
+            let mut warm = SyntaxDocument::new(Language::Markdown).unwrap();
+            for (source, parses) in [
+                (&base, 3),
+                (&inserted, 1),
+                (&base, 0),
+                (&after_first, 1),
+                (&base, 0),
+                (&changed, 1),
+            ] {
+                let (status, actual) = warm.prepare(source, 4, || true);
+                assert!(matches!(status, SyntaxStatus::Ready { .. }));
+                assert_eq!(warm.embedded_parses, parses);
+                let mut fresh = SyntaxDocument::new(Language::Markdown).unwrap();
+                let (_, expected) = fresh.prepare(source, 4, || true);
+                assert_eq!(
+                    serde_json::to_value(actual.unwrap().transfer_data()).unwrap(),
+                    serde_json::to_value(expected.unwrap().transfer_data()).unwrap()
+                );
+            }
         }
     }
 

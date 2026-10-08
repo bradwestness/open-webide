@@ -2137,3 +2137,32 @@ and after the middle-paragraph edit. Strict WASM frontend linting also passed.
 The highlighted-click worker contract passed in 1.14 s with both modes and both
 one-function and 1,000-function sources. Final strict core and WASM frontend
 checks passed after the added regressions.
+
+### Reusing unchanged embedded syntax trees (2026-10-08)
+
+Unchanged included-range bodies retain their trees and metadata when an edit
+leaves their source bytes intact. Prefix trees keep their coordinates; suffix
+trees receive the exact source edit only when their range coordinates shift.
+Reuse requires matching language and full byte/point range from the new outer
+parse. New or intersecting bodies are parsed, and stale/reclassified bodies are
+discarded. Both matching and retention observe cancellation.
+
+Native regressions compare complete publications against fresh parses for LF and
+CRLF, Unicode, a changed middle paragraph, inserted/deleted paragraphs, insertion
+exactly after a paragraph and a fenced-language change. Test-only counts prove
+that the 1,000-paragraph edit parses one body, insertion parses one new body and
+deletion of an independent paragraph parses none. All 468 core tests passed.
+
+The preceding checkpoint's Linux production-worker CI exposed a separate cold
+parse deadline issue: the first 1,000-paragraph Markdown request returned
+Cancelled at the unchanged 100 ms worker deadline; the next request completed.
+That regression remains intact. This reuse change does not claim to resolve
+bounded cold continuation or the remaining CI reliability gate.
+
+Final development verification passed: 468 all-feature core tests, strict core
+and WASM frontend linting, 18 WASM unit tests, 435 ordinary browser component
+tests (143.27 s), four adapter integration checks and the rebuilt production
+worker verifier. The two separate heavy font/boundary geometry matrices were not
+rerun for this parser-only change; their assertions remain in CI. The local
+worker passed the cold 1,000-paragraph request, which does not erase the Linux
+CI cold-deadline failure recorded above.
