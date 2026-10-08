@@ -6,6 +6,8 @@ pub enum StorageError {
     Db(String),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
     #[error("invalid value: {0}")]
     InvalidValue(String),
     #[error("conflict: {0}")]

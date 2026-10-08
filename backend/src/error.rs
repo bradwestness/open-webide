@@ -126,6 +126,7 @@ impl From<openwebide_storage::StorageError> for ApiError {
     fn from(err: openwebide_storage::StorageError) -> Self {
         match err {
             openwebide_storage::StorageError::NotFound(msg) => Self::not_found(msg),
+            openwebide_storage::StorageError::InvalidRequest(msg) => Self::bad_request(msg),
             openwebide_storage::StorageError::Conflict(msg) => Self::conflict(msg),
             internal @ (openwebide_storage::StorageError::InvalidValue(_)
             | openwebide_storage::StorageError::Db(_)) => Self::internal(internal.to_string()),
@@ -216,6 +217,7 @@ mod tests {
         for (error, status) in [
             (StorageError::Db("db failed".into()), 500),
             (StorageError::InvalidValue("invalid row".into()), 500),
+            (StorageError::InvalidRequest("Project memory is disabled".into()), 400),
             (StorageError::NotFound("missing".into()), 404),
             (StorageError::Conflict("duplicate".into()), 409),
         ] {
