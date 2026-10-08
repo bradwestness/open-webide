@@ -1356,3 +1356,60 @@ async fn phone_navigation_is_equal_and_output_overlays_retained_pane_in_both_mod
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn window_title_tracks_file_project_session_and_logout_in_both_modes() {
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_session();
+            state.auth.set_user(user(1));
+            state.projects.projects.update(|items| {
+                items[0].mode = mode;
+                items[0].name = "My project".into();
+            });
+            state
+                .chat
+                .sessions
+                .update(|items| items[0].name = "My conversation".into());
+            state.workspace.open_file.set(Some("src/main.rs".into()));
+            openwebide_frontend::state_actions::lifecycle::install_window_title(
+                state.auth,
+                state.projects,
+                state.workspace,
+                state.chat,
+            );
+            view! { <div /> }
+        });
+        settle().await;
+        assert_eq!(
+            document().title(),
+            "main.rs — My project — My conversation — Open WebIDE"
+        );
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("README.md".into()));
+        mounted
+            .state
+            .chat
+            .sessions
+            .update(|items| items[0].name = "Renamed".into());
+        settle().await;
+        assert_eq!(
+            document().title(),
+            "README.md — My project — Renamed — Open WebIDE"
+        );
+        mounted.state.workspace.open_file.set(None);
+        mounted.state.workspace.active_session.set(None);
+        settle().await;
+        assert_eq!(document().title(), "My project — Open WebIDE");
+        mounted.state.projects.active_project.set(None);
+        settle().await;
+        assert_eq!(document().title(), "Open WebIDE");
+        mounted.state.auth.logout();
+        settle().await;
+        assert_eq!(document().title(), "Open WebIDE");
+    }
+}

@@ -55,6 +55,12 @@ pub fn App() -> impl IntoView {
     provide_context(workspace_state);
     provide_context(git_state);
     provide_context(chat_state);
+    crate::state_actions::lifecycle::install_window_title(
+        auth,
+        projects_state,
+        workspace_state,
+        chat_state,
+    );
     let sessions_state = crate::state::sessions::SessionsState::new(chat_state, active_project);
     provide_context(sessions_state);
     provide_context(crate::state_actions::sessions::SessionActions::new(

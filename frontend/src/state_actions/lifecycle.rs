@@ -23,6 +23,50 @@ pub struct ProjectEffectContext {
     pub select_project: Callback<i64>,
 }
 
+/// Keep browser tabs and installed-app windows tied to the active workspace.
+pub fn install_window_title(
+    auth: AuthState,
+    projects: ProjectsState,
+    workspace: crate::state::workspace::WorkspaceState,
+    chat: ChatState,
+) {
+    Effect::new(move |_| {
+        let mut parts = Vec::new();
+        if auth.user.get().is_some() {
+            let project_id = projects.active_project.get();
+            let project = projects.projects.with(|items| {
+                items
+                    .iter()
+                    .find(|project| Some(project.id) == project_id)
+                    .map(|project| project.name.clone())
+            });
+            if let Some(project) = project {
+                if let Some(path) = workspace.open_file.get()
+                    && let Some(name) = path.rsplit('/').find(|name| !name.is_empty())
+                {
+                    parts.push(name.to_string());
+                }
+                parts.push(project);
+            }
+            let session_id = workspace.active_session.get();
+            if let Some(name) = chat.sessions.with(|items| {
+                items
+                    .iter()
+                    .find(|session| {
+                        Some(session.id) == session_id && session.project_id == project_id
+                    })
+                    .map(|session| session.name.clone())
+            }) && !name.trim().is_empty()
+            {
+                parts.push(name);
+            }
+        }
+        parts.push("Open WebIDE".to_string());
+        document().set_title(&parts.join(" — "));
+    });
+    on_cleanup(|| document().set_title("Open WebIDE"));
+}
+
 pub fn install_keyboard_shortcuts(chat: ChatState) {
     let commands = expect_context::<super::commands::CommandActions>();
     let ui = expect_context::<crate::state::ui::UiState>();

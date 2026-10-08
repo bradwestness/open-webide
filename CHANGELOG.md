@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Show the active filename, project and conversation in the browser tab and app window title, updating when they change.
+
 - Keep the app-menu logo at its compact size and align the brand label in desktop and phone navigation.
 
 - Retain original styled editor run boundaries independently of completed geometry, sharing them with paragraph preparation and uncached viewport paint. Bound retained metadata, reject stale scopes and release old-source runs; repeated paints avoid token-prefix segmentation while preserving exact source and pointer geometry.
