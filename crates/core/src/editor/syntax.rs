@@ -295,8 +295,12 @@ impl SyntaxDocument {
                 )
             })
             .collect();
-        baseline.retain(|(range, _, _)| !scopes.iter().any(|(body, _)| overlaps(range, body)));
-        opaque_starts.retain(|position| !scopes.iter().any(|(body, _)| body.contains(position)));
+        baseline.retain(|(range, _, _)| {
+            !embedded_scope_after(&scopes, range.start).is_some_and(|body| overlaps(range, body))
+        });
+        opaque_starts.retain(|position| {
+            !embedded_scope_after(&scopes, *position).is_some_and(|body| body.contains(position))
+        });
         for (body, language) in &scopes {
             let fallback = Structure::scan(&self.text[body.clone()], *language).unwrap_or_default();
             opaque_starts.extend(
@@ -472,6 +476,17 @@ impl SyntaxDocument {
         }
         normalize_folds(ranges, lines.len())
     }
+}
+
+/// Injection selection validates source ordering and nonoverlap. Ends are thus
+/// monotonic even for adjacent/empty bodies. The first end beyond the query start
+/// is the only candidate needed for overlap or point containment.
+fn embedded_scope_after(
+    scopes: &[(ByteRange<usize>, Language)],
+    position: usize,
+) -> Option<&ByteRange<usize>> {
+    let index = scopes.partition_point(|(body, _)| body.end <= position);
+    scopes.get(index).map(|(body, _)| body)
 }
 
 fn overlaps(left: &ByteRange<usize>, right: &ByteRange<usize>) -> bool {
@@ -677,6 +692,41 @@ fn input_edit_change(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordered_scope_lookup_matches_full_scan_at_every_boundary() {
+        for bodies in [
+            vec![],
+            std::iter::once(0..0).collect(),
+            vec![0..0, 0..3, 3..3, 3..5, 5..5, 8..12, 12..12],
+            vec![2..4, 4..4, 4..4, 6..6, 9..13],
+            (0..1_000)
+                .map(|index| (index * 3)..(index * 3 + 2))
+                .collect(),
+        ] {
+            let scopes: Vec<_> = bodies
+                .into_iter()
+                .map(|body| (body, Language::MarkdownInline))
+                .collect();
+            let limit = scopes.last().map_or(16, |(body, _)| body.end + 2);
+            for start in 0..=limit {
+                let body = embedded_scope_after(&scopes, start);
+                assert_eq!(
+                    body.is_some_and(|body| body.contains(&start)),
+                    scopes.iter().any(|(body, _)| body.contains(&start))
+                );
+                // Include empty, touching, contained and enclosing ranges.
+                for end in [start, start.saturating_add(1).min(limit), limit] {
+                    let range = start..end;
+                    assert_eq!(
+                        body.is_some_and(|body| overlaps(&range, body)),
+                        scopes.iter().any(|(body, _)| overlaps(&range, body)),
+                        "{range:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn large_markdown_prose_reuses_parsers_without_joining_paragraphs() {

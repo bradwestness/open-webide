@@ -82,7 +82,8 @@ tracks the remaining work rather than every optimization already shipped.
   reconstruction/validation. Source-change comparison still traverses retained
   text; resolved worker parser replacements now reuse their validated spans only
   for the exact retained base allocation. Intersecting plain fallback rows retain
-  raw-byte boundary validation.
+  raw-byte boundary validation. Fallback range/opaque-point checks now use ordered
+  embedded-scope lookup; complete fallback and selection-list assembly remain.
 - [ ] **Source ownership and storage:** finish remaining external parser snapshots,
   changed-revision source comparisons, transport serialization, diff shaping and
   native-text materialization. Folded/bounded projection tables still assemble
@@ -105,8 +106,8 @@ tracks the remaining work rather than every optimization already shipped.
   fallback contracts. Improvements must preserve source/account/project ownership,
   pending edits, themes, supported previews, agent context and both adapter contracts.
 - [ ] **Reliable CI and release/PWA checks:** pass the complete native/WASI/WASM,
-  platform, browser and release-app checks reliably. The near-limit Linux readiness
-  timeout remains open; a successful local run or one green CI run is insufficient.
+  platform, browser and release-app checks reliably. Repeat near-limit Linux
+  readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Current checkpoints and measured results are in [performance evidence](editor-performance.md).
 - [ ] **Physical Chrome/Edge PWA input:** verify real input-method commit/cancel,
   Unicode and LF/CRLF undo/redo, multiple-cursor clipboard behavior and touch input

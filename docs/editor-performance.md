@@ -2245,3 +2245,25 @@ passed. The rebuilt release worker passed its normal grammar/delta/fallback
 checks and 1,189 forced scheduler yields with exact source, structure, folds and
 paint equality. Metadata/paint assembly and each individual Tree-sitter edit
 remain synchronous; a total preparation wall-clock bound is still unproved.
+
+### Ordered embedded-scope checks (2026-10-08)
+
+Fallback protected ranges and opaque-start points now locate their candidate
+embedded scope with binary search over the existing source-ordered scope table.
+Injection selection already validates ordering and nonoverlap, so range ends are
+monotonic, including adjacent and empty bodies. The original overlap and point
+containment predicates still decide exclusion. This removes repeated complete
+scope scans without changing context semantics or allocating a second index.
+
+The native oracle compares indexed decisions with the previous complete scan for
+empty tables, duplicate empty scopes, touching ranges, contained/enclosing/empty
+queries and a 1,000-body table. All 479 core tests and strict core/WASM frontend linting passed. The completed
+release bundle passed the normal grammar/delta/fallback verifier and 1,189 forced
+yields with exact source, context, fold and paint publication equality. The first
+check launched before bundle publication used the prior bundle and is excluded
+from this evidence. List construction, lexical fallback scans and final metadata
+publication are still synchronous and unbounded by a time slice.
+
+Checkpoint b1dc2b4 completed CI run 37845943338 with all five jobs green, including
+the browser suite and release worker. Reliability remains a completion gate for
+subsequent editor changes; the b930042 and b16d7b4 runs are still in progress.

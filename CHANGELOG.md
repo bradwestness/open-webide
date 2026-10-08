@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Use ordered embedded-scope lookup when assembling syntax fallback contexts,
+  preserving empty/touching range behavior without scanning every body per range.
+
 - Match retained embedded syntax trees across worker batches, allowing yields and
   cancellation between bodies while preserving unchanged-tree reuse.
 
