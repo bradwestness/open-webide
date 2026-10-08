@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Extend the isolated native/WASM editor layout probe with identical-glyph advance precision and missing-glyph diagnostics; record the rejected early native bootstrap and retain exact production geometry.
+
 - Use the explicit boundary-size readiness budget for the debug-WASM paragraph font matrix, retaining exact geometry assertions, the whole-run deadline and ordinary short UI timeouts.
 
 - Reuse validated unchanged probe prefixes within edited long paragraphs, preserving exact source/run/style ownership and fresh continuation checks. Bound retained measurements and reject stale account, project, font and layout scopes.

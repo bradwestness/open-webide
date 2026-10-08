@@ -1312,3 +1312,56 @@ to expose unresolved latency independently of this correctness budget.
 
 Two fresh isolated browser runs pass the unchanged full font/feature/whitespace
 matrix in 17.20 and 16.75 s overall; strict frontend Clippy passes.
+
+
+### Rejected early native bootstrap
+
+An isolated early-binding experiment tried installing the exact bounded native
+context before complete unwrapped source shaping. The existing both-adapter cold
+contract holds complete geometry preparation pending: 12,000 Unicode/CRLF rows
+include a wide row at source row 9,000. On the first local case, source scroll
+height/width remained 230/327 px while the bounded textarea measured 14,259/326 px
+(11,559 native characters). The unchanged assertion requires complete source
+height above 100,000 px before far pointer/scroll/edit operations. The experiment
+failed there; source-mapped input alone does not supply whole-document geometry.
+
+An additional all-rows `source_paint_eligible` filter made the test pass by
+bypassing early binding: short rows are outside that predicate's long-paragraph
+eligibility. That pass is not evidence for the experiment. Numeric pending-scroll
+requests do not repair missing extents. The prototype was removed; production
+retains complete initial native shaping until an exact early-extent path passes
+the original cold contract. Initial native shaping remains on the roadmap.
+
+
+### Layout-candidate advance precision
+
+The isolated native/WASM candidate now sums the same shaped glyph advances in
+`f32` and `f64`, without changing shaping, wrapping or the production renderer.
+Both strict native/WASM lint checks and all 10 native/20 browser records pass.
+The supplied font hash matches the preceding candidate sample. For the
+990,000-byte unwrapped ASCII fixture (features enabled), native and WASM agree:
+
+| Measurement | Width (CSS px) |
+| --- | ---: |
+| Parley layout | 7,933,542 |
+| Glyph advances summed in `f32` | 7,928,103.5 |
+| Same glyph advances summed in `f64` | 7,979,400.4154 |
+| Browser DOM | 7,979,337 |
+
+The identical advance sequence differs by 51,296.9154 px solely from accumulation
+precision. Parley's published width differs from the naive `f32` sum as well;
+this check does not attribute every internal layout error to that one sum. The
+`f64` result still differs from DOM by 63.4154 px and does not establish glyph,
+caret or wrapped geometry parity. No substitute extent is published.
+
+Glyph-ID-zero counts are 0 for ASCII, 2 for the tab fixture, 2 for the combining/
+CJK/emoji fixture and 8 for mixed LTR/RTL text. These counts expose the candidate's
+missing font/tab integration; they do not identify a specific missing character
+or prove browser fallback equivalence. The bare long-row browser sample takes
+540 ms for Rust layout and 49.625 ms for DOM layout, with the same timing-scope
+limitations as the preceding probe. Production latency remains unproved.
+
+[Raw advance diagnostics](editor-performance/layout-candidate-advances.jsonl).
+Reproduce with the existing layout tool command above; each record now includes
+`advances`. Exact early source extents, tab stops, explicit fallback font ownership,
+a painter with matching geometry and full native-input contracts remain required.

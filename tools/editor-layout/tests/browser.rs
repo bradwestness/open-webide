@@ -1,5 +1,5 @@
 #![cfg(target_arch = "wasm32")]
-use openwebide_editor_layout_probe::{FEATURES, FONT, shape};
+use openwebide_editor_layout_probe::{FEATURES, FONT, advance_diagnostics, shape};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
@@ -85,7 +85,7 @@ async fn compare_geometry() {
                 let dom_height = field("height");
                 console_log!(
                     "{}",
-                    serde_json::json!({"case":name,"bytes":text.len(),"wrap":wrap,"features":features==FEATURES,"rust_ms":rust_ms,"rust_width":layout.width(),"rust_height":layout.height(),"rust_lines":layout.lines().len(),"canvas_width":canvasWidth(&text, features==FEATURES),"dom_width":dom_width,"dom_height":dom_height,"dom_ms":field("ms")})
+                    serde_json::json!({"case":name,"bytes":text.len(),"wrap":wrap,"features":features==FEATURES,"rust_ms":rust_ms,"rust_width":layout.width(),"rust_height":layout.height(),"rust_lines":layout.lines().len(),"canvas_width":canvasWidth(&text, features==FEATURES),"dom_width":dom_width,"dom_height":dom_height,"dom_ms":field("ms"),"advances":advance_diagnostics(&layout)})
                 );
                 assert!(dom_width > 0.0 && dom_height > 0.0 && layout.width() > 0.0);
             }

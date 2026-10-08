@@ -71,6 +71,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Cold probes briefly await the selected font, with bounded fallback and fresh ownership checks.
   The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)
   records why Rust shaping and canvas widths cannot replace current DOM geometry directly.
+  Advance diagnostics confirm accumulation drift and missing font/tab integration;
+  higher-precision sums still do not establish exact browser geometry.
   Pointer gestures flush pending source paint before resolving current glyph
   coordinates, including cold bounded native windows during analysis updates.
   Terminal lexical paint prepares in cooperative, source-owned batches; worker and
