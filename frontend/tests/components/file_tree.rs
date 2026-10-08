@@ -1341,3 +1341,169 @@ async fn editor_file_tabs_close_discard_and_keyboard_navigation_share_both_modes
         }
     }
 }
+
+#[wasm_bindgen_test]
+async fn expand_and_collapse_discover_nested_folders_in_both_modes_and_cancel_late_results() {
+    use openwebide_core::vfs::VfsEntryKind;
+    for local in [false, true] {
+        let folder = if local {
+            Some(treeFolder().await.unwrap())
+        } else {
+            None
+        };
+        let (mounted, slot) = fixture(folder.as_ref().map(treeHandle));
+        settle().await;
+        let actions = slot.get().unwrap();
+        let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+        files.create("src", VfsEntryKind::Directory).await.unwrap();
+        files
+            .create("src/deep", VfsEntryKind::Directory)
+            .await
+            .unwrap();
+        files
+            .create(".hidden", VfsEntryKind::Directory)
+            .await
+            .unwrap();
+        files.write("src/deep/a.txt", "Nested").await.unwrap();
+        actions.expand_all();
+        wait_until("all folders expanded", || {
+            !actions.expanding.get_untracked()
+        })
+        .await;
+        assert!(
+            mounted
+                .state
+                .workspace
+                .expanded
+                .with_untracked(|dirs| dirs.contains("src")
+                    && dirs.contains("src/deep")
+                    && !dirs.contains(".hidden"))
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector("[data-tree-path='src/deep/a.txt']")
+                .unwrap()
+                .is_some()
+        );
+        actions.collapse_all();
+        settle().await;
+        assert!(mounted.state.workspace.expanded.get_untracked().is_empty());
+        assert!(
+            mounted
+                .root
+                .query_selector("[data-tree-path='src/deep/a.txt']")
+                .unwrap()
+                .is_none()
+        );
+        if !local {
+            let (send, receive) = futures::channel::oneshot::channel();
+            mounted
+                .state
+                .fake
+                .file_list_results
+                .borrow_mut()
+                .push_back(receive);
+            actions.expand_all();
+            settle().await;
+            send.send(Err("folder unavailable".into())).unwrap();
+            wait_until("expansion failure", || !actions.expanding.get_untracked()).await;
+            assert!(
+                mounted
+                    .state
+                    .ui
+                    .toast
+                    .get_untracked()
+                    .unwrap()
+                    .contains("Could not expand all folders")
+            );
+            mounted.state.ui.toast.set(None);
+            for switch_project in [false, true] {
+                let (send, receive) = futures::channel::oneshot::channel();
+                mounted
+                    .state
+                    .fake
+                    .file_list_results
+                    .borrow_mut()
+                    .push_back(receive);
+                actions.expand_all();
+                settle().await;
+                if switch_project {
+                    mounted.state.projects.active_project.set(None);
+                } else {
+                    actions.collapse_all();
+                }
+                settle().await;
+                let _ = send.send(Ok(vec![FileEntry {
+                    name: "late".into(),
+                    path: "late".into(),
+                    is_dir: true,
+                    size: 0,
+                }]));
+                settle().await;
+                assert!(
+                    !mounted
+                        .state
+                        .workspace
+                        .expanded
+                        .with_untracked(|dirs| dirs.contains("late"))
+                );
+                assert!(!mounted.state.workspace.entries.with_untracked(|items| {
+                    items
+                        .get("")
+                        .is_some_and(|entries| entries.iter().any(|entry| entry.path == "late"))
+                }));
+                assert!(!actions.expanding.get_untracked());
+            }
+        }
+        drop(mounted);
+        if let Some(folder) = folder {
+            treeCleanup(&folder).await.unwrap();
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn cached_file_refresh_retains_identical_text_and_applies_external_changes_in_both_modes() {
+    for local in [false, true] {
+        let folder = if local {
+            Some(treeFolder().await.unwrap())
+        } else {
+            None
+        };
+        let (mounted, _) = fixture(folder.as_ref().map(treeHandle));
+        settle().await;
+        mounted.click("[data-tree-path='a.txt']");
+        wait_until("initial file load", || {
+            !mounted.state.workspace.editor_loading.get_untracked()
+                && mounted.state.workspace.content.get_untracked().as_str() == "Original"
+        })
+        .await;
+        let original = mounted.state.workspace.content.get_untracked().shared();
+        mounted.click("[data-tree-path='a.txt']");
+        wait_until("cached file refresh", || {
+            !mounted.state.workspace.editor_loading.get_untracked()
+        })
+        .await;
+        assert!(std::sync::Arc::ptr_eq(
+            &original,
+            &mounted.state.workspace.content.get_untracked().shared()
+        ));
+        let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+        files.write("a.txt", "External change").await.unwrap();
+        mounted.click("[data-tree-path='a.txt']");
+        wait_until("external file change", || {
+            !mounted.state.workspace.editor_loading.get_untracked()
+                && mounted.state.workspace.content.get_untracked().as_str() == "External change"
+        })
+        .await;
+        assert!(!std::sync::Arc::ptr_eq(
+            &original,
+            &mounted.state.workspace.content.get_untracked().shared()
+        ));
+        drop(mounted);
+        if let Some(folder) = folder {
+            treeCleanup(&folder).await.unwrap();
+        }
+    }
+}

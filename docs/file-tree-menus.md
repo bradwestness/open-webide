@@ -47,3 +47,5 @@ and inputs; only elements with an app context menu show one.
 The Files header keeps **Explorer** and **Changes** available during search. Its
 search icon reveals and focuses project search; Escape cancels search and returns
 focus to the icon. Switching views retains the mounted file controls.
+
+The Files menu groups creation, tree and panel actions. **Expand all** discovers nested visible folders in both workspace modes; **Collapse all** also cancels pending expansion. Large trees stop at 512 folders or 64 levels and report the limit.

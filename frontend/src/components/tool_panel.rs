@@ -31,6 +31,7 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
                 <Show when=move || panel == Panel::Chat && chat.is_some()>
                     <button role="menuitem" type="button" class="ui-dropdown-item recent-item" aria-label="Attach images" disabled=move || chat.is_some_and(|chat| chat.reading_images.get()) on:click=move |_| { if let Some(chat) = chat { chat.request_image_picker(); } }><crate::components::ui::Icon name=crate::components::ui::IconName::Paperclip /><span>"Attach images"</span></button>
                 </Show>
+                <Show when=move || panel == Panel::Chat><h3 class="ui-menu-heading">"Panel"</h3></Show>
                 <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon" aria-label=format!("Move {} left", panel.label()) title="Move panel left" on:click=move |_| actions.move_panel.run((panel, false))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowLeft /><span>"Move panel left"</span></button>
                 <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon" aria-label=format!("Move {} right", panel.label()) title="Move panel right" on:click=move |_| actions.move_panel.run((panel, true))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowRight /><span>"Move panel right"</span></button>
             </super::dropdown::ActionMenu>

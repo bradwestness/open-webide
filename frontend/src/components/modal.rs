@@ -240,6 +240,17 @@ fn unregister(panel: &web_sys::HtmlElement) {
             .position(|entry| entry.panel.is_same_node(Some(panel)))?;
         let was_top = index + 1 == stack.entries.len();
         let removed = stack.entries.remove(index);
+        // A drawer can close as it opens another dialog. Carry its persistent
+        // opener forward instead of retaining a disappearing drawer control.
+        for entry in &mut stack.entries {
+            if entry
+                .opener
+                .as_ref()
+                .is_some_and(|opener| removed.panel.contains(Some(opener)))
+            {
+                entry.opener.clone_from(&removed.opener);
+            }
+        }
         if let Some(observer) = &removed.observer {
             observer.disconnect();
         }

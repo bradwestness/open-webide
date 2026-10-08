@@ -59,7 +59,7 @@ fn Omnibar() -> impl IntoView {
     };
     let close = Callback::new(move |()| ui.palette_open.set(false));
     view! {
-        <Modal title=Signal::derive(|| "Search".to_string()) on_close=close class="modal omnibar-modal" describedby="command-palette-help">
+        <Modal title=Signal::derive(|| "Search".to_string()) on_close=close class="modal omnibar-modal" size=super::ui::DialogSize::Wide describedby="command-palette-help">
             <DialogBody class="command-palette omnibar">
                 <label class="form-label" for="command-search">"Commands, files, projects and sessions"</label>
                 <input id="command-search" class="form-input command-search" data-loading=move || actions.loading.get().to_string() type="search" autocomplete="off" maxlength="256" placeholder="Search anything…" role="combobox"

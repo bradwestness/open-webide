@@ -297,20 +297,27 @@ pub fn FileActions(on_new_file: Callback<()>, on_new_dir: Callback<()>) -> impl 
     let layout = expect_context::<LayoutState>();
     let layout_actions = use_context::<crate::state_actions::layout::LayoutActions>();
     let workspace_actions = use_context::<crate::state_actions::workspace::WorkspaceActions>();
+    let tree_actions = use_context::<crate::state_actions::file_tree::FileTreeActions>();
     view! { <super::dropdown::ActionMenu aria_label="File actions">
+        <h3 class="ui-menu-heading">"Create"</h3>
         <button role="menuitem" class="ui-dropdown-item recent-item icon-btn" title="New file" on:click=move |_| on_new_file.run(())>
             <crate::components::ui::Icon name=crate::components::ui::IconName::File />
         <span>"New file"</span></button>
         <button role="menuitem" class="ui-dropdown-item recent-item icon-btn" title="New folder" on:click=move |_| on_new_dir.run(())>
             <crate::components::ui::Icon name=crate::components::ui::IconName::Folder />
         <span>"New folder"</span></button>
-        <Show when=move || layout_actions.is_some()>
-            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = layout_actions { actions.move_panel.run((crate::state::layout::Panel::Files, false)); } }>"Move panel left"</button>
-            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = layout_actions { actions.move_panel.run((crate::state::layout::Panel::Files, true)); } }>"Move panel right"</button>
-        </Show>
+        <h3 class="ui-menu-heading">"Tree"</h3>
+        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=move || tree_actions.is_none_or(|actions| actions.expanding.get()) on:click=move |_| { if let Some(actions) = tree_actions { actions.expand_all(); } }>"Expand all"</button>
+        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=tree_actions.is_none() on:click=move |_| { if let Some(actions) = tree_actions { actions.collapse_all(); } }>"Collapse all"</button>
+
         <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=workspace_actions.is_none() on:click=move |_| { if let Some(actions) = workspace_actions { actions.refresh_tree.run(()); } }><crate::components::ui::Icon name=crate::components::ui::IconName::RefreshCw /><span>"Refresh files"</span></button>
         <button role="menuitemcheckbox" type="button" class="ui-dropdown-item recent-item" aria-checked=move || layout.preferences.with(|prefs| prefs.include_hidden).to_string() disabled=layout_actions.is_none() on:click=move |_| { if let Some(actions) = layout_actions { actions.set_tree_preferences.run((!layout.preferences.get_untracked().include_hidden, layout.preferences.get_untracked().compact_tree)); } }><crate::components::ui::Icon name=crate::components::ui::IconName::Eye /><span>"Include hidden files and folders"</span></button>
         <button role="menuitemcheckbox" type="button" class="ui-dropdown-item recent-item" aria-checked=move || layout.preferences.with(|prefs| prefs.compact_tree).to_string() disabled=layout_actions.is_none() on:click=move |_| { if let Some(actions) = layout_actions { actions.set_tree_preferences.run((layout.preferences.get_untracked().include_hidden, !layout.preferences.get_untracked().compact_tree)); } }><span>"Compact tree rows"</span></button>
+        <Show when=move || layout_actions.is_some()>
+            <h3 class="ui-menu-heading">"Panel"</h3>
+            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = layout_actions { actions.move_panel.run((crate::state::layout::Panel::Files, false)); } }>"Move panel left"</button>
+            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = layout_actions { actions.move_panel.run((crate::state::layout::Panel::Files, true)); } }>"Move panel right"</button>
+        </Show>
     </super::dropdown::ActionMenu> }
 }
 
@@ -555,6 +562,7 @@ pub(super) fn FileEntryMenu(
                     {owner.with(|| view! {
                         {children.as_ref().map(|children| children())}
                         {(!changes_only).then(|| view! {
+                        <h3 class="ui-menu-heading">"File"</h3>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get()
                             on:click=move |_| {let entry = entry.get_value(); actions.create(if is_dir {&entry.path} else {parent(&entry.path)}, VfsEntryKind::File);}>"New file"</button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !is_dir
@@ -565,6 +573,7 @@ pub(super) fn FileEntryMenu(
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.reveal(&entry.get_value().path)>"Reveal in Files"</button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.delete(&entry.get_value())>"Delete"</button>
                         })}
+                        <h3 class="ui-menu-heading">"Git"</h3>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !stage.get()
                             on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Stage)>{move || if untracked.get() {"Add / track"} else {"Stage"}}</button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !unstage.get()
@@ -573,6 +582,7 @@ pub(super) fn FileEntryMenu(
                             on:click=move |_| actions.ignore(&entry.get_value())>"Ignore"</button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !revert.get()
                             on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Revert)>"Revert changes"</button>
+                        <h3 class="ui-menu-heading">"Chat"</h3>
                         <button class="recent-item" role="menuitem" title="Explain the purpose, behavior and how the code works" disabled=move || actions.disabled() on:click=move |_| actions.chat(&entry.get_value(), "Explain how this works:", false)>"Explain in chat"</button>
                         <button class="recent-item" role="menuitem" title="Give a brief overview of the purpose and key contents" disabled=move || actions.disabled() on:click=move |_| actions.chat(&entry.get_value(), "Give a concise overview of", false)>"Summarize in chat"</button>
                         <button class="recent-item" role="menuitem" disabled=move || actions.disabled() || !review.get()

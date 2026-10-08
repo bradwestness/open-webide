@@ -58,7 +58,7 @@ pub(super) fn EditorTabs() -> impl IntoView {
                                 aria-selected=move || selected.get().to_string()
                                 tabindex=move || if selected.get() { "0" } else { "-1" }
                                 data-editor-tab=path
-                                on:click=move |_| { if let Some(actions) = actions { actions.request_open.run(open_path.clone()); } }
+                                on:click=move |_| { if !selected.get_untracked() && let Some(actions) = actions { actions.request_open.run(open_path.clone()); } }
                                 on:keydown=move |event: web_sys::KeyboardEvent| {
                                     let items = paths.get_untracked();
                                     let Some(index) = items.iter().position(|path| path == &keyboard_path) else { return; };
@@ -71,7 +71,7 @@ pub(super) fn EditorTabs() -> impl IntoView {
                                     };
                                     if let Some(next) = next {
                                         event.prevent_default();
-                                        if let Some(actions) = actions { actions.request_open.run(next.clone()); }
+                                        if workspace.open_file.with_untracked(|file| file.as_ref() != Some(next)) && let Some(actions) = actions { actions.request_open.run(next.clone()); }
                                         if let Some(target) = event.current_target().and_then(|target| target.dyn_into::<web_sys::Element>().ok())
                                             && let Ok(Some(list)) = target.closest(".editor-file-tabs")
                                             && let Ok(buttons) = list.query_selector_all("[data-editor-tab]") {

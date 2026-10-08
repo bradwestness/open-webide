@@ -31,6 +31,7 @@ pub fn Dropdown(
     #[prop(optional)]
     pointer_anchor: Option<Signal<Option<(f64, f64)>>>,
     #[prop(into, optional)] disabled: Option<Signal<bool>>,
+    #[prop(into, optional)] ready: Option<Signal<bool>>,
     #[prop(default = Callback::new(|()| ()))] on_open: Callback<()>,
     #[prop(default = false)] above: bool,
     #[prop(default = false)] hide_caret: bool,
@@ -69,7 +70,7 @@ pub fn Dropdown(
         }
     });
     Effect::new(move |_| {
-        if !open.get() {
+        if !open.get() || ready.is_some_and(|ready| !ready.get()) {
             return;
         }
         let (Some(trigger), Some(menu)) = (trigger.get(), menu.get()) else {
@@ -125,6 +126,7 @@ pub fn Dropdown(
             let _ = style.set_property("bottom", "auto");
             let _ = style.set_property("top", &format!("{}px", anchor_bottom + 4.0));
         }
+        let _ = style.set_property("visibility", "visible");
         let choices = items(&menu);
         if let Some(item) = choices
             .iter()
@@ -173,13 +175,15 @@ pub fn Dropdown(
             };
             if let Some(index) = index { event.prevent_default(); event.stop_propagation(); let _ = choices[index].focus(); }
         }>
-            <button type="button" class=format!("ui-dropdown-trigger {trigger_class}") node_ref=trigger aria-label=aria_label aria-haspopup=menu_role aria-expanded=move || open.get().to_string() aria-controls=content_id.clone()
+            <button type="button" class=format!("ui-dropdown-trigger {trigger_class}") node_ref=trigger aria-label=aria_label aria-haspopup=menu_role aria-expanded=move || open.get().to_string() aria-controls=content_id.clone() aria-busy=move || (open.get() && ready.is_some_and(|ready| !ready.get())).to_string()
                 disabled=move || disabled.is_some_and(|disabled| disabled.get()) on:click=move |event| { event.prevent_default(); event.stop_propagation(); let next = !open.get_untracked(); open.set(next); if next { on_open.run(()); } }>
-                <span class="ui-dropdown-label">{label.run()}</span>{(!hide_caret).then(|| view! { <Icon name=IconName::ChevronDown /> })}
+                <span class="ui-dropdown-label">{label.run()}</span>{(!hide_caret).then(|| view! { <span class="ui-dropdown-indicator"><Show when=move || open.get() && ready.is_some_and(|ready| !ready.get()) fallback=|| view! { <Icon name=IconName::ChevronDown /> }><span class="tui-spinner" role="status" aria-label="Loading options" /></Show></span> })}
             </button>
             <Show when=move || open.get()>
                 <div class="ui-dropdown-backdrop recent-backdrop" on:click=move |event| { event.stop_propagation(); event.prevent_default(); close.run(()); } />
-                <div class=format!("ui-dropdown-menu recent-menu {menu_class}") role=menu_role aria-label=aria_label id=content_id.clone() node_ref=menu on:click=move |event| { event.prevent_default(); event.stop_propagation(); }>{children()}</div>
+            </Show>
+            <Show when=move || open.get() && ready.is_none_or(|ready| ready.get())>
+                <div class=format!("ui-dropdown-menu recent-menu {menu_class}") role=menu_role aria-label=aria_label id=content_id.clone() node_ref=menu style="visibility:hidden" on:click=move |event| { event.prevent_default(); event.stop_propagation(); }>{children()}</div>
             </Show>
         </span>
     }
@@ -212,16 +216,19 @@ pub fn DropdownSelect(
     #[prop(default = "form-input")] trigger_class: &'static str,
     #[prop(default = "")] class: &'static str,
     #[prop(into, optional)] disabled: Option<Signal<bool>>,
+    #[prop(into, optional)] ready: Option<Signal<bool>>,
     #[prop(default = Callback::new(|()| ()))] on_open: Callback<()>,
     #[prop(default = false)] above: bool,
 ) -> impl IntoView {
     let open = RwSignal::new(false);
     view! {
-        <Dropdown class=class aria_label=label trigger_class=trigger_class open=open disabled=Signal::derive(move || disabled.is_some_and(|disabled| disabled.get())) on_open=on_open above=above
+        <Dropdown class=class aria_label=label trigger_class=trigger_class open=open disabled=Signal::derive(move || disabled.is_some_and(|disabled| disabled.get())) on_open=on_open above=above ready=Signal::derive(move || ready.is_none_or(|ready| ready.get()))
             label=move || view! { <span>{move || options.with(|options| options.iter().find(|option| option.value == value.get()).map_or_else(|| value.get(), |option| option.label.clone()))}</span> }>
-            <For each=move || options.get() key=|option| (option.value.clone(), option.label.clone(), option.disabled) children=move |option| {
+            <For each=move || options.get() key=|option| option.value.clone() children=move |option| {
                 let selected = option.value.clone(); let click = option.value.clone();
-                view! { <button type="button" class="ui-dropdown-item recent-item" role="menuitemradio" data-value=option.value aria-checked=move || (value.get() == selected).to_string() disabled=option.disabled on:click=move |_| { on_change.run(click.clone()); open.set(false); }>{option.label}</button> }
+                let row_value = option.value.clone();
+                let row = Signal::derive(move || options.with(|options| options.iter().find(|option| option.value == row_value).cloned()));
+                view! { <button type="button" class="ui-dropdown-item recent-item" role="menuitemradio" data-value=option.value aria-checked=move || (value.get() == selected).to_string() disabled=move || row.with(|option| option.as_ref().is_none_or(|option| option.disabled)) on:click=move |_| { on_change.run(click.clone()); open.set(false); }>{move || row.with(|option| option.as_ref().map(|option| option.label.clone()).unwrap_or_default())}</button> }
             } />
         </Dropdown>
     }

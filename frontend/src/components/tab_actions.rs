@@ -22,6 +22,7 @@ pub(super) fn TabActionItems(
     let auth = use_context::<crate::state::auth::AuthState>();
     let account = auth.map(|auth| auth.generation.get_untracked());
     view! {
+            <h3 class="ui-menu-heading">"Tab actions"</h3>
             {[
                 (TabAction::CloseOthers, "Close others"),
                 (TabAction::CloseLeft, "Close all to left"),
@@ -29,7 +30,7 @@ pub(super) fn TabActionItems(
                 (TabAction::MoveLeft, "Move left"),
                 (TabAction::MoveRight, "Move right"),
             ].into_iter().map(move |(action, label)| view! {
-                <button type="button" class="ui-dropdown-item" role="menuitem"
+                <button type="button" class="ui-dropdown-item recent-item" role="menuitem"
                     disabled=move || position.get().is_none_or(|(index, count)| match action {
                         TabAction::CloseOthers => count < 2,
                         TabAction::CloseLeft | TabAction::MoveLeft => index == 0,

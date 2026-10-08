@@ -589,7 +589,14 @@ impl WorkspaceActions {
                 if !workspace.dirty.get_untracked() && workspace.content.get_untracked() == baseline
                 {
                     match result {
-                        Ok(content) => workspace.content.set(content.into()),
+                        Ok(content) => {
+                            if workspace
+                                .content
+                                .with_untracked(|current| current.as_str() != content)
+                            {
+                                workspace.content.set(content.into());
+                            }
+                        }
                         Err(error) => ui.toast.set(Some(error.to_string())),
                     }
                 }

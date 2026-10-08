@@ -282,12 +282,14 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
             }
         });
         settle().await;
+        mounted.element("[aria-label='App menu']").focus().unwrap();
         mounted.click("[aria-label='App menu']");
         settle().await;
         mounted.element("[aria-label='About']").focus().unwrap();
         mounted.click("[aria-label='About']");
         settle().await;
         let panel = mounted.element("[role='dialog']");
+        let about_bounds = panel.get_bounding_client_rect();
         let text = panel.text_content().unwrap();
         assert!(text.contains(env!("CARGO_PKG_VERSION")));
         assert!(text.contains("Commit"));
@@ -343,6 +345,9 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
         assert!(text.contains("leptos"));
         assert!(text.contains("Copyright (c) 2022 Greg Johnston"));
         assert_eq!(notice_call(&mock, "count").as_f64(), Some(1.0));
+        let software_bounds = panel.get_bounding_client_rect();
+        assert!((software_bounds.height() - about_bounds.height()).abs() < 1.0);
+        assert!((software_bounds.y() - about_bounds.y()).abs() < 1.0);
         let body = mounted.element(".about-body");
         let notices_panel = mounted.element(".about-software");
         assert!(notices_panel.scroll_height() > notices_panel.client_height());
@@ -364,7 +369,11 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
                 .unwrap()
                 .is_none()
         );
-        assert!(active().is_same_node(Some(&mounted.element("[aria-label='App menu']"))));
+        assert!(
+            active().is_same_node(Some(&mounted.element("[aria-label='App menu']"))),
+            "focus after About: {}",
+            active().outer_html()
+        );
         mounted.state.ui.palette_open.set(true);
         settle().await;
         let search: web_sys::HtmlInputElement = mounted.element(".command-search").unchecked_into();
@@ -431,5 +440,189 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
         settle().await;
         notice_call(&mock, "restore");
         assert!(Command::About.unavailable(Default::default()).is_none());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn responsive_dialog_sizes_keep_headers_actions_and_scroll_inside_viewport() {
+    use openwebide_frontend::components::{
+        Modal,
+        ui::{DialogActions, DialogBody, DialogSize},
+    };
+    for phone in [false, true] {
+        for size in [DialogSize::Small, DialogSize::Standard, DialogSize::Wide] {
+            let mounted = mount_test(move |_| {
+                view! {
+                    <style>{include_str!("../../styles.css")}</style>
+                    <div class:phone-layout=phone style="--visible-height:360px">
+                        <Modal title="Sizing check".to_string().into() size=size on_close=Callback::new(|()|())>
+                            <DialogBody><div style="height:1200px;flex:none">"Long content"</div></DialogBody>
+                            <DialogActions><button class="btn">"Done"</button></DialogActions>
+                        </Modal>
+                    </div>
+                }
+            });
+            settle().await;
+            let panel = mounted.element(".modal").get_bounding_client_rect();
+            let width = document().document_element().unwrap().client_width() as f64;
+            let gutter = if phone || width < 800.0 {
+                8.0
+            } else if width <= 1100.0 {
+                16.0
+            } else {
+                24.0
+            };
+            assert!(panel.left() >= gutter - 1.0 && panel.right() <= width - gutter + 1.0);
+            assert!(panel.top() >= gutter - 1.0 && panel.bottom() <= 360.0 - gutter + 1.0);
+            let expected = if phone || width < 800.0 {
+                width - 2.0 * gutter
+            } else {
+                let preferred: f64 = match size {
+                    DialogSize::Small => 380.0,
+                    DialogSize::Standard => 480.0,
+                    DialogSize::Wide => 720.0,
+                };
+                preferred.min(width - 2.0 * gutter)
+            };
+            assert!(
+                (panel.width() - expected).abs() < 1.0,
+                "expected {expected}, got {}",
+                panel.width()
+            );
+            for selector in [".modal-header", ".modal-footer"] {
+                let bounds = mounted.element(selector).get_bounding_client_rect();
+                assert!(bounds.top() >= panel.top() && bounds.bottom() <= panel.bottom());
+            }
+            let body = mounted.element(".modal-body");
+            assert!(body.scroll_height() > body.client_height());
+            assert!(body.client_height() > 0);
+            assert!(
+                mounted.element(".modal").scroll_height()
+                    <= mounted.element(".modal").client_height()
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn dropdowns_wait_for_ready_content_and_preserve_option_nodes() {
+    use openwebide_frontend::components::{
+        BranchPicker,
+        dropdown::{DropdownSelect, SelectOption},
+    };
+    let options = RwSignal::new(vec![SelectOption::new("one", "One")]);
+    let mounted = mount_test(move |state| {
+        state
+            .git
+            .status
+            .set(Some(openwebide_core::git::GitRepoStatus::default()));
+        view! {
+            <style>{include_str!("../../styles.css")}</style>
+            <BranchPicker on_load=Callback::new(move |()| state.git.branches_loading.set(true)) />
+            <DropdownSelect label="Stable options" value=Signal::derive(|| "one".to_string()) options=Signal::derive(move || options.get()) on_change=Callback::new(|_|()) />
+        }
+    });
+    mounted.click("[aria-label='Git branch']");
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .query_selector(".ui-dropdown-menu")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        mounted
+            .element("[aria-label='Git branch']")
+            .get_attribute("aria-busy")
+            .as_deref(),
+        Some("true")
+    );
+    mounted
+        .state
+        .git
+        .branches
+        .set(vec![openwebide_core::git::GitBranchInfo {
+            name: "feature".into(),
+            is_current: false,
+            is_remote: false,
+            upstream: None,
+        }]);
+    mounted.state.git.branches_loading.set(false);
+    settle().await;
+    let menu = mounted.element(".ui-dropdown-menu");
+    assert!(
+        menu.get_attribute("style")
+            .unwrap()
+            .contains("visibility: visible")
+    );
+    assert!(
+        menu.query_selector("[data-value='branch:feature']")
+            .unwrap()
+            .is_some()
+    );
+    mounted.click(".ui-dropdown-backdrop");
+    settle().await;
+    mounted.click("[aria-label='Stable options']");
+    settle().await;
+    let row = mounted.element("[data-value='one']");
+    options.set(vec![SelectOption {
+        value: "one".into(),
+        label: "Renamed".into(),
+        disabled: true,
+    }]);
+    settle().await;
+    assert!(row.is_same_node(Some(&mounted.element("[data-value='one']"))));
+    assert_eq!(row.text_content().as_deref(), Some("Renamed"));
+    assert!(row.has_attribute("disabled"));
+}
+
+#[wasm_bindgen_test]
+async fn grouped_file_tab_actions_match_menu_rows_and_selected_tab_click_is_a_no_op() {
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.projects.projects.update(|items| items[0].mode = mode);
+            for path in ["a.txt", "b.txt"] {
+                state.workspace.register_editor_tab(1, path.into());
+            }
+            state.workspace.open_file.set(Some("a.txt".into()));
+            state.workspace.content.set("Source".into());
+            view! { <style>{include_str!("../../styles.css")}</style>{super::support::editor_view(state)} }
+        });
+        settle().await;
+        let revision = mounted.state.workspace.editor_read_revision.get_untracked();
+        mounted.click("[data-editor-tab='a.txt']");
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.editor_read_revision.get_untracked(),
+            revision
+        );
+        mounted
+            .element("[data-editor-tab='a.txt']")
+            .dispatch_event(&web_sys::MouseEvent::new("contextmenu").unwrap())
+            .unwrap();
+        settle().await;
+        let menu = mounted.element(".ui-dropdown-menu");
+        assert_eq!(
+            menu.query_selector(".ui-menu-heading")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("Tab actions")
+        );
+        let rows = menu.query_selector_all(".ui-dropdown-item").unwrap();
+        for index in 0..rows.length() {
+            let row = rows
+                .item(index)
+                .unwrap()
+                .dyn_into::<web_sys::Element>()
+                .unwrap();
+            assert!(row.class_list().contains("recent-item"));
+        }
     }
 }

@@ -40,13 +40,6 @@ pub fn BranchPicker(
                 .filter(|item| item.name != branch)
                 .map(|item| SelectOption::new(format!("branch:{}", item.name), item.name)),
         );
-        if git.branches_loading.get() {
-            options.push(SelectOption {
-                value: "loading".into(),
-                label: "Loading branches…".into(),
-                disabled: true,
-            });
-        }
         if git.branches_error.get().is_some() {
             options.push(SelectOption {
                 value: "error".into(),
@@ -57,6 +50,6 @@ pub fn BranchPicker(
         options.push(SelectOption::new("new", "New branch…"));
         options
     });
-    view! { <DropdownSelect label="Git branch" class="branch-picker" trigger_class="btn ghost git-branch-select" value=current options=options above=above on_open=on_load disabled=Signal::derive(move || git.branch_busy.get() || git.status.get().is_none())
+    view! { <DropdownSelect label="Git branch" class="branch-picker" trigger_class="btn ghost git-branch-select" value=current options=options above=above ready=Signal::derive(move || !git.branches_loading.get()) on_open=on_load disabled=Signal::derive(move || git.branch_busy.get() || git.status.get().is_none())
     on_change=Callback::new(move |value: String| { if value == "new" { on_new.run(()); } else if let Some(branch) = value.strip_prefix("branch:") && value != current.get_untracked() { on_select.run(branch.to_string()); } }) /> }
 }

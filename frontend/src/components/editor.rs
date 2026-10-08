@@ -3017,20 +3017,21 @@ pub fn Editor(
                             <div class="editor-header-actions">
                                 <Show when=move || open_file.get().is_some()>
                                     <super::dropdown::ActionMenu aria_label="Editor actions">
+                                        <h3 class="ui-menu-heading">"File"</h3>
                                         <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=file_actions.is_none() on:click=move |_| { if let Some((actions, path)) = file_actions.zip(open_file.get_untracked()) { actions.copy_path(&path); } }>"Copy path"</button>
                                         <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=file_actions.is_none() on:click=move |_| { if let Some((actions, path)) = file_actions.zip(open_file.get_untracked()) { actions.reveal(&path); } }>"Reveal in Files"</button>
-                                        <Show when=move || panel_actions.is_some()>
-                                            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = panel_actions { actions.move_panel.run((crate::state::layout::Panel::Editor, false)); } }>"Move panel left"</button>
-                                            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = panel_actions { actions.move_panel.run((crate::state::layout::Panel::Editor, true)); } }>"Move panel right"</button>
-                                        </Show>
+
                                         <Show when=move || can_revert.get()><button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(action) = on_discard_git_diff { action.run(()); } }>"Discard changes…"</button></Show>
                                         <Show when=move || view_mode.get() == ViewMode::Code && !read_only.get() && open_file.with(|path| path.as_ref().is_some_and(|path| !FileKind::from_path(path).is_non_text()))>
 
+                                        <h3 class="ui-menu-heading">"Indentation"</h3>
                                         <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=read_only on:click=move |_| convert_indentation.run(())>"Convert indentation"</button>
 
+                                        <h3 class="ui-menu-heading">"Navigation"</h3>
                                         <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title="Ctrl/Cmd+G" on:click=move |_| open_go.run(())>"Go to line/column"</button>
                                         <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title="Ctrl/Cmd+Shift+\\" on:click=move |_| jump_bracket.run(())>"Jump to matching bracket"</button>
 
+                                        <h3 class="ui-menu-heading">"Selection"</h3>
                                         {[
                                             ("Select next occurrence", openwebide_core::editor::SelectionCommand::NextOccurrence, "Ctrl/Cmd+D"),
                                             ("Select all occurrences", openwebide_core::editor::SelectionCommand::AllOccurrences, "Ctrl/Cmd+Shift+L"),
@@ -3054,6 +3055,7 @@ pub fn Editor(
                                             }>{label}</button>
                                         }).collect_view()}
 
+                                        <h3 class="ui-menu-heading">"Editing"</h3>
                                         {[
                                             ("Move lines up", EditorCommand::Line(openwebide_core::editor::LineCommand::MoveUp), "Alt+Up"),
                                             ("Move lines down", EditorCommand::Line(openwebide_core::editor::LineCommand::MoveDown), "Alt+Down"),
@@ -3079,6 +3081,7 @@ pub fn Editor(
                                                 if let Some(textarea) = ta.get() && !read_only.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_editor_command(editor_actions, command, &textarea); let _ = textarea.focus(); }
                                             }>{label}</button>
                                         }).collect_view()}
+                                        <h3 class="ui-menu-heading">"Folding"</h3>
                                         {[
                                             ("Fold at cursor", openwebide_core::editor::FoldCommand::Collapse { recursive: false }),
                                             ("Unfold at cursor", openwebide_core::editor::FoldCommand::Expand { recursive: false }),
@@ -3092,7 +3095,13 @@ pub fn Editor(
                                             }>{label}</button>
                                         }).collect_view()}
                                         </Show>
-                                    </super::dropdown::ActionMenu>
+
+                                        <Show when=move || panel_actions.is_some()>
+                                            <h3 class="ui-menu-heading">"Panel"</h3>
+                                            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = panel_actions { actions.move_panel.run((crate::state::layout::Panel::Editor, false)); } }>"Move panel left"</button>
+                                            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = panel_actions { actions.move_panel.run((crate::state::layout::Panel::Editor, true)); } }>"Move panel right"</button>
+                                        </Show>
+</super::dropdown::ActionMenu>
                                 </Show>
                                 <Show
                                     when=move || view_mode.get() == ViewMode::InlineDiff || view_mode.get() == ViewMode::SideBySide

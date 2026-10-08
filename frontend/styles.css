@@ -72,6 +72,7 @@
   --font-section: 14px;
   --font-dialog: 18px;
   --control-height: 32px;
+  --dialog-gutter: var(--space-6);
   --dialog-small: 380px;
   --dialog-standard: 480px;
   --dialog-wide: 720px;
@@ -1774,6 +1775,10 @@ textarea.form-input {
 /* -- settings modal -------------------------------------------------------- */
 
 .modal-overlay {
+  --dialog-available-height: calc(var(--visible-height, 100dvh) - 2 * var(--dialog-gutter) - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  box-sizing: border-box;
+  height: var(--visible-height, 100dvh);
+  padding: max(var(--dialog-gutter), env(safe-area-inset-top)) max(var(--dialog-gutter), env(safe-area-inset-right)) max(var(--dialog-gutter), env(safe-area-inset-bottom)) max(var(--dialog-gutter), env(safe-area-inset-left));
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
@@ -1787,9 +1792,12 @@ textarea.form-input {
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  width: var(--dialog-standard);
-  max-width: calc(100vw - var(--space-8));
-  max-height: min(880px, calc(var(--visible-height, 100dvh) - var(--space-8)));
+  --dialog-width: var(--dialog-standard);
+  box-sizing: border-box;
+  width: min(var(--dialog-width), 100%);
+  max-width: 100%;
+  max-height: min(880px, var(--dialog-available-height));
+  min-height: 0;
   display: flex;
   flex-direction: column;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
@@ -1818,12 +1826,13 @@ textarea.form-input {
 
 /* Confirmation dialog (Phase 10) */
 .modal-sm {
-  width: var(--dialog-small);
+  --dialog-width: var(--dialog-small);
 }
 
 .modal-footer {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid var(--border);
@@ -2896,7 +2905,7 @@ button.browser-item {
 .phone-layout input, .phone-layout textarea, .phone-layout select { font-size: 16px; }
 .phone-layout .topbar, .phone-layout .statusbar { flex-wrap: wrap; }
 .phone-layout .tab-bar { overflow-x: auto; flex-shrink: 0; }
-.phone-layout .modal { width: calc(100% - 16px); max-height: calc(100dvh - 16px); }
+
 .phone-layout .setting-row { flex-wrap: wrap; }
 .search-pane, .git-pane { display: flex; flex-direction: column; width: var(--tool-window-width, 320px); min-width: 0; min-height: 0; overflow: auto; background: var(--bg-panel); }
 .git-files { flex: none; }
@@ -2930,7 +2939,7 @@ button.browser-item {
 
 /* -- composable dialogs and forms ----------------------------------------- */
 .modal { border-radius: var(--radius-lg); }
-.modal-wide { width: var(--dialog-wide); }
+.modal-wide { --dialog-width: var(--dialog-wide); }
 .modal-header { padding: var(--space-4) var(--space-6); gap: var(--space-4); flex-shrink: 0; }
 .modal-header h2 { font-size: var(--font-dialog); line-height: 1.35; font-weight: 600; }
 .modal-description { margin: var(--space-1) 0 0; color: var(--text-muted); font-size: var(--font-caption); line-height: 1.5; }
@@ -2975,14 +2984,21 @@ button.browser-item {
 .install-app-setting { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); }
 .install-app-setting p { margin: 0; color: var(--text-muted); font-size: var(--font-caption); line-height: 1.5; }
 .phone-layout { --control-height: 44px; }
-@media (max-width: 650px) {
+@media (max-width: 799px) {
   .ui-form-grid > .ui-section-content { grid-template-columns: minmax(0, 1fr); }
   .modal-header, .modal-body, .modal-footer { padding: var(--space-4); }
   .modal .btn, .modal .form-input, .modal-header .icon-btn, .modal .mode-opt, .modal .ui-check { min-height: 44px; }
   .ui-steps { gap: var(--space-3); }
 }
-.phone-layout .modal-overlay { height: var(--visible-height, 100dvh); }
-.phone-layout .modal { max-height: calc(var(--visible-height, 100dvh) - var(--space-4)); }
+/* Dialog sizes share the app's desktop, compact and phone stops. */
+@media (max-width: 1100px) { :root { --dialog-gutter: var(--space-4); } }
+@media (max-width: 799px) {
+  :root { --dialog-gutter: var(--space-2); }
+  .modal { width: 100%; }
+}
+.phone-layout { --dialog-gutter: var(--space-2); }
+.phone-layout .modal { width: 100%; }
+.phone-layout .modal-header, .phone-layout .modal-body, .phone-layout .modal-footer { padding: var(--space-4); }
 
 /* The same disclosure and compact actions serve reasoning and tool histories. */
 .ui-icon { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; border-radius: var(--radius-sm); }
@@ -3086,6 +3102,7 @@ button.browser-item {
 /* All dropdowns use the Recent menu's surface, rows and interaction contract. */
 .ui-dropdown { display: inline-flex; min-width: 0; max-width: 100%; vertical-align: middle; }
 .ui-dropdown-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: 0; max-width: 100%; text-align: left; }
+.ui-dropdown-indicator { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: none; }
 .ui-dropdown-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ui-dropdown-menu.recent-menu { position: fixed; top: 0; bottom: auto; left: 0; min-width: 0; max-width: calc(100vw - 16px); box-sizing: border-box; border-radius: var(--radius-md); }
 .ui-dropdown-menu .recent-item, .app-menu-items .recent-item { display: flex; align-items: center; justify-content: flex-start; width: 100%; min-height: var(--control-height); gap: var(--space-2); padding: 6px 8px; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--text); font: inherit; font-size: var(--font-control); text-align: left; }
@@ -3151,7 +3168,7 @@ button.browser-item {
 .status-btn:disabled { opacity: .5; cursor: default; }
 
 .topbar-account .ui-dropdown-label { display: inline-flex; align-items: center; gap: var(--space-2); }
-@media (max-width: 800px) { .topbar-account .topbar-user { display: none; } .topbar-account .ui-dropdown-trigger > .ui-icon-glyph { display: none; } }
+@media (max-width: 800px) { .topbar-account .topbar-user { display: none; } .topbar-account .ui-dropdown-indicator { display: none; } }
 
 .editor-diff { min-height: 0; tab-size: var(--editor-tab-width, 4); }
 .inline-track, .sbs-track { width: max-content; min-width: 100%; }
@@ -3294,11 +3311,11 @@ button.browser-item {
 .about-page .about-tabs { margin: var(--space-4) 0; }
 .about-content[hidden] { display: none; }
 
-.about-modal .about-body { padding: 0; overflow: hidden; }
-.about-modal .about-content { padding: var(--space-6); min-height: 0; }
-.about-modal .about-overview { min-height: min(12rem, 30dvh); display: flex; align-items: center; justify-content: center; text-align: center; }
+.about-modal { height: min(440px, var(--dialog-available-height)); }
+.about-modal .about-body { padding: 0; overflow: hidden; flex: 1; }
+.about-modal .about-content { padding: var(--space-6); min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; }
+.about-modal .about-overview { display: flex; align-items: safe center; justify-content: safe center; text-align: center; }
 .about-overview .about-build div { display: block; margin-bottom: var(--space-3); }
-.about-modal .about-software { height: min(55dvh, 28rem); overflow-y: auto; overscroll-behavior: contain; }
 .about-modal .modal-header, .about-modal .modal-footer { flex-shrink: 0; }
 
 .slash-suggestions { max-height: 15rem; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); margin: var(--space-2) var(--space-3); }
@@ -3340,7 +3357,7 @@ button.browser-item {
 .omnibar-trigger { flex: 0 1 220px; min-width: 44px; justify-content: flex-start; color: var(--text-muted); }
 .omnibar-trigger > span:not(.ui-icon-glyph) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .omnibar-trigger kbd { margin-left: auto; font-size: var(--font-caption); white-space: nowrap; }
-.app-menu-heading { font-size: var(--font-caption); color: var(--text-muted); padding: var(--space-2); margin: 0; }
+.app-menu-heading, .ui-menu-heading { font-size: var(--font-caption); color: var(--text-muted); padding: var(--space-2); margin: 0; }
 .app-menu .ui-dropdown-menu { min-width: 280px; max-height: calc(100dvh - 64px); overflow-y: auto; }
 .app-menu-items { display: flex; flex-direction: column; }
 .app-menu-items .recent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3351,16 +3368,14 @@ button.browser-item {
 .phone-layout .app-navigation .brand-name, .phone-layout .app-navigation > .tabbar-wrap, .phone-layout .omnibar-trigger kbd { display: none; }
 .phone-layout .app-navigation .omnibar-trigger { flex: 1; }
 .phone-layout .app-navigation .topbar-account { margin-left: auto; }
-.phone-layout .app-drawer { width: min(340px, calc(100vw - 32px)); max-width: none; height: 100dvh; max-height: 100dvh; border-radius: 0; margin: 0; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); box-sizing: border-box; }
+.phone-layout .app-drawer { width: min(340px, calc(100vw - 32px)); max-width: none; height: var(--visible-height, 100dvh); max-height: var(--visible-height, 100dvh); border-radius: 0; margin: 0; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); box-sizing: border-box; }
 @media (max-width: 1100px) { .app-navigation .brand-name, .omnibar-trigger kbd { display: none; } }
 
-.omnibar-modal { width: min(680px, calc(100vw - 24px)); }
 .omnibar-entry { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; }
 .omnibar-entry-label, .omnibar-entry-detail { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .omnibar-entry-kind { flex: none; font-size: var(--font-caption); color: var(--text-muted); }
 .omnibar .command-results { max-height: min(55dvh, 500px); overflow-y: auto; }
 .omnibar .command-option { gap: var(--space-2); min-height: 44px; }
-.phone-layout .omnibar-modal { max-height: calc(100dvh - 16px); }
 .phone-layout .omnibar .command-option kbd { display: none; }
 
 .phone-layout .app-menu-items .recent-item { min-height: 44px; }

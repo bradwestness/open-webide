@@ -18,6 +18,16 @@ for what's still ahead.
   reports identical face availability and CSS metrics. Preserve refreshes for
   changed metrics, stale ownership and unknown measurement environments.
 
+- Avoid reopening the selected file tab and retain cached editor text when its background disk check is unchanged, while applying external file changes in both workspace modes.
+
+- Position dropdowns before showing them, retain option rows through metadata updates, and show branch menus only after discovery settles, with loading feedback in the trigger.
+
+- Add shared Expand all/Collapse all tree actions, including cancellation when collapsing or changing workspaces and bounded discovery.
+
+- Match tab context actions to shared menu rows; group mixed file, editor, session, Output and panel actions under headings matching the app menu.
+
+- Apply shared responsive sizing and viewport margins to dialogs, keeping headers and actions visible as content scrolls. Keep About at the same height across both tabs, with independently scrolling software notices; restore focus to the app menu after a phone drawer opens another dialog.
+
 - Show the active filename, project and conversation in the browser tab and app window title, updating when they change.
 
 - Keep the app-menu logo at its compact size and align the brand label in desktop and phone navigation.

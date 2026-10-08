@@ -558,6 +558,7 @@ pub fn TerminalPane(bridge: BridgeConn, #[prop(into)] on_close: Callback<()>) ->
                 </div>
                 <button type="button" class="icon-btn ui-icon" title="Command input" aria-label="Command input" aria-expanded=move || manual_input.get().to_string() aria-controls="terminal-command-input" on:click=move |_| { if manual_input.get() { manual_input.set(false); } else { reveal_input(); } }><super::ui::Icon name=super::ui::IconName::Terminal /></button>
                 <super::dropdown::ActionMenu aria_label="Terminal actions">
+                    <h3 class="ui-menu-heading">"Output"</h3>
                     <button role="menuitem" class="ui-dropdown-item recent-item" on:click=move |_| {
                         let text = output_ref.get_untracked().map(|element| element.inner_text()).unwrap_or_default();
                         let epoch = auth.generation.get_untracked();
@@ -567,6 +568,14 @@ pub fn TerminalPane(bridge: BridgeConn, #[prop(into)] on_close: Callback<()>) ->
                                 && let Some(ui) = ui { ui.toast.try_set(Some(message)); }
                         });
                     }><super::ui::Icon name=super::ui::IconName::Copy />"Copy output"</button>
+                    <button role="menuitem"
+                        class="ui-dropdown-item recent-item term-btn"
+                        title="Clear output (Ctrl+L)"
+                        on:click=move |_| clear_output()
+                    >
+                        <super::ui::Icon name=super::ui::IconName::Eraser />"Clear"
+                    </button>
+                    <h3 class="ui-menu-heading">"Shell"</h3>
                     <button role="menuitem"
                         class="ui-dropdown-item recent-item term-btn"
                         title="New interactive shell"
@@ -581,13 +590,7 @@ pub fn TerminalPane(bridge: BridgeConn, #[prop(into)] on_close: Callback<()>) ->
                     >
                         <super::ui::Icon name=super::ui::IconName::Square />"Kill"
                     </button>
-                    <button role="menuitem"
-                        class="ui-dropdown-item recent-item term-btn"
-                        title="Clear output (Ctrl+L)"
-                        on:click=move |_| clear_output()
-                    >
-                        <super::ui::Icon name=super::ui::IconName::Eraser />"Clear"
-                    </button>
+
                     <button role="menuitem"
                         class="ui-dropdown-item recent-item term-close-btn"
                         title="Close terminal (Ctrl+`)"

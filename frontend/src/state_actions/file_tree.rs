@@ -59,6 +59,8 @@ struct Scope {
 #[derive(Clone, Copy)]
 pub struct FileTreeActions {
     pub busy: RwSignal<bool>,
+    pub expanding: RwSignal<bool>,
+    expansion_generation: StoredValue<u64>,
     pub reveal_target: RwSignal<Option<String>>,
     pub epoch: Memo<u64>,
     pub send_prompt: RwSignal<Option<Callback<String>>>,
@@ -89,11 +91,15 @@ impl FileTreeActions {
         let git = use_context::<ProjectGit>();
         let epoch = super::workspace::project_epoch(projects, auth);
         let busy = RwSignal::new(false);
+        let expanding = RwSignal::new(false);
+        let expansion_generation = StoredValue::new(0_u64);
         let previous = StoredValue::new(epoch.get_untracked());
         Effect::new(move |_| {
             let next = epoch.get();
             if previous.get_value() != next {
                 busy.set(false);
+                expanding.set(false);
+                expansion_generation.update_value(|generation| *generation += 1);
             }
             previous.set_value(next);
         });
@@ -105,6 +111,8 @@ impl FileTreeActions {
         Self {
             reveal_target,
             busy,
+            expanding,
+            expansion_generation,
             epoch,
             send_prompt: RwSignal::new(None),
             projects,
@@ -120,6 +128,120 @@ impl FileTreeActions {
             open,
             refresh_git,
         }
+    }
+    pub fn collapse_all(self) {
+        self.expansion_generation
+            .update_value(|generation| *generation += 1);
+        self.expanding.set(false);
+        self.workspace.expanded.set(Default::default());
+    }
+    pub fn expand_all(self) {
+        let Some(scope) = self.scope() else {
+            return;
+        };
+        if self.expanding.get_untracked() {
+            return;
+        }
+        let Some(ws) = self.workspace_for.run(scope.project) else {
+            self.ui.toast.set(Some(
+                "Restore folder access before expanding the tree".into(),
+            ));
+            return;
+        };
+        self.expansion_generation
+            .update_value(|generation| *generation += 1);
+        let generation = self.expansion_generation.get_value();
+        let include_hidden = self
+            .layout_state
+            .is_some_and(|layout| layout.preferences.get_untracked().include_hidden);
+        self.expanding.set(true);
+        spawn_local(async move {
+            let current = || {
+                self.current(scope) && self.expansion_generation.try_get_value() == Some(generation)
+            };
+            let mut pending = std::collections::VecDeque::from([(String::new(), 0_u32)]);
+            let mut visited = std::collections::HashSet::new();
+            let mut limited = false;
+            while let Some((dir, depth)) = pending.pop_front() {
+                if !current() {
+                    return;
+                }
+                if !visited.insert(dir.clone()) {
+                    continue;
+                }
+                if visited.len() > 512 {
+                    limited = true;
+                    break;
+                }
+                let listing = match futures::future::select(
+                    Box::pin(ws.list(&dir)),
+                    Box::pin(crate::util::sleep_ms(25_000)),
+                )
+                .await
+                {
+                    futures::future::Either::Left((listing, _)) => listing,
+                    futures::future::Either::Right(_) => {
+                        if current() {
+                            self.expanding.set(false);
+                            self.ui
+                                .toast
+                                .set(Some("Expanding folders timed out; try again".into()));
+                        }
+                        return;
+                    }
+                };
+                match listing {
+                    Ok(entries) => {
+                        if !current() {
+                            return;
+                        }
+                        for entry in &entries {
+                            if entry.is_dir
+                                && (include_hidden || !entry.name.starts_with('.'))
+                                && entry_path(&entry.path).is_ok()
+                                && parent(&entry.path) == dir
+                            {
+                                if depth < 64 && visited.len() + pending.len() < 512 {
+                                    pending.push_back((entry.path.clone(), depth + 1));
+                                } else {
+                                    limited = true;
+                                }
+                            }
+                        }
+                        self.workspace.entries.update(|map| {
+                            map.insert(dir.clone(), entries);
+                        });
+                        self.workspace.expanded.update(|expanded| {
+                            expanded.insert(dir);
+                        });
+                    }
+                    Err(error) => {
+                        if !current() {
+                            return;
+                        }
+                        if error.needs_folder_access() {
+                            self.projects.needs_grant.update(|ids| {
+                                ids.insert(scope.project);
+                            });
+                        }
+                        self.ui
+                            .toast
+                            .set(Some(format!("Could not expand all folders: {error}")));
+                        self.expanding.set(false);
+                        return;
+                    }
+                }
+                if visited.len().is_multiple_of(16) {
+                    crate::util::yield_task().await;
+                }
+            }
+            if current() {
+                self.expanding.set(false);
+                if limited {
+                    self.ui.toast.set(Some("Expanded up to 512 folders and 64 levels; expand remaining folders individually".into()));
+                }
+            }
+        });
     }
     pub fn reveal(self, path: &str) {
         let Some(scope) = self.scope() else {
