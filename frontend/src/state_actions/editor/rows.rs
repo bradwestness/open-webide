@@ -204,20 +204,26 @@ fn styled_paint_runs(body: &str, row: &PaintRow<'_>, max_runs: usize) -> Option<
             &token.text
         };
         if text.len() > 512 {
-            runs.extend(visual_text_run_ranges(text).map(|run| {
+            if runs.len() >= max_runs {
+                return None;
+            }
+            for run in visual_text_run_ranges(text) {
                 #[cfg(feature = "test-support")]
                 PAINT_RUN_SEGMENT_BYTES.set(PAINT_RUN_SEGMENT_BYTES.get() + run.len());
-                offset + run.end
-            }));
+                if runs.len() >= max_runs {
+                    return None;
+                }
+                runs.push(offset + run.end);
+            }
         } else if token.kind != openwebide_core::highlight::TokenKind::Plain
             || row.tokens.get(at + 1).is_none_or(|next| {
                 next.kind != openwebide_core::highlight::TokenKind::Plain || next.text.len() > 512
             })
         {
+            if runs.len() >= max_runs {
+                return None;
+            }
             runs.push(offset + text.len());
-        }
-        if runs.len() > max_runs {
-            return None;
         }
         offset += text.len();
     }
@@ -925,6 +931,106 @@ impl EditorActions {
 mod tests {
     use super::*;
     use openwebide_core::highlight::TokenKind;
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn styled_run_budget_stops_before_segmenting_unused_token_suffix() {
+        let tokens = [Token {
+            kind: TokenKind::String,
+            text: "a".repeat(openwebide_core::editor::MAX_EDITOR_LINE_BYTES),
+        }];
+        let row = PaintRow {
+            tokens: &tokens,
+            plain: None,
+            guide: 0,
+            normalize_cr: false,
+            ending: false,
+        };
+        for budget in [0, 1, 4, 16, 64] {
+            take_paint_run_segment_bytes();
+            assert!(styled_paint_runs(&tokens[0].text, &row, budget).is_none());
+            let scanned = take_paint_run_segment_bytes();
+            assert!(
+                scanned <= (budget + 1) * 512,
+                "budget {budget}: scanned {scanned} bytes"
+            );
+        }
+        let mut nearly_full = vec![
+            Token {
+                kind: TokenKind::Keyword,
+                text: "a".into()
+            };
+            MAX_RETAINED_PAINT_RUNS - 2
+        ];
+        nearly_full.push(Token {
+            kind: TokenKind::String,
+            text: "a".repeat(70_000),
+        });
+        let full = nearly_full
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<String>();
+        assert!(full.len() < openwebide_core::editor::MAX_EDITOR_LINE_BYTES);
+        let limited = PaintRow {
+            tokens: &nearly_full,
+            ..row
+        };
+        take_paint_run_segment_bytes();
+        assert!(styled_paint_runs(&full, &limited, MAX_RETAINED_PAINT_RUNS).is_none());
+        assert!(
+            take_paint_run_segment_bytes() <= 3 * 512,
+            "the production cap stops inside the final long token"
+        );
+        let prefix = Token {
+            kind: TokenKind::Keyword,
+            text: "let".into(),
+        };
+        let combined = [prefix, tokens[0].clone()];
+        let full = combined
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<String>();
+        let row = PaintRow {
+            tokens: &combined,
+            ..row
+        };
+        take_paint_run_segment_bytes();
+        assert!(styled_paint_runs(&full, &row, 1).is_none());
+        assert_eq!(
+            take_paint_run_segment_bytes(),
+            0,
+            "an exhausted token budget does not begin long-token segmentation"
+        );
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn bounded_styled_runs_preserve_complete_grapheme_and_crlf_boundaries() {
+        for suffix in ["", "\r"] {
+            let body = "word 文😀e\u{301} ".repeat(1000);
+            let tokens = [Token {
+                kind: TokenKind::String,
+                text: body.clone() + suffix,
+            }];
+            let row = PaintRow {
+                tokens: &tokens,
+                plain: None,
+                guide: 0,
+                normalize_cr: !suffix.is_empty(),
+                ending: !suffix.is_empty(),
+            };
+            let expected = openwebide_core::editor::visual_text_run_ranges(&body)
+                .map(|run| run.end)
+                .collect::<Vec<_>>();
+            let runs = styled_paint_runs(&body, &row, expected.len()).unwrap();
+            assert_eq!(runs.as_ref(), expected);
+            assert!(styled_paint_runs(&body, &row, expected.len() - 1).is_none());
+            assert_eq!(
+                styled_paint_runs(&body, &row, usize::MAX).unwrap().as_ref(),
+                expected
+            );
+        }
+    }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]

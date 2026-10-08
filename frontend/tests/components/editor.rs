@@ -12601,6 +12601,10 @@ async fn styled_horizontal_slices_resume_original_runs_without_scanning_token_pr
         actions
             .paste(" ", openwebide_core::editor::Selection::caret(0))
             .unwrap();
+        wasm_bindgen_test::console_log!(
+            "near-limit styled source transaction {mode:?}: {} ms",
+            web_sys::window().unwrap().performance().unwrap().now() - started
+        );
         let expected = " ".to_string() + &original;
         assert_eq!(actions.source(), expected);
         super::support::wait_until_with_timeout("near-limit styled beginning edit", 30_000, || {

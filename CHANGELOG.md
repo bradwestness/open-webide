@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Stop capped styled editor run-table construction as soon as the metadata budget
+  is exceeded, avoiding unused long-token suffix scanning and allocation. Preserve
+  complete run boundaries, Unicode/CRLF handling and complete-layout fallback.
+
 - Use bounded startup input when restoring a caret in an eligible later long row,
   retaining its source selection, saved scroll and exact full-document geometry.
   Verify actual near-1-MiB Rust String highlighting through load, cached/uncached
