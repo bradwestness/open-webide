@@ -154,6 +154,15 @@ pub trait Backend {
         project: i64,
         record: &'a openwebide_core::editor::EditorRecoveryRecord,
     ) -> LocalBoxFuture<'a, Result<i64, RecoveryError>>;
+    fn push_config(&self) -> LocalBoxFuture<'_, Result<openwebide_core::push::PushConfig, String>> {
+        Box::pin(async { Err("Background notifications are unavailable".into()) })
+    }
+    fn save_push_subscription<'a>(
+        &'a self,
+        _subscription: &'a openwebide_core::push::PushSubscription,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("Background notifications are unavailable".into()) })
+    }
     fn get_settings<'a>(
         &'a self,
     ) -> LocalBoxFuture<'a, Result<std::collections::BTreeMap<String, String>, String>>;
@@ -741,6 +750,15 @@ impl Backend for BackendApi {
         record: &'a openwebide_core::editor::EditorRecoveryRecord,
     ) -> LocalBoxFuture<'a, Result<i64, RecoveryError>> {
         Box::pin(BackendApi::save_editor_recovery(self, project, record))
+    }
+    fn push_config(&self) -> LocalBoxFuture<'_, Result<openwebide_core::push::PushConfig, String>> {
+        Box::pin(BackendApi::push_config(self))
+    }
+    fn save_push_subscription<'a>(
+        &'a self,
+        subscription: &'a openwebide_core::push::PushSubscription,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::save_push_subscription(self, subscription))
     }
     fn get_settings<'a>(
         &'a self,

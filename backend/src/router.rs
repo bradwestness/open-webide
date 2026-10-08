@@ -28,6 +28,12 @@ enum Route {
     UpdateConnection,
     DeleteConnection,
     SetToolStreamUnsupported,
+    PushConfig,
+    PushSubscribe,
+    PushStatus,
+    PushUnsubscribe,
+    PushNotify,
+    PushDispatch,
     GetSettings,
     SetSetting,
     ListSystemPrompts,
@@ -138,6 +144,12 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("POST", ["connections", _, "tool-stream-unsupported"]) => {
             Some(Route::SetToolStreamUnsupported)
         }
+        ("GET", ["push", "config"]) => Some(Route::PushConfig),
+        ("POST", ["push", "subscriptions"]) => Some(Route::PushSubscribe),
+        ("POST", ["push", "subscriptions", "status"]) => Some(Route::PushStatus),
+        ("DELETE", ["push", "subscriptions"]) => Some(Route::PushUnsubscribe),
+        ("POST", ["push", "dispatch"]) => Some(Route::PushDispatch),
+        ("POST", ["sessions", id, "notifications"]) if numeric_id(id) => Some(Route::PushNotify),
         ("GET", ["settings"]) => Some(Route::GetSettings),
         ("PUT", ["settings"]) => Some(Route::SetSetting),
         ("GET", ["system-prompts"]) => Some(Route::ListSystemPrompts),
@@ -277,6 +289,19 @@ pub async fn route(req: Request) -> JsonResp {
             return with_cors(error.into_response(), origin);
         }
     };
+    if route == Some(Route::PushDispatch) {
+        let result = match crate::auth::require_bridge_service(&state, req.headers()).await {
+            Ok(()) => api::push::dispatch(&state).await,
+            Err(error) => Err(error),
+        };
+        return match result {
+            Ok(response) => response,
+            Err(error) => {
+                error.log_for_route(method.as_str(), &path);
+                error.into_response()
+            }
+        };
+    }
     let user = match authenticate_route(&state, req.headers(), route, &path).await {
         Ok(user) => user,
         Err(e) => {
@@ -340,6 +365,15 @@ pub async fn route(req: Request) -> JsonResp {
         (Some(Route::SaveEditorRecovery), Some(user)) => {
             api::editor_recovery::save(req, &state, &path, user).await
         }
+        (Some(Route::PushConfig), Some(_)) => api::push::config(&state).await,
+        (Some(Route::PushSubscribe), Some(user)) => api::push::subscribe(req, &state, user).await,
+        (Some(Route::PushStatus), Some(user)) => {
+            api::push::subscription(req, &state, user, false).await
+        }
+        (Some(Route::PushUnsubscribe), Some(user)) => {
+            api::push::subscription(req, &state, user, true).await
+        }
+        (Some(Route::PushNotify), Some(user)) => api::push::notify(req, &state, &path, user).await,
         (Some(Route::GetSettings), Some(user)) => api::settings::get_settings(&state, user).await,
         (Some(Route::SetSetting), Some(user)) => {
             api::settings::set_setting(req, &state, user).await

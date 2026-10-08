@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add optional Web Push for finished remote and projectless runs and pending approvals, including child agents. Settings enables each browser subscription; notifications identify the project/session and open that chat. Persist server VAPID keys, account-owned subscriptions and a bounded retry queue, discard expired/resolved alerts, and suppress notifications for the attended chat. Local projects retain app-open notifications.
+
 - Use compact file-tree rows automatically outside phone mode and larger touch rows in phone mode; remove the density menu option and ignore its legacy saved setting.
 - Keep pointer focus from scrolling file tabs, retain keyboard focus navigation, and skip redundant project-tab list and selection updates.
 
@@ -598,7 +600,7 @@ for what's still ahead.
 
 - Add `todo_write` for an agent-maintained checklist pinned above the composer in local, remote and projectless chats. Show pending, in-progress and completed items with progress counts and collapsible themed scrolling. Persist prompt-anchored revisions in the database, restore the correct plan after reload, rewind and Fork, and include the latest checklist in subsequent model context. Reject stale prompt updates, preserve the plan when tool persistence or loading fails, and offer Retry for failed loads. Share tool policy and execution above thin browser, Spin and bridge persistence adapters.
 
-- Add opt-in browser notifications for finished runs and approval requests in local, remote and projectless chats. Notify for chats that are out of focus, collapsed or inactive; clicking opens the owning project and session. Save the preference per user in the database, request browser permission only from Settings, explain unsupported/blocked browsers, and keep approvals available in the app. Suppress duplicate/replayed events and automatic approvals; guard pending permission responses and notification clicks across account changes, and close notifications on logout. Keep the app open to receive notifications; Web Push remains planned separately.
+- Add opt-in browser notifications for finished runs and approval requests in local, remote and projectless chats. Notify for chats that are out of focus, collapsed or inactive; clicking opens the owning project and session. Save the preference per user in the database, request browser permission only from Settings, explain unsupported/blocked browsers, and keep approvals available in the app. Suppress duplicate/replayed events and automatic approvals; guard pending permission responses and notification clicks across account changes, and close notifications on logout. Local projects require the app to stay open; remote and projectless chats also support Web Push.
 
 - Queue prompts while a run is active, edit/remove pending prompts, pause or continue the queue, and steer by saving priority guidance before stopping the current run. Persist captured attachments and queue revisions in the database; consume each prompt atomically when its user message is saved, keep failed sends queued, and restore pending queues paused after reload or session changes. Add Edit and Fork on earlier prompts: copy the conversation prefix into a new branch while preserving the original session, images, editor context, model selection and approval mode. Share these workflows across local, remote and projectless chats; branching leaves project files unchanged.
 

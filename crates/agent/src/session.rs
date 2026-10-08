@@ -198,6 +198,12 @@ pub trait RunPersistence: Send + Sync {
     ) -> impl Future<Output = Result<(), String>> + Send {
         std::future::ready(Err("Child task persistence unavailable".into()))
     }
+    fn notify(
+        &self,
+        _event: &openwebide_core::push::RunNotification,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        async { Ok(()) }
+    }
     fn prepare_permission(&self, _id: &str) {}
     fn finish(&self) -> impl Future<Output = ()> + Send {
         async {}
@@ -237,6 +243,12 @@ impl<P: RunPersistence> RunRecorder<P> {
             let terminal = recorded.events.pop();
             recorded.events.append(&mut timing_events);
             recorded.events.extend(terminal);
+        }
+        for event in &recorded.events {
+            if let Some(notification) = openwebide_core::push::RunNotification::from_event(event) {
+                // Notifications are optional side effects; delivery failures never replace a run outcome.
+                let _ = self.persistence.notify(&notification).await;
+            }
         }
         recorded
     }
@@ -884,8 +896,16 @@ mod tests {
         clock: std::sync::atomic::AtomicU64,
         saved: std::sync::Mutex<Vec<(String, openwebide_core::ToolTiming)>>,
         fail: AtomicBool,
+        notifications: std::sync::Mutex<Vec<openwebide_core::push::RunNotification>>,
     }
     impl RunPersistence for TimedPersistence {
+        async fn notify(
+            &self,
+            event: &openwebide_core::push::RunNotification,
+        ) -> Result<(), String> {
+            self.notifications.lock().unwrap().push(event.clone());
+            Err("push unavailable".into())
+        }
         fn now(&self) -> i64 {
             0
         }
@@ -954,6 +974,12 @@ mod tests {
                 })
                 .await;
             assert_eq!(permission.events.len(), 1);
+            assert_eq!(
+                *recorder.persistence.notifications.lock().unwrap(),
+                vec![openwebide_core::push::RunNotification::Approval {
+                    tool_call_id: "t".into()
+                }]
+            );
             assert!(recorder.persistence.saved.lock().unwrap().is_empty());
             recorder.persistence.clock.store(5000, Ordering::Relaxed);
             let started = recorder.record(tool_call("t")).await;
@@ -985,6 +1011,9 @@ mod tests {
                 matches!(stopped.events.as_slice(), [RunEvent::ToolTiming { timing, .. }, RunEvent::Cancelled] if timing.finished && timing.elapsed_ms == 500)
             );
             assert!(stopped.terminal);
+            let failed = recorder.record(AgentEvent::FinalText("done".into())).await;
+            assert!(matches!(failed.events.last(), Some(RunEvent::Error { .. })));
+            assert_eq!(recorder.persistence.notifications.lock().unwrap().len(), 1);
         });
     }
     #[test]

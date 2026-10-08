@@ -38,9 +38,11 @@ pub struct RunNotifications {
     seen: StoredValue<HashSet<(i64, String)>>,
     account: StoredValue<u64>,
     pub configuring: RwSignal<bool>,
+    pub push_ready: RwSignal<bool>,
     pub permission: RwSignal<NotificationPermission>,
     pub revision: StoredValue<u64>,
     open: Callback<i64>,
+    projects: Option<crate::state::projects::ProjectsState>,
 }
 
 impl RunNotifications {
@@ -51,8 +53,10 @@ impl RunNotifications {
             seen: StoredValue::new(HashSet::new()),
             account: StoredValue::new(auth.generation.get_untracked()),
             configuring: RwSignal::new(false),
+            push_ready: RwSignal::new(false),
             revision: StoredValue::new(0),
             open,
+            projects: use_context::<crate::state::projects::ProjectsState>(),
         };
         #[cfg(target_arch = "wasm32")]
         Effect::new(move |_| {
@@ -85,8 +89,10 @@ impl RunNotifications {
     }
 
     pub fn refresh_permission(self) {
-        self.permission
-            .set(self.host.with_value(|host| host.permission()));
+        let permission = self.host.with_value(|host| host.permission());
+        if self.permission.get_untracked() != permission {
+            self.permission.set(permission);
+        }
     }
 
     pub fn host(self) -> Rc<dyn NotificationHost> {
@@ -151,6 +157,23 @@ impl RunNotifications {
         if !fresh || !settings.browser_notifications.get_untracked() {
             return;
         }
+        // Browser capability boundary: local runs only exist while this app is open.
+        if self.push_ready.get_untracked() {
+            let projects = self.projects;
+            let local = chat
+                .sessions
+                .with_untracked(|sessions| {
+                    sessions
+                        .iter()
+                        .find(|item| item.id == session)
+                        .and_then(|item| item.project_id)
+                })
+                .and_then(|id| projects.and_then(|projects| projects.project(id)))
+                .is_some_and(|project| project.mode == openwebide_core::WorkspaceMode::Local);
+            if !local {
+                return;
+            }
+        }
         self.refresh_permission();
         if self.permission.get_untracked() != NotificationPermission::Granted {
             return;
@@ -161,6 +184,19 @@ impl RunNotifications {
         {
             return;
         }
+        let project = chat
+            .sessions
+            .with_untracked(|sessions| {
+                sessions
+                    .iter()
+                    .find(|item| item.id == session)
+                    .and_then(|item| item.project_id)
+            })
+            .and_then(|id| self.projects.and_then(|projects| projects.project(id)));
+        let title = project.as_ref().map_or_else(
+            || title.to_string(),
+            |project| format!("{title} · {}", project.name),
+        );
         let open = Rc::new(move || {
             if auth.generation.try_get_untracked() == Some(generation)
                 && chat
@@ -173,7 +209,7 @@ impl RunNotifications {
         });
         if let Err(error) = self.host.with_value(|host| {
             host.show(
-                title,
+                &title,
                 &format!("{name} {action}."),
                 &format!("openwebide-{session}-{key}"),
                 open,

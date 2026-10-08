@@ -238,6 +238,20 @@ pub async fn run_server_until(
         }
     });
 
+    let push_backend = crate::runs::backend_client::BackendClient::new(
+        config.backend_url.clone(),
+        config.secret.clone(),
+        crate::runs::http_client::ReqwestHttpClient::default(),
+    );
+    let push_dispatcher = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            // The persisted queue handles retry policy; the bridge only supplies a periodic wakeup.
+            let _ = push_backend.dispatch_push().await;
+        }
+    });
     let runs = config.runs.clone();
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let accept = tokio::spawn(run_accept_loop(
@@ -250,6 +264,7 @@ pub async fn run_server_until(
     shutdown.await;
 
     reaper.abort();
+    push_dispatcher.abort();
     let _ = stop.send(());
     let _ = accept.await;
     runs.shutdown().await;

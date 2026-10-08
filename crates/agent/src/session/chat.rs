@@ -14,6 +14,13 @@ use openwebide_llm::{ProviderError, StreamChunk};
 use std::pin::Pin;
 
 pub trait ChatPersistence: Send + Sync {
+    fn notify(
+        &self,
+        _event: &openwebide_core::push::RunNotification,
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send {
+        async { Ok(()) }
+    }
+
     fn save_reply(
         &self,
         content: &str,
@@ -21,6 +28,10 @@ pub trait ChatPersistence: Send + Sync {
     ) -> impl std::future::Future<Output = Result<openwebide_core::ChatMessage, String>> + Send;
 }
 impl<P: RunPersistence> ChatPersistence for P {
+    async fn notify(&self, event: &openwebide_core::push::RunNotification) -> Result<(), String> {
+        RunPersistence::notify(self, event).await
+    }
+
     async fn save_reply(
         &self,
         content: &str,
@@ -128,6 +139,11 @@ pub fn chat_events<'a, P: ChatPersistence + 'a, C: CancelCheck + Sync + 'a>(
                                 message: format!("failed to save reply: {error}"),
                             },
                         };
+                        if let Some(notification) =
+                            openwebide_core::push::RunNotification::from_event(&event)
+                        {
+                            let _ = state.persistence.notify(&notification).await;
+                        }
                         return Some((event, state));
                     }
                     Some(Err(error)) => {

@@ -297,11 +297,6 @@ after the first account):
   bridge token, so one user can't list, attach to or kill another's shells;
   and the bridge's acting-user header limited to the connection's own user.
 
-### Web Push (optional)
-
-- Notify installed apps when a run finishes or needs approval, with user-scoped
-  subscriptions and permission controls. This is separate from PWA installation.
-
 ### Sandboxed tool execution (optional)
 
 The VFS already confines the file tools (`read_file`, `write_file`,

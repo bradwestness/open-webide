@@ -4,6 +4,7 @@ pub mod goal;
 pub use goal::{Goal, GoalCommand, GoalStatus};
 pub mod chat_queue;
 pub mod prompt;
+pub mod push;
 pub use chat_queue::{QueuedPrompt, QueuedPromptKey};
 pub use prompt::{PromptContent, PromptImage};
 pub mod context;

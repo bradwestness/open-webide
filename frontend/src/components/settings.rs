@@ -99,6 +99,7 @@ pub fn Settings(
                         NotificationPermission::Unsupported => "Notifications need a supported browser on HTTPS or localhost. Chat approvals remain available in the app.",
                         NotificationPermission::Denied => "Notifications are blocked in this browser's site settings.",
                         NotificationPermission::Default if settings.browser_notifications.get() => "Enable on this browser to receive run and approval notifications.",
+                        _ if settings.browser_notifications.get() && notifications.push_ready.get() => "Background notifications are enabled for remote projects and project-less chats. Local projects require this app to stay open.",
                         _ if settings.browser_notifications.get() => "Notify when a run finishes or needs approval while its chat is out of focus. Keep this app open to receive notifications.",
                         _ => "Enable notifications for finished runs and approval requests. Browser permission is required on each device.",
                     }

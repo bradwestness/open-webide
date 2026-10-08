@@ -109,6 +109,18 @@ impl BackendApi {
         }
     }
 
+    pub async fn push_config(&self) -> Result<openwebide_core::push::PushConfig, String> {
+        self.get("/push/config").await
+    }
+    pub async fn save_push_subscription(
+        &self,
+        subscription: &openwebide_core::push::PushSubscription,
+    ) -> Result<(), String> {
+        let _: openwebide_core::push::PushStatus =
+            self.post("/push/subscriptions", subscription).await?;
+        Ok(())
+    }
+
     // -- auth --------------------------------------------------------------
 
     /// Register a new local account (only the first account may register).

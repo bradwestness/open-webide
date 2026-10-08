@@ -64,9 +64,9 @@ test('navigation keeps the installed build coherent across server deployments', 
 function installation(secure, installed = false) {
   const handlers = {};
   const registrations = [];
-  const window = {isSecureContext: secure, addEventListener: (name, action) => {const previous = handlers[name]; handlers[name] = event => {previous?.(event); action(event);};}, dispatchEvent: event => handlers[event.type]?.(event)};
+  const window = {location: {href: 'https://ide.test/'}, isSecureContext: secure, addEventListener: (name, action) => {const previous = handlers[name]; handlers[name] = event => {previous?.(event); action(event);};}, dispatchEvent: event => handlers[event.type]?.(event)};
   const navigator = {serviceWorker: {register: async (...args) => registrations.push(args)}};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'pwa.js'), 'utf8'), {window, navigator, matchMedia: () => ({matches: installed, addEventListener: () => {}}), Event, console, MutationObserver: class {observe() {}}, document: {documentElement: {}, querySelector: () => null}, getComputedStyle: () => ({getPropertyValue: () => '#1e1f24'})});
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'pwa.js'), 'utf8'), {window, navigator, URL, matchMedia: () => ({matches: installed, addEventListener: () => {}}), Event, console, MutationObserver: class {observe() {}}, document: {documentElement: {}, querySelector: () => null}, getComputedStyle: () => ({getPropertyValue: () => '#1e1f24'})});
   return {window, handlers, registrations};
 }
 
@@ -150,4 +150,105 @@ test('About and notices remain available on offline navigation without API reque
   const host = worker(async () => {throw Error('offline');});
   assert.match(await (await host.request('https://ide.test/about.html', 'GET', 'navigate')).text(), /license notices/);
   assert.match(fs.readFileSync(path.join(__dirname, 'offline.html'), 'utf8'), /href="\/about.html"/);
+});
+
+function pushWorker({user = 7, enabled = true, clients = [], offline = false} = {}) {
+  const host = worker(async url => {
+    if (offline) throw Error('offline');
+    return new Response(JSON.stringify(url === '/api/auth/me' ? {user: {id: user}} : {browser_notifications: String(enabled)}));
+  });
+  // Recreate with browser primitives so the worker exercises its real handlers.
+  const shown = [], opened = [], handlers = {};
+  const context = {BUILD_ID: 'push', SHELL_FILES: [], URL, Request, MessageChannel, setTimeout, clearTimeout,
+    fetch: async (url, options) => {assert.equal(options.headers['x-openwebide'], '1'); if (offline) throw Error('offline'); return new Response(JSON.stringify(url === '/api/auth/me' ? {user: {id: user}} : {browser_notifications: String(enabled)}));},
+    self: {location: {origin: 'https://ide.test'}, clients: {matchAll: async () => clients, openWindow: async url => opened.push(url)}, registration: {showNotification: async (...args) => shown.push(args)}, addEventListener: (name, action) => {handlers[name] = action;}}};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8'), context);
+  const data = {title: 'Run finished · Project', body: 'Session', tag: 'openwebide-11-done:20', user_id: 7, session_id: 11};
+  async function event(type, value = data) {
+    let task;
+    handlers[type]({data: {json: () => value}, notification: {data: value, close() {}}, waitUntil: promise => {task = promise;}});
+    await task;
+  }
+  return {shown, opened, event, data, host};
+}
+function pushClient(context) {
+  const client = {messages: [], focused: false, focus: async () => {client.focused = true;}, postMessage: (message, ports) => {
+    if (ports) {ports[0].postMessage(context); ports[0].close();}
+    else client.messages.push(message);
+  }};
+  return client;
+}
+test('push checks account and opt-out before showing or opening a notification', async () => {
+  for (const options of [{user: 8}, {enabled: false}, {offline: true}]) {
+    const host = pushWorker(options);
+    await host.event('push'); await host.event('notificationclick');
+    assert.equal(host.shown.length, 0); assert.equal(host.opened.length, 0);
+  }
+  const host = pushWorker();
+  await host.event('push');
+  assert.equal(host.shown[0][0], 'Run finished · Project');
+  assert.equal(host.shown[0][1].body, 'Session');
+  await host.event('notificationclick');
+  assert.equal(host.opened[0], '/?notification_user=7&notification_session=11');
+});
+test('attended chat suppresses push; a hidden or different chat still receives it', async () => {
+  for (const context of [{user_id: 7, session_id: 11, chat_visible: true, focused: true}, {user_id: 7, session_id: 10, chat_visible: true, focused: true}, {user_id: 7, session_id: 11, chat_visible: true, focused: false}]) {
+    const client = pushClient(context), host = pushWorker({clients: [client]});
+    await host.event('push');
+    assert.equal(host.shown.length, context.session_id === 11 && context.focused ? 0 : 1);
+    await host.event('notificationclick');
+    assert.equal(client.focused, true);
+    assert.equal(client.messages[0].session_id, 11);
+    assert.equal(host.opened.length, 0);
+  }
+});
+test('malformed notification payloads cannot display or navigate', async () => {
+  const host = pushWorker();
+  for (const data of [null, {...host.data, user_id: -1}, {...host.data, session_id: '11'}, {...host.data, title: 'x'.repeat(300)}, {...host.data, tag: 'foreign'}]) {
+    await host.event('push', data); await host.event('notificationclick', data);
+  }
+  assert.equal(host.shown.length, 0); assert.equal(host.opened.length, 0);
+});
+
+function pushBrowser(permission = 'granted') {
+  let subscriptions = 0, unsubscribed = 0;
+  let existing = null;
+  const listeners = {};
+  const registration = {getNotifications: async () => [], pushManager: {
+    getSubscription: async () => existing,
+    subscribe: async options => {subscriptions++; existing = {options, toJSON: () => ({endpoint: 'https://fcm.googleapis.com/device', keys: {p256dh: 'key', auth: 'auth'}}), unsubscribe: async () => {unsubscribed++; existing = null;}}; return existing;}
+  }};
+  const window = {location: {href: 'https://ide.test/'}, isSecureContext: true, PushManager: class {}, addEventListener() {}, history: {replaceState() {}}};
+  const navigator = {serviceWorker: {ready: Promise.resolve(registration), getRegistration: async () => registration, addEventListener: (event, callback) => {listeners[event] = callback;}, removeEventListener: event => delete listeners[event]}};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'pwa.js'), 'utf8'), {window, navigator, URL, Notification: {permission}, Uint8Array, atob, setTimeout, clearTimeout, matchMedia: () => ({addEventListener() {}}), MutationObserver: class {observe() {}}, document: {documentElement: {}, visibilityState: 'visible', hasFocus: () => true}});
+  return {push: window.webidePush, registration, counts: () => ({subscriptions, unsubscribed}), listeners};
+}
+test('push subscriptions reuse the browser registration and stop on opt-out', async () => {
+  const host = pushBrowser();
+  host.push.context({user_id: 7, enabled: true, revision: 1});
+  const key = 'BAECAw';
+  await host.push.subscribe(key, 1); await host.push.subscribe(key, 1);
+  assert.equal(host.counts().subscriptions, 1);
+  host.push.context({user_id: 7, enabled: false, revision: 2});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(host.counts().unsubscribed, 1);
+  await assert.rejects(host.push.subscribe(key, 1), /Account changed/);
+  const denied = pushBrowser('denied');
+  denied.push.context({user_id: 7, enabled: true, revision: 1});
+  await assert.rejects(denied.push.subscribe(key, 1), /unavailable/);
+  assert.equal(denied.counts().subscriptions, 0);
+});
+test('a delayed browser subscription cannot become ready for a different account', async () => {
+  const host = pushBrowser();
+  let release;
+  const original = host.registration.pushManager.subscribe;
+  host.registration.pushManager.subscribe = async options => {await new Promise(resolve => {release = resolve;}); return original(options);};
+  host.push.context({user_id: 7, enabled: true, revision: 1});
+  const result = host.push.subscribe('BAECAw', 1);
+  await new Promise(resolve => setImmediate(resolve));
+  host.push.context({user_id: 8, enabled: true, revision: 2});
+  release();
+  await assert.rejects(result, /Account changed/);
+  await host.push.subscribe('BAECAw', 2);
+  assert.equal(host.counts().subscriptions, 1);
 });
