@@ -57,7 +57,7 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   identical pending/plain rows retain dimensions and glyph anchors after syntax resolves.
   Cropped plain/token paint retains the complete source's grapheme-safe text-run
   boundaries, including short crops, with streamed segmentation that stops after
-  the requested window. Unwrapped source-monotonic rows now prepare exact
+  the requested window. Unwrapped source-monotonic rows now prepare
   extents and anchors in at most 16 KiB probes, retaining complete paint runs
   and validating every overlap glyph. Dense overlap targets build one bounded
   coordinate table per probe; ordinary viewport queries retain sparse indexes.
@@ -73,6 +73,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Changed paragraphs now replay validated unchanged probe prefixes with matching
   source, paint runs and styles; the first changed probe retains fresh overlap
   checks. Incremental changed suffixes and remaining long-row latency remain.
+  The exact-origin suffix experiment exposed whole-paragraph overflow rounding
+  in fresh styled preparation; fix that precision boundary before relying on
+  reconnection alone. See the [candidate check](editor-performance.md#exact-origin-suffix-candidate-check).
   Cold probes briefly await the selected font, with bounded fallback and fresh ownership checks.
   The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)
   records why Rust shaping and canvas widths cannot replace current DOM geometry directly.

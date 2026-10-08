@@ -179,13 +179,14 @@ jobs:
       - name: Tests (frontend UI)
         env:
           CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
-          # Keep expensive differential geometry matrices in separate browser
-          # runs. Individual UI readiness assertions retain short deadlines.
+          # Run the same contracts against optimized WASM to avoid loading the
+          # ~250 MiB debug components module into Chrome. Keep expensive matrices
+          # separate; readiness assertions and the whole-run deadline are unchanged.
           WASM_BINDGEN_TEST_TIMEOUT: "300"
         run: |
-          cargo test -p openwebide-frontend --target wasm32-unknown-unknown -- --skip bounded_paragraph_geometry_preserves_fonts_features_and_whitespace_in_both_modes --skip paragraph_limit_geometry_matches_complete_rows_in_both_modes
-          cargo test -p openwebide-frontend --target wasm32-unknown-unknown --test components bounded_paragraph_geometry_preserves_fonts_features_and_whitespace_in_both_modes
-          cargo test -p openwebide-frontend --target wasm32-unknown-unknown --test components paragraph_limit_geometry_matches_complete_rows_in_both_modes
+          cargo test -p openwebide-frontend --release --target wasm32-unknown-unknown -- --skip bounded_paragraph_geometry_preserves_fonts_features_and_whitespace_in_both_modes --skip paragraph_limit_geometry_matches_complete_rows_in_both_modes
+          cargo test -p openwebide-frontend --release --target wasm32-unknown-unknown --test components bounded_paragraph_geometry_preserves_fonts_features_and_whitespace_in_both_modes
+          cargo test -p openwebide-frontend --release --target wasm32-unknown-unknown --test components paragraph_limit_geometry_matches_complete_rows_in_both_modes
 
       - name: Measure shared editor storage in browser WASM
         env:

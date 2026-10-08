@@ -1,0 +1,503 @@
+diff --git a/crates/core/src/editor/paragraph.rs b/crates/core/src/editor/paragraph.rs
+index 99ccf39..465cd5f 100644
+--- a/crates/core/src/editor/paragraph.rs
++++ b/crates/core/src/editor/paragraph.rs
+@@ -146,6 +146,69 @@ impl<'a> ParagraphMeasurementPlan<'a> {
+         }
+         reused
+     }
++    /// Replay unchanged probes only after an exact measured reconnection. No
++    /// translation is admitted: source/run offsets, glyph targets, dimensions,
++    /// origin and every incoming overlap rectangle must match the retained probe.
++    pub fn reuse_suffix(
++        &mut self,
++        old_body: &str,
++        old: &ParagraphMeasurements,
++        style_start: usize,
++    ) -> usize {
++        if old_body.len() != self.body.len() || self.expected.is_empty() {
++            return 0;
++        }
++        let mut reused = 0;
++        while let Some(probe) = self.probe().cloned() {
++            if probe.bytes.start < style_start {
++                break;
++            }
++            let Some(record) = old
++                .records
++                .iter()
++                .find(|record| record.bytes == probe.bytes)
++            else {
++                break;
++            };
++            if self.dimensions != Some((record.width, record.height))
++                || old_body.get(probe.bytes.clone()) != self.body.get(probe.bytes.clone())
++                || record
++                    .rectangles
++                    .iter()
++                    .find(|rect| rect.glyph == probe.glyph_start)
++                    .is_none_or(|rect| rect.left.to_bits() != probe.origin.to_bits())
++                || self.expected.iter().any(|expected| {
++                    record
++                        .rectangles
++                        .binary_search_by_key(&expected.glyph, |rect| rect.glyph)
++                        .ok()
++                        .is_none_or(|index| record.rectangles[index] != *expected)
++                })
++            {
++                break;
++            }
++            let run_slice = |runs: &[usize]| {
++                let start = runs.partition_point(|byte| *byte <= probe.bytes.start);
++                let end = runs.partition_point(|byte| *byte <= probe.bytes.end);
++                start..end
++            };
++            if old.runs[run_slice(&old.runs)] != self.runs[run_slice(&self.runs)]
++                || !self.record(
++                    record.width,
++                    record.height,
++                    record.scroll_width,
++                    &record.rectangles,
++                )
++            {
++                break;
++            }
++            if let Some(last) = self.records.last_mut() {
++                last.rectangles = record.rectangles.clone();
++            }
++            reused += 1;
++        }
++        reused
++    }
+     fn boundary(
+         body: &str,
+         index: &VisualLineIndex,
+@@ -547,6 +610,51 @@ mod tests {
+         assert_eq!(plan.probe().unwrap().bytes.start, 0);
+     }
+ 
++    #[test]
++    fn unchanged_suffix_requires_exact_measured_reconnection() {
++        let old = format!("a{}", "文😀 words ".repeat(12000));
++        let (old_width, geometry, retained) = measured(&old);
++        let changed = format!("z{}", &old[1..]);
++        let make = || {
++            ParagraphMeasurementPlan::new(&changed, VisualLineIndex::new(&changed).unwrap())
++                .unwrap()
++        };
++        let mut plan = make();
++        assert_eq!(plan.reuse_suffix(&old, &retained, 1), 0);
++        let probe = plan.probe().unwrap().clone();
++        let end = plan.index.index_at_byte(&changed, probe.bytes.end).unwrap();
++        let rects = rectangles(&plan);
++        let width = (f64::from(u32::try_from(end).unwrap()) * 7.0).max(244.0);
++        assert!(plan.record(244.0, 15.0, width, &rects));
++        assert!(plan.reuse_suffix(&old, &retained, 1) > 2);
++        let (next_width, next, reused) = plan.finish_with_measurements().unwrap();
++        assert_eq!(next_width, old_width);
++        assert_eq!(next, geometry);
++        assert!(Arc::ptr_eq(
++            &reused.records[1].rectangles,
++            &retained.records[1].rectangles
++        ));
++        for fractional_shift in [0.125, 1.0] {
++            let mut plan = make();
++            let mut moved = rects.clone();
++            for rect in &mut moved {
++                rect.left += fractional_shift;
++            }
++            assert!(plan.record(244.0, 15.0, width, &moved));
++            assert_eq!(plan.reuse_suffix(&old, &retained, 1), 0);
++            assert!(plan.probe().is_some());
++        }
++        let mut plan = make();
++        assert!(plan.record(244.0, 15.0, width, &rects));
++        assert_eq!(plan.reuse_suffix(&old, &retained, changed.len()), 0);
++        let different = format!("{changed}x");
++        let mut plan =
++            ParagraphMeasurementPlan::new(&different, VisualLineIndex::new(&different).unwrap())
++                .unwrap();
++        assert!(plan.record(244.0, 15.0, width, &rects));
++        assert_eq!(plan.reuse_suffix(&old, &retained, 0), 0);
++    }
++
+     #[test]
+     fn probes_cover_admitted_source_and_preserve_complete_coordinates() {
+         for source in [
+diff --git a/frontend/src/components/editor.rs b/frontend/src/components/editor.rs
+index 151467a..5045fdd 100644
+--- a/frontend/src/components/editor.rs
++++ b/frontend/src/components/editor.rs
+@@ -814,6 +814,11 @@ pub fn take_highlight_segment_bytes() -> usize {
+     HIGHLIGHT_SEGMENT_BYTES.replace(0)
+ }
+ 
++#[cfg(feature = "test-support")]
++pub fn take_paragraph_suffix_probes() -> usize {
++    super::editor_rows::take_paragraph_suffix_probes()
++}
++
+ /// Differential browser oracle: compare bounded preparation with the complete
+ /// production renderer, including every retained glyph anchor. Test-only full
+ /// layout must never run in ordinary preparation.
+diff --git a/frontend/src/components/editor_rows.rs b/frontend/src/components/editor_rows.rs
+index 3e85e05..77739d5 100644
+--- a/frontend/src/components/editor_rows.rs
++++ b/frontend/src/components/editor_rows.rs
+@@ -93,6 +93,13 @@ fn extent_supported(input: &web_sys::HtmlTextAreaElement, rows: &MeasuredRows) -
+         .is_some_and(|extent| crate::viewport::check_editor_extent(extent.width, extent.height))
+ }
+ 
++#[cfg(feature = "test-support")]
++thread_local! { static SUFFIX_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
++#[cfg(feature = "test-support")]
++pub(super) fn take_paragraph_suffix_probes() -> usize {
++    SUFFIX_PROBES.replace(0)
++}
++
+ async fn measure_paragraph(
+     paint: &web_sys::Element,
+     scope: &crate::state::workspace::EditorRowPaint,
+@@ -107,6 +114,7 @@ async fn measure_paragraph(
+     if let Some(actions) = actions {
+         actions.resume_paragraph_measurements(scope, logical, &mut plan);
+     }
++    let suffix = actions.and_then(|actions| actions.paragraph_suffix(scope, logical));
+     let mut probes = 0_usize;
+     while let Some(probe) = plan.probe().cloned() {
+         let Some(targets) = plan.targets() else {
+@@ -140,6 +148,13 @@ async fn measure_paragraph(
+         ) {
+             return Ok(None);
+         }
++        if let Some((actions, suffix)) = actions.zip(suffix.as_ref()) {
++            let reused = actions.resume_paragraph_suffix(suffix, &mut plan);
++            #[cfg(feature = "test-support")]
++            SUFFIX_PROBES.set(SUFFIX_PROBES.get() + reused);
++            #[cfg(not(feature = "test-support"))]
++            let _ = reused;
++        }
+         paint.set_inner_html("");
+         probes += 1;
+         if probes.is_multiple_of(openwebide_core::editor::MAX_MEASURE_BATCHES_PER_FRAME) {
+@@ -204,12 +219,9 @@ fn measure_paragraph_probe(
+     else {
+         return Ok(None);
+     };
+-    // Read overflow from a zero-width unwrapped row so a short final slice is
+-    // not padded to viewport width. Keep the actual viewport content width in
+-    // the shared geometry, and let CSS measure ink overhang and pixel rounding.
+-    let original_style = row.get_attribute("style").unwrap_or_default();
+-    row.set_attribute("style", &format!("{original_style};width:0px"))
+-        .map_err(|_| ())?;
++    // Keep the complete renderer's row width while measuring overflow. The
++    // final slice includes its global origin, so viewport width cannot hide
++    // the end of an overflowing paragraph.
+     if phase > 0.0 || probe.origin > 0.0 {
+         let gap = document().create_element("span").map_err(|_| ())?;
+         gap.set_attribute("style", &format!("display:inline-block;width:{phase}px"))
+diff --git a/frontend/src/components/mod.rs b/frontend/src/components/mod.rs
+index 58224ee..4bd0d17 100644
+--- a/frontend/src/components/mod.rs
++++ b/frontend/src/components/mod.rs
+@@ -35,7 +35,8 @@ pub use editor::Editor;
+ #[cfg(feature = "test-support")]
+ pub use editor::{
+     bounded_paragraph_matches_complete, highlight_count, retained_paragraph_matches_complete,
+-    take_highlight_segment_bytes, take_highlight_source_bytes, viewport_highlight_count,
++    take_highlight_segment_bytes, take_highlight_source_bytes, take_paragraph_suffix_probes,
++    viewport_highlight_count,
+ };
+ pub use file_browser::FileBrowser;
+ pub use file_tree::{FileTree, SearchPane};
+diff --git a/frontend/src/state_actions/editor.rs b/frontend/src/state_actions/editor.rs
+index e8e5d2b..23ab4db 100644
+--- a/frontend/src/state_actions/editor.rs
++++ b/frontend/src/state_actions/editor.rs
+@@ -32,7 +32,9 @@ mod motion;
+ pub use input::{EditorNativeCommit, EditorNativeContext};
+ mod preparation;
+ mod rows;
+-pub use rows::{EditorFragmentCache, EditorFragmentWindow, EditorRowSourceSlice};
++pub use rows::{
++    EditorFragmentCache, EditorFragmentWindow, EditorParagraphSuffix, EditorRowSourceSlice,
++};
+ 
+ /// Identity of a retained editor presentation; source revisions can advance
+ /// within it, while replacing a document or account releases the old frame.
+diff --git a/frontend/src/state_actions/editor/rows.rs b/frontend/src/state_actions/editor/rows.rs
+index 14592bf..c94cb40 100644
+--- a/frontend/src/state_actions/editor/rows.rs
++++ b/frontend/src/state_actions/editor/rows.rs
+@@ -129,6 +129,59 @@ fn paint_prefix_end(old: &PaintRow<'_>, new: &PaintRow<'_>) -> usize {
+     }
+     end
+ }
++fn paint_suffix_start(old: &PaintRow<'_>, new: &PaintRow<'_>) -> Option<usize> {
++    if old.guide != new.guide || old.ending != new.ending {
++        return None;
++    }
++    if old.plain.is_some() && new.plain.is_some() {
++        return Some(0);
++    }
++    if old.plain.is_some() || new.plain.is_some() || old.normalize_cr != new.normalize_cr {
++        return None;
++    }
++    fn text<'a>(row: &PaintRow<'_>, token: &'a Token, last: bool) -> &'a str {
++        if row.normalize_cr && last {
++            token.text.strip_suffix('\r').unwrap_or(&token.text)
++        } else {
++            &token.text
++        }
++    }
++    let length = |row: &PaintRow<'_>| {
++        row.tokens
++            .iter()
++            .enumerate()
++            .map(|(index, token)| text(row, token, index + 1 == row.tokens.len()).len())
++            .sum::<usize>()
++    };
++    let mut start = length(new);
++    if length(old) != start {
++        return None;
++    }
++    for (index, (a, b)) in old
++        .tokens
++        .iter()
++        .rev()
++        .zip(new.tokens.iter().rev())
++        .enumerate()
++    {
++        let a_text = text(old, a, index == 0);
++        let b_text = text(new, b, index == 0);
++        if a.kind != b.kind || (a_text.len() > 512) != (b_text.len() > 512) {
++            break;
++        }
++        let same = a_text
++            .bytes()
++            .rev()
++            .zip(b_text.bytes().rev())
++            .take_while(|(a, b)| a == b)
++            .count();
++        start -= same;
++        if same != a_text.len() || same != b_text.len() {
++            break;
++        }
++    }
++    Some(start)
++}
+ fn same_measurement_environment(old: &EditorRowPaint, paint: &EditorRowPaint) -> bool {
+     old.font_epoch == paint.font_epoch
+         && old.key == paint.key
+@@ -166,6 +219,14 @@ pub struct EditorRowSourceSlice {
+     /// original paint-run boundary; other viewport slices make no declaration.
+     pub starts_paint_run: bool,
+ }
++/// Immutable source/style proof for an eligible unchanged paragraph suffix.
++pub struct EditorParagraphSuffix {
++    scope: EditorRowPaint,
++    previous: EditorRowPaint,
++    row: usize,
++    measurements: Arc<openwebide_core::editor::ParagraphMeasurements>,
++    style_start: usize,
++}
+ impl EditorActions {
+     pub fn paragraph_measurements(
+         paint: &EditorRowPaint,
+@@ -244,6 +305,51 @@ impl EditorActions {
+                 plan.reuse_prefix(body, measurements, paint_prefix_end(&old, &new))
+             })
+     }
++    pub fn paragraph_suffix(
++        self,
++        paint: &EditorRowPaint,
++        row: usize,
++    ) -> Option<EditorParagraphSuffix> {
++        if !self.row_paint_current(paint) {
++            return None;
++        }
++        self.workspace
++            .editor_paragraph_cache
++            .with_untracked(|cache| {
++                let cache = cache
++                    .as_ref()
++                    .filter(|cache| same_measurement_environment(&cache.paint, paint))?;
++                // Reject shifted byte offsets before comparing styled suffixes.
++                if cache.paint.projection.line_body(row)?.len()
++                    != paint.projection.line_body(row)?.len()
++                {
++                    return None;
++                }
++                let (_, measurements) = cache.rows.iter().find(|(index, _)| *index == row)?;
++                let (old, new) = paint_row(&cache.paint, row).zip(paint_row(paint, row))?;
++                let style_start = paint_suffix_start(&old, &new)?;
++                Some(EditorParagraphSuffix {
++                    scope: paint.clone(),
++                    previous: cache.paint.clone(),
++                    row,
++                    measurements: measurements.clone(),
++                    style_start,
++                })
++            })
++    }
++    pub fn resume_paragraph_suffix(
++        self,
++        suffix: &EditorParagraphSuffix,
++        plan: &mut openwebide_core::editor::ParagraphMeasurementPlan<'_>,
++    ) -> usize {
++        if !self.row_paint_current(&suffix.scope) {
++            return 0;
++        }
++        let Some(body) = suffix.previous.projection.line_body(suffix.row) else {
++            return 0;
++        };
++        plan.reuse_suffix(body, &suffix.measurements, suffix.style_start)
++    }
+     pub fn retain_paragraph_measurements(
+         self,
+         paint: &EditorRowPaint,
+diff --git a/frontend/tests/components/editor.rs b/frontend/tests/components/editor.rs
+index f0b9f6a..2a45eed 100644
+--- a/frontend/tests/components/editor.rs
++++ b/frontend/tests/components/editor.rs
+@@ -15447,3 +15447,140 @@ async fn editor_save_completion_retains_root_and_account_ownership_in_both_modes
+         }
+     }
+ }
++
++#[wasm_bindgen_test]
++async fn paragraph_unchanged_suffix_reuses_exact_browser_geometry_in_both_modes() {
++    use openwebide_core::{WorkspaceMode, editor::Selection};
++    use openwebide_frontend::{
++        components::{retained_paragraph_matches_complete, take_paragraph_suffix_probes},
++        state_actions::editor::EditorActions,
++    };
++    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
++        for styled in [false, true] {
++            let transport = std::rc::Rc::new(DeferredSyntax::default());
++            let installed = transport.clone();
++            let body = format!("a{}", "word 文😀  ".repeat(12000));
++            let source = if styled {
++                format!("const VALUE: &str = \"{body}\";")
++            } else {
++                body
++            };
++            let original = source.clone();
++            let mounted = mount_test(move |state| {
++                state.seed_project();
++                state
++                    .projects
++                    .projects
++                    .update(|projects| projects[0].mode = mode);
++                state
++                    .workspace
++                    .open_file
++                    .set(Some(if styled { "suffix.rs" } else { "suffix.txt" }.into()));
++                if styled {
++                    EditorActions::new(state.workspace).install_syntax_transport(installed);
++                }
++                state.workspace.content.set(source.into());
++                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
++            });
++            super::support::wait_until_with_timeout("original suffix measurements", 30_000, || {
++                if styled && !transport.pending.borrow().is_empty() {
++                    transport.respond(true);
++                }
++                mounted
++                    .state
++                    .workspace
++                    .editor_paragraph_cache
++                    .with_untracked(|cache| {
++                        cache.as_ref().is_some_and(|cache| {
++                            !cache.rows.is_empty()
++                                && (!styled
++                                    || (cache.paint.prepared_source
++                                        && cache
++                                            .paint
++                                            .tokens
++                                            .iter()
++                                            .flat_map(|row| row.iter())
++                                            .any(|token| {
++                                                token.kind
++                                                    == openwebide_core::highlight::TokenKind::String
++                                            })))
++                                && cache.paint.projection.line_body(0) == Some(original.as_str())
++                        })
++                    })
++            })
++            .await;
++            let input: web_sys::HtmlTextAreaElement =
++                mounted.element(".editor-textarea").unchecked_into();
++            let old_paint = mounted
++                .state
++                .workspace
++                .editor_paragraph_cache
++                .get_untracked()
++                .unwrap()
++                .paint;
++            let old_matches = openwebide_frontend::components::bounded_paragraph_matches_complete(
++                &input, &old_paint, 0,
++            )
++            .await;
++            let at = if styled {
++                original.find('"').unwrap() + 1
++            } else {
++                0
++            };
++            let mut changed = original.clone();
++            changed.replace_range(at..at + 1, "z");
++            let actions = EditorActions::new(mounted.state.workspace);
++            take_paragraph_suffix_probes();
++            actions
++                .native_input(changed.clone(), Selection::caret(at + 1), "insertText", 1.0)
++                .unwrap();
++            super::support::wait_until_with_timeout(
++                "changed source suffix measurements",
++                30_000,
++                || {
++                    if styled && !transport.pending.borrow().is_empty() {
++                        transport.respond(true);
++                    }
++                    mounted
++                        .state
++                        .workspace
++                        .editor_paragraph_cache
++                        .with_untracked(|cache| {
++                            cache.as_ref().is_some_and(|cache| {
++                                !cache.rows.is_empty()
++                                    && (!styled || (cache.paint.prepared_source && cache.paint.tokens.iter().flat_map(|row| row.iter()).any(|token| token.kind == openwebide_core::highlight::TokenKind::String)))
++                                    && cache.paint.projection.line_body(0) == Some(changed.as_str())
++                            })
++                        })
++                },
++            )
++            .await;
++            assert!(
++                take_paragraph_suffix_probes() > 2,
++                "{mode:?} must reuse unchanged suffix probes"
++            );
++            let paint = mounted
++                .state
++                .workspace
++                .editor_paragraph_cache
++                .get_untracked()
++                .unwrap()
++                .paint;
++            let input: web_sys::HtmlTextAreaElement =
++                mounted.element(".editor-textarea").unchecked_into();
++            let retained_matches =
++                retained_paragraph_matches_complete(&input, &paint, 0, actions).await;
++            let fresh_matches =
++                openwebide_frontend::components::bounded_paragraph_matches_complete(
++                    &input, &paint, 0,
++                )
++                .await;
++            assert!(
++                old_matches && retained_matches && fresh_matches,
++                "{mode:?} styled={styled} old={old_matches} retained={retained_matches} fresh={fresh_matches} exact complete extent and glyph anchors"
++            );
++            assert_eq!(actions.source(), changed);
++            assert!(mounted.state.workspace.dirty.get_untracked());
++        }
++    }
++}

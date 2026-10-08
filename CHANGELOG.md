@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Record the rejected paragraph-suffix reconnection experiment and its styled overflow rounding counterexample. Run unchanged browser CI contracts against optimized WASM to reduce module-loading memory without relaxing geometry or readiness checks.
+
 - Synchronize the startup theme contract with the actual settings request, keeping cold IndexedDB initialization outside the unchanged theme-application deadline and checking prepaint throughout the held response.
 
 - Reuse exact sequential lexical row positions across unchanged source, keeping indexed recovery and multiline-state validation after changed rows. Record native/WASM before-after preparation measurements without changing cancellation or paint limits.

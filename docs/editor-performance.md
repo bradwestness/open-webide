@@ -1521,3 +1521,49 @@ Reproduce the scalar samples with:
 bash tools/measure-editor-view-linux.sh --cases styled-long-line --repeat 3
 bash tools/measure-editor-view-linux.sh --cases styled-long-line --repeat 1 --trace
 ```
+
+## Exact-origin suffix candidate check
+
+An unshipped suffix-replay experiment required identical source byte offsets,
+paint-run boundaries, dimensions, measured origin and every incoming overlap
+rectangle. Core synthetic geometry and the plain Unicode browser case passed.
+The styled browser case exposed a whole-paragraph overflow mismatch that also
+occurs with fresh preparation of the original and changed source, so exact
+reconnection alone does not prove the existing rounded scroll extent.
+
+Fixture: `const VALUE: &str = "a` followed by 12,000 repetitions of
+`word 文😀  ` and `";`, default Monaspace settings, 340 px local workspace pane.
+Replace the first string character `a` with `z`; require actual grammar String
+paint and compare every anchor and scroll extent against the complete renderer.
+Original fresh, changed retained and changed fresh preparation all reported
+1,028,352 px overflow against 1,028,351 px complete overflow. The final glyph
+left edge was 1,028,343.390625 px against 1,028,343.375 px, a 1/64 px difference
+that still crosses the overflow rounding boundary. Anchor tolerance and the
+extent oracle were unchanged. The failure occurs in the local styled case;
+this failing run did not reach the remote styled case.
+
+Keeping the viewport row width instead of the zero-width overflow probe did not
+remove the failure. Both experiments were removed from production. The next
+measurement/reuse work must establish complete overflow rounding, not infer it
+from local overlap agreement. Native shaping and shifted/wrapped/bidi reuse
+remain open. [Rejected patch](editor-performance/suffix-reconnection-rejected.patch),
+[oracle output](editor-performance/suffix-reconnection-failure.txt).
+
+## Browser CI module footprint
+
+The `faf1040` CI run passed all 421 ordinary browser checks and the separate
+font matrix, then ChromeDriver timed out waiting for the renderer while loading
+the final boundary-test run (`missing field chunk`, 30-second renderer timeout).
+The test runner polls output with a synchronous WebDriver script; its 300-second
+whole-run budget does not prevent that lower-level command timeout.
+
+Browser CI now runs the same tests with `--release`, retaining all source/geometry
+assertions, separate matrices and existing readiness/whole-run deadlines. Local
+optimized-WASM verification passed 421 ordinary checks plus both matrices. The
+components module is 48,723,270 bytes (46.47 MiB) instead of 260,821,407 bytes
+(248.74 MiB) in debug mode, measured after restoring the same production source. Ordinary
+checks took 118.50 seconds, the font matrix 12.64 seconds and the near-limit
+check 18.88 seconds in this local run;
+these timings do not prove Linux CI reliability. The full CI run must verify the
+profile change on its own Chrome/host. Native tests and strict debug-target lint
+remain unchanged.
