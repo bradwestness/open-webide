@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Prepare large Markdown prose with independent paragraph trees and shared
+  per-language parsers. Keep inline prose outside the 64 embedded-code-body limit,
+  retaining source/node/record limits, cancellation and fresh/incremental parity.
+
 - Added project memories shared across sessions in both local and remote projects: editable entries and an enabled-by-default toggle in Sessions, bounded automatic run context, revision-safe agent memory tools, and database-backed opt-out.
 
 - Show a compact syntax-preparation spinner in a reserved slot before Output,

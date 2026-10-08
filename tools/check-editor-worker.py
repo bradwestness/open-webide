@@ -115,7 +115,7 @@ def check():
                             Toml: '[section]\r\nname = "文😀"\r\n',
                             Yaml: 'section:\r\n  name: 文😀\r\n',
                             Sql: '/* first\r\nstill comment */\r\nSELECT \'文😀\';',
-                            Markdown: '# Header\r\nText 文😀\r\n',
+                            Markdown: '# Header\r\n' + Array.from({length: 1000}, (_, index) => `Paragraph ${index}: **文😀** and \`code\`.\r\n\r\n`).join(''),
                             Ini: '[section]\r\nname = 文😀\r\n',
                             Xml: '<section>\r\n<name>文😀</name>\r\n</section>'
                         })) {

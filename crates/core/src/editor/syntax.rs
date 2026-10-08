@@ -76,7 +76,6 @@ pub fn preparation_exceeds_limits(text: &str) -> bool {
 
 struct EmbeddedSyntax {
     provider: SyntaxProvider,
-    parser: Parser,
     tree: Option<Tree>,
     range: Range,
     folds: std::cell::RefCell<folds::ParsedFolds>,
@@ -92,6 +91,7 @@ pub struct SyntaxDocument {
     ready: bool,
     tree: Option<Tree>,
     embedded: Vec<EmbeddedSyntax>,
+    embedded_parsers: Vec<(Language, Parser)>,
     text: Arc<String>,
     source_lines: Vec<super::lines::Line>,
     prepared: Option<(usize, Arc<SyntaxAnalysis>)>,
@@ -120,6 +120,7 @@ impl SyntaxDocument {
             ready: false,
             tree: None,
             embedded: Vec::new(),
+            embedded_parsers: Vec::new(),
             text: Arc::new(String::new()),
             source_lines: provider.map_or_else(Vec::new, |_| super::lines::lines("")),
             prepared: None,
@@ -353,7 +354,6 @@ impl SyntaxDocument {
             } else {
                 EmbeddedSyntax {
                     provider,
-                    parser: new_parser(provider)?,
                     tree: None,
                     folds: std::cell::RefCell::default(),
                     contexts: std::cell::RefCell::default(),
@@ -365,12 +365,23 @@ impl SyntaxDocument {
             if let Some(tree) = previous.as_mut() {
                 tree.edit(edit);
             }
-            embedded
-                .parser
+            let parser_index = if let Some(index) = self
+                .embedded_parsers
+                .iter()
+                .position(|(retained, _)| *retained == language)
+            {
+                index
+            } else {
+                self.embedded_parsers
+                    .push((language, new_parser(provider)?));
+                self.embedded_parsers.len() - 1
+            };
+            let parser = &mut self.embedded_parsers[parser_index].1;
+            parser
                 .set_included_ranges(&[range])
                 .map_err(|_| SyntaxStatus::Cancelled)?;
             embedded.tree = Some(parse_tree(
-                &mut embedded.parser,
+                parser,
                 text,
                 previous.as_ref(),
                 checks,
@@ -521,6 +532,7 @@ impl SyntaxDocument {
     }
 
     fn clear(&mut self) {
+        self.embedded_parsers.clear();
         if let Some(parser) = self.parser.as_mut() {
             parser.reset();
         }
@@ -675,6 +687,7 @@ fn select_injections(
     };
     let source_point = |offset| indexed_point(rows, offset);
     let mut selected = Vec::new();
+    let mut code_bodies = 0;
     let mut visited = 0;
     let mut until_check = 0;
     visit_tree(tree, &mut visited, |node| {
@@ -686,8 +699,13 @@ fn select_injections(
         }
         until_check -= 1;
         if let Some((language, range)) = select(node, text) {
-            if selected.len() == MAX_INJECTIONS {
-                return Err(SyntaxStatus::TooLarge);
+            // Inline Markdown is ordinary prose syntax, not a separately configured
+            // code body. Its count remains bounded by the shared node/record budgets.
+            if language != Language::MarkdownInline {
+                if code_bodies == MAX_INJECTIONS {
+                    return Err(SyntaxStatus::TooLarge);
+                }
+                code_bodies += 1;
             }
             if range.start_byte > range.end_byte
                 || !text.is_char_boundary(range.start_byte)
@@ -779,6 +797,66 @@ fn input_edit_change(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_markdown_prose_reuses_parsers_without_joining_paragraphs() {
+        for ending in ["\n", "\r\n"] {
+            let source = (0..1_000)
+                .map(|index| {
+                    format!("Paragraph {index}: **文😀 strong** and `code`.{ending}{ending}")
+                })
+                .collect::<String>();
+            let source = format!(
+                "Unclosed `marker{ending}{ending}{source}Closing marker`{ending}{ending}```rust{ending}fn main() {{}}{ending}```{ending}"
+            );
+            let mut warm = SyntaxDocument::new(Language::Markdown).unwrap();
+            for text in [
+                source.clone(),
+                source.replacen("Paragraph 500", "Changed 500", 1),
+            ] {
+                let (status, actual) = warm.prepare(&text, 4, || true);
+                assert!(matches!(status, SyntaxStatus::Ready { .. }), "{status:?}");
+                assert!(warm.embedded.len() > 1_000);
+                assert_eq!(warm.embedded_parsers.len(), 2);
+                let mut fresh = SyntaxDocument::new(Language::Markdown).unwrap();
+                let (_, expected) = fresh.prepare(&text, 4, || true);
+                let actual = actual.unwrap();
+                let expected = expected.unwrap();
+                assert_eq!(actual.folds(), expected.folds());
+                assert_eq!(
+                    serde_json::to_value(actual.transfer_data()).unwrap(),
+                    serde_json::to_value(expected.transfer_data()).unwrap()
+                );
+                assert_eq!(actual.highlights(), expected.highlights());
+                assert_eq!(
+                    actual
+                        .highlights()
+                        .unwrap()
+                        .iter()
+                        .filter(|row| row
+                            .iter()
+                            .any(|token| token.kind == crate::highlight::TokenKind::String
+                                && token.text.contains("code")))
+                        .count(),
+                    1_000,
+                    "each paragraph receives inline grammar colors"
+                );
+                let first = text.find("Unclosed").unwrap();
+                let last = text.find("Closing").unwrap();
+                assert_eq!(warm.language_at(first), Language::MarkdownInline);
+                assert_eq!(warm.language_at(last), Language::MarkdownInline);
+                assert!(warm.embedded[0].range.end_byte < last);
+            }
+            let (status, result) = warm.prepare(&source, 4, || false);
+            assert_eq!(status, SyntaxStatus::Cancelled);
+            assert!(result.is_none());
+            assert!(warm.embedded_parsers.is_empty());
+            assert!(matches!(
+                warm.prepare(&source, 4, || true).0,
+                SyntaxStatus::Ready { incremental: false }
+            ));
+        }
+    }
 
     #[test]
     fn embedded_range_points_reuse_updated_unicode_crlf_source_rows() {

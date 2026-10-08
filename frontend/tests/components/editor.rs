@@ -399,6 +399,68 @@ async fn grammar_highlights_paint_embedded_code_and_preserve_crlf_overlay_in_bot
 }
 
 #[wasm_bindgen_test]
+async fn large_markdown_worker_publications_color_all_paragraphs_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let prose = (0..1_000)
+            .map(|index| format!("Paragraph {index}: **文😀** and `code`.\r\n\r\n"))
+            .collect::<String>();
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
+        let initial = prose.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("large.md".into()));
+            state.workspace.content.set(initial.into());
+            openwebide_frontend::state_actions::editor::EditorActions::new(state.workspace)
+                .install_syntax_transport(installed);
+            editor_view(state)
+        });
+        let actions =
+            openwebide_frontend::state_actions::editor::EditorActions::new(mounted.state.workspace);
+        for text in [
+            prose.clone(),
+            prose.replacen("Paragraph 500", "Changed 500", 1),
+        ] {
+            mounted.state.workspace.content.set(text.clone().into());
+            wait_until("large Markdown worker request", || {
+                !transport.pending.borrow().is_empty()
+            })
+            .await;
+            assert_eq!(transport.source(), text);
+            transport.respond(true);
+            wait_until("large Markdown grammar colors", || {
+                let (ready, rows) = actions.syntax_paint();
+                ready
+                    && rows.len() == 2_001
+                    && rows[1_000]
+                        .iter()
+                        .map(|token| token.text.as_str())
+                        .collect::<String>()
+                        == text.split('\n').nth(1_000).unwrap()
+            })
+            .await;
+            let (_, rows) = actions.syntax_paint();
+            for row in rows.iter().step_by(2).take(1_000) {
+                assert!(
+                    row.iter().any(|token| token.kind
+                        == openwebide_core::highlight::TokenKind::String
+                        && token.text.contains("code")),
+                    "{mode:?}: prose must receive inline grammar colors"
+                );
+            }
+            assert_eq!(mounted.state.workspace.content.get_untracked(), text);
+        }
+        drop(mounted);
+        settle().await;
+    }
+}
+
+#[wasm_bindgen_test]
 async fn selection_policy_and_multi_commands_share_both_modes_and_reject_stale_targets() {
     use openwebide_core::{
         WorkspaceMode,
@@ -975,6 +1037,8 @@ async fn highlighted_token_clicks_preserve_columns_and_line_ends_in_both_modes()
                 "fn main() {\r\n    let message = \"文😀\";\r\n    println!(\"hello\");\r\n}\r\n";
             let source = source.repeat(repeat);
             let fixture = source.clone();
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
             let mounted = mount_test(move |state| {
                 state.seed_project();
                 state
@@ -983,8 +1047,14 @@ async fn highlighted_token_clicks_preserve_columns_and_line_ends_in_both_modes()
                     .update(|projects| projects[0].mode = mode);
                 state.workspace.open_file.set(Some("click.rs".into()));
                 state.workspace.content.set(fixture.into());
+                EditorActions::new(state.workspace).install_syntax_transport(installed);
                 view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:640px;height:280px">{editor_view(state)}</div> }
             });
+            wait_until("highlighted click worker request", || {
+                !transport.pending.borrow().is_empty()
+            })
+            .await;
+            transport.respond(true);
             wait_until("styled token frame before highlighted clicks", || {
                 mounted
                     .element(".editor-code")

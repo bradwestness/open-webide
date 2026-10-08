@@ -2100,3 +2100,40 @@ and actual vertical overflow in both layouts and workspace modes.
 The touch-emulated regression passes after the exclusions and phone row-border
 correction (0.07 seconds), including hidden-trigger height, actual scroll extents,
 stable tab nodes and both workspace modes.
+
+### Large Markdown inline regions (2026-10-08)
+
+Markdown paragraphs retain independent included-range trees but reuse one parser
+per embedded language. Inline prose no longer consumes the 64 code-body slots;
+source size, visited-node, progress and published-record bounds remain enforced.
+This avoids allocating a parser for each paragraph without joining unrelated
+paragraphs or carrying an unfinished inline construct into the next paragraph.
+
+The native regression prepares 1,000 Unicode paragraphs with inline code and
+emphasis, independent unmatched backticks and a Rust fence, using LF and CRLF.
+It compares complete transferred structure, folds and paint against fresh parses
+before and after a middle-paragraph edit, checks two retained embedded parsers,
+and verifies cancellation releases the pool and permits clean recovery.
+All 467 all-feature core tests passed; strict core linting passed. The release
+worker verifier also passed its enlarged 1,000-paragraph CRLF fixture, including
+incremental source reconstruction and reused paint rows, together with its
+existing grammar, eviction, size and structural-delta contracts.
+
+This checkpoint still reparses each embedded body on a source revision. Skipping
+unchanged inline trees, larger fenced-code workloads and warm metadata assembly
+remain editor-goal work; this is not a general bounded-latency completion claim.
+
+The no-worker frontend path retains its existing 12 ms synchronous parse budget;
+large documents may publish plain terminal fallback there. Large-file UI grammar
+contracts therefore use the shared worker transport with the real Rust syntax
+service, while the release verifier above exercises the actual module worker.
+The highlighted-click contract also uses that transport for its 1,000-function
+fixture, retaining the original caret/line-end geometry assertions and readiness
+deadline rather than depending on the removed naive fallback colors.
+
+The large-Markdown browser publication regression passed in 0.40 s across both
+workspace modes, validating inline-code colors on all 1,000 paragraphs before
+and after the middle-paragraph edit. Strict WASM frontend linting also passed.
+The highlighted-click worker contract passed in 1.14 s with both modes and both
+one-function and 1,000-function sources. Final strict core and WASM frontend
+checks passed after the added regressions.
