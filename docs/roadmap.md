@@ -148,8 +148,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   source, including LF native text; folded views reserve visible bytes and move
   assembled strings into shared storage. Unused projection caches release source
   before edits, while retained views and composition baselines detach on change.
-  Native normalization uses one pass. Projection row/coordinate tables still
-  rebuild, and active-buffer publication still copies source. Complete-native replacement compares borrowed,
+  Native normalization uses one pass. Unfolded projections share document
+  coordinate tables; retained views detach on edits, and folded/bounded views own
+  their visible coordinates. Visible-row tables still rebuild, retained coordinate
+  tables still copy on edit, and active-buffer publication still copies source. Complete-native replacement compares borrowed,
   newline-normalized source characters and maps edit boundaries directly to source
   bytes; duplicate composition commits reuse that comparison. Complete-value
   comparison still scans unchanged prefix/suffix characters. History snapshots

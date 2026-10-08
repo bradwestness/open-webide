@@ -73,6 +73,35 @@ on edits, or eliminate suffix-coordinate shifts. Native textarea input still own
 full projected text. These microbenchmarks do not establish input/scroll latency,
 total memory use or full-editor large-file limits.
 
+## Shared document coordinate tables
+
+An unfolded projection now shares the document index's coordinate table rather
+than assembling another table of row handles. Edits update the unique table in
+place; retained views and composition/document snapshots detach on mutation.
+Folded and bounded projections keep their own visible coordinates without spare
+growth capacity. Core contracts verify allocation sharing, immutable retained
+views, native offsets, undo/redo and folded reconstruction for Unicode, LF, CRLF
+and lone CR. Browser contracts exercise the same editor facade in both modes.
+
+One observation on 2026-10-07 on the same macOS arm64 host and Chrome version;
+other verification processes were running, so these are workload observations,
+not an isolated before/after performance comparison:
+
+| Workload | Bytes | Native ms | Browser WASM ms |
+| --- | ---: | ---: | ---: |
+| `document_100_edits` | 2,097,144 | 4.091 | 4.220 |
+| `document_cold_projection` | 2,097,144 | 2.942 | 3.080 |
+| `document_1000_warm_projections` | 2,097,144 | 0.009 | 0.015 |
+| `document_100_edits` | 16,777,194 | 31.322 | 33.890 |
+| `document_cold_projection` | 16,777,194 | 24.568 | 25.865 |
+| `document_1000_warm_projections` | 16,777,194 | 0.009 | 0.015 |
+
+Full records: [native CSV](editor-performance/native-shared-coordinates.csv),
+[browser CSV](editor-performance/browser-shared-coordinates.csv). Visible-row
+assembly, native CRLF normalization and retained-table detachment still visit
+large containers; these measurements do not establish memory bounds, input
+latency or completion of the editor performance roadmap.
+
 ## Sparse glyph coordinates and cached eligibility
 
 Long logical rows share immutable grapheme/UTF-16 checkpoints across the document

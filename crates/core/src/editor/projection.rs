@@ -37,7 +37,16 @@ pub struct FoldProjection {
     lines: Arc<[VisibleLine]>,
     hidden: Arc<[HiddenText]>,
     uniform_rows: bool,
-    coordinates: Arc<[super::coordinates::LineCoordinates]>,
+    coordinates: Arc<Vec<super::coordinates::LineCoordinates>>,
+}
+
+// Folded/windowed tables own only visible rows; do not retain spare growth
+// capacity when publishing their immutable coordinate storage.
+fn shared_coordinates(
+    mut coordinates: Vec<super::coordinates::LineCoordinates>,
+) -> Arc<Vec<super::coordinates::LineCoordinates>> {
+    coordinates.shrink_to_fit();
+    Arc::new(coordinates)
 }
 
 impl FoldProjection {
@@ -75,7 +84,7 @@ impl FoldProjection {
         let logical = &index.rows;
         let mut visible_len = 0;
         let mut visible = Vec::new();
-        let mut coordinates = Vec::new();
+        let mut coordinates = shared.is_none().then(Vec::new);
         let mut hidden: Vec<HiddenText> = Vec::new();
         let mut row = 0;
         let mut textarea_start = 0;
@@ -87,7 +96,9 @@ impl FoldProjection {
                 visible_start: visible_len,
                 textarea_start,
             });
-            coordinates.push(index.coordinates[row].clone());
+            if let Some(coordinates) = &mut coordinates {
+                coordinates.push(index.coordinates[row].clone());
+            }
             visible_len += line.end - line.start;
             textarea_start += index.native_line_len(row);
             if let Some(range) = folds.collapsed_at(row) {
@@ -120,7 +131,9 @@ impl FoldProjection {
                 .last()
                 .is_some_and(|line| line.source.start != source.len())
         {
-            coordinates.push(index.coordinates[logical.len() - 1].clone());
+            if let Some(coordinates) = &mut coordinates {
+                coordinates.push(index.coordinates[logical.len() - 1].clone());
+            }
             visible.push(VisibleLine {
                 source_line: logical.len() - 1,
                 source: source.len()..source.len(),
@@ -142,7 +155,7 @@ impl FoldProjection {
             text,
             textarea_text,
             uniform_rows,
-            coordinates: coordinates.into(),
+            coordinates: coordinates.map_or_else(|| index.coordinates.clone(), shared_coordinates),
             source_len: source.len(),
             source_range: 0..source.len(),
             textarea_origin: 0,
@@ -269,7 +282,7 @@ impl FoldProjection {
             lines: lines.into(),
             hidden: hidden.into(),
             uniform_rows,
-            coordinates: coordinates.into(),
+            coordinates: shared_coordinates(coordinates),
         })
     }
 
@@ -1236,6 +1249,7 @@ mod tests {
         document.fold_command(FoldCommand::CollapseAll);
         let folded = document.projection();
         assert_eq!(folded.text(), "head\nlast\n");
+        assert_eq!(folded.coordinates.capacity(), folded.coordinates.len());
         assert!(
             folded.text.capacity() < 100,
             "a small visible projection must not reserve hidden source bytes"
@@ -1243,8 +1257,98 @@ mod tests {
         assert!(Arc::ptr_eq(&folded.text, &folded.textarea_text));
         let window = folded.window(0..5).unwrap();
         assert_eq!(window.text(), "head\n");
+        assert_eq!(window.coordinates.capacity(), window.coordinates.len());
         assert!(window.text.capacity() < 100);
         assert!(Arc::ptr_eq(&window.text, &window.textarea_text));
+    }
+
+    #[test]
+    fn unfolded_coordinates_share_source_and_detach_only_for_retained_views() {
+        use crate::editor::{Document, Edit, FoldCommand};
+        for ending in ["\n", "\r\n", "\r"] {
+            let source = format!(
+                "head{ending}{}{ending}tail{ending}",
+                "文😀אב\t".repeat(1000)
+            );
+            let mut document = Document::new(source);
+            let first = document.projection();
+            assert!(Arc::ptr_eq(
+                &document.line_index.coordinates,
+                &first.coordinates
+            ));
+            let address = Arc::as_ptr(&first.coordinates);
+            drop(first);
+            document
+                .apply(
+                    vec![Edit::replace(0..4, "HEAD")],
+                    vec![Selection::caret(4)],
+                    None,
+                )
+                .unwrap();
+            assert_eq!(Arc::as_ptr(&document.line_index.coordinates), address);
+            let retained = document.projection();
+            let original = retained.clone();
+            let snapshot = document.clone();
+            assert!(Arc::ptr_eq(
+                &snapshot.line_index.coordinates,
+                &retained.coordinates
+            ));
+            document
+                .apply(
+                    vec![Edit::replace(4..4, "\nnew 😀\n")],
+                    vec![Selection::caret(4)],
+                    None,
+                )
+                .unwrap();
+            assert!(!Arc::ptr_eq(
+                &document.line_index.coordinates,
+                &retained.coordinates
+            ));
+            for projection in [
+                document.projection(),
+                retained.clone(),
+                snapshot.projection(),
+            ] {
+                let fresh = FoldProjection::new(projection.text(), &FoldState::default());
+                assert_eq!(projection, fresh);
+                for offset in 0..=projection.textarea_text().encode_utf16().count() {
+                    assert_eq!(
+                        projection.textarea_to_byte(offset),
+                        fresh.textarea_to_byte(offset)
+                    );
+                }
+            }
+            assert_eq!(retained, original);
+            assert!(document.undo());
+            assert_eq!(document.projection(), original);
+            assert!(document.redo());
+            assert_eq!(retained, original);
+            if ending != "\r" {
+                let rows = document.text().split('\n').count();
+                document.fold_state_mut().set_ranges(
+                    vec![FoldRange {
+                        start_line: 0,
+                        end_line: 2,
+                    }],
+                    rows,
+                );
+                document.fold_command(FoldCommand::CollapseAll);
+                let folded = document.projection();
+                assert!(!Arc::ptr_eq(
+                    &document.line_index.coordinates,
+                    &folded.coordinates
+                ));
+                assert_eq!(
+                    folded,
+                    FoldProjection::new(document.text(), document.fold_state())
+                );
+                document.fold_command(FoldCommand::ExpandAll);
+                assert!(Arc::ptr_eq(
+                    &document.line_index.coordinates,
+                    &document.projection().coordinates
+                ));
+            }
+        }
     }
 
     #[test]

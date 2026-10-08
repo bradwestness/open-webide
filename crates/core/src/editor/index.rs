@@ -4,7 +4,7 @@ use super::{
     coordinates::LineCoordinates,
     lines::{Line, LineEdit, lines, row_at},
 };
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct LineIndex {
@@ -13,7 +13,7 @@ pub(super) struct LineIndex {
     oversized_rows: Vec<bool>,
     oversized_count: usize,
     breaks: usize,
-    pub coordinates: Vec<LineCoordinates>,
+    pub coordinates: Arc<Vec<LineCoordinates>>,
     utf16_len: usize,
     textarea_len: usize,
     guides: GuideCache,
@@ -48,13 +48,14 @@ impl Eq for GuideCache {}
 impl LineIndex {
     pub fn new(source: &str) -> Self {
         let rows = lines(source);
+        let mut coordinates = Vec::with_capacity(rows.len());
         let mut index = Self {
             rows,
             offsets: Vec::new(),
             oversized_rows: Vec::new(),
             oversized_count: 0,
             breaks: 0,
-            coordinates: Vec::new(),
+            coordinates: Arc::new(Vec::new()),
             utf16_len: 0,
             textarea_len: 0,
             guides: GuideCache::default(),
@@ -68,11 +69,12 @@ impl LineIndex {
             index.breaks += breaks;
             index.oversized_count += usize::from(oversized);
             index.oversized_rows.push(oversized);
-            index.coordinates.push(LineCoordinates::new(text));
+            coordinates.push(LineCoordinates::new(text));
             let units = text.encode_utf16().count();
             index.utf16_len += units;
             index.textarea_len += units - usize::from(text.ends_with("\r\n"));
         }
+        index.coordinates = Arc::new(coordinates);
         index
     }
 
@@ -88,7 +90,7 @@ impl LineIndex {
             replacement.rows.pop();
             replacement.offsets.pop();
             replacement.oversized_rows.pop();
-            replacement.coordinates.pop();
+            Arc::make_mut(&mut replacement.coordinates).pop();
         }
         let replacement_rows = replacement.rows.len();
         let (raw_start, native_start, breaks_start) = self.offsets[start_row];
@@ -123,8 +125,10 @@ impl LineIndex {
         self.textarea_len = next_native + (self.textarea_len - native_end);
         edit.apply(&mut self.rows, replacement.rows);
         self.offsets.splice(start_row..end_row, replacement.offsets);
-        self.coordinates
-            .splice(start_row..end_row, replacement.coordinates);
+        Arc::make_mut(&mut self.coordinates).splice(
+            start_row..end_row,
+            Arc::unwrap_or_clone(replacement.coordinates),
+        );
         self.update_guides(old_len, new, start_row..end_row, replacement_rows, old_rows);
     }
 

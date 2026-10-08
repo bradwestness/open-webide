@@ -581,7 +581,9 @@ input costs remain performance follow-ups.
 CRLF inverse mapping still selects the original CR, and surrogate offsets retain
 the existing boundary behavior. Projected text, normalized textarea text and
 visible-row coordinates share immutable allocations until source or folds change.
-Unfolded document projections share the document's source storage; LF textarea
+Unfolded document projections share the document's source storage and coordinate
+table. Folded and bounded views retain their own visible coordinate tables;
+edits detach the document table only when an external view retains it. LF textarea
 text shares it too. Folded text reserves only visible bytes and moves its assembled
 String into shared storage. CR/LF normalization uses one pass with a source-size
 capacity bound. Unused projection caches release their source before edits;
