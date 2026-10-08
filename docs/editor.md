@@ -945,7 +945,10 @@ available. CRLF normalization happens per row, preserving standalone CR and
 avoiding a normalized full-file copy. Source, read, pending-edit, account, path
 and tab-width changes cancel obsolete work; completed tokens are shared by
 subsequent paint consumers. Completed lexical snapshots retain raw row boundaries
-and incoming/outgoing lexer states. An update checks the original offset and the
+and incoming/outgoing lexer states. Identical source with matching language and
+newline normalization completes immediately and shares both context and token
+tables. Shared source validates by allocation; external equal text validates bytes.
+An update checks the original offset and the
 total byte shift for each row, verifying its complete raw text and incoming state
 before reusing tokens. Changing a comment delimiter re-tokenizes following rows
 until their state converges; row insertions/deletions and disjoint edits cannot
@@ -955,7 +958,7 @@ cancellation. Published rows use immutable shared token slices, so lexical reuse
 retains existing token strings without copying their text or token arrays. Parser
 paint and validated worker replies use the same row representation; the painter
 reads those rows without materializing a second token table. Row metadata and
-handle tables still visit the complete source. Worker protocol v6 replies reference
+handle tables still visit changed source. Worker protocol v6 replies reference
 unchanged token rows from the last published base ticket. Consecutive references
 transfer as runs, so one edit does not serialize a reference record for every
 unchanged row. The receiver checks the ticket, count, old row range, exact new row

@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Keep the clickable chat context meter at the shared compact button size on desktop, preserving larger phone touch targets.
+
+- Reuse complete lexical row/context and token tables for unchanged source, preserving the current immutable source handle and rejecting language or newline-normalization mismatches.
+
 - Keep Files tabs visible during on-demand search, focus search from its header control, and dismiss it with Escape. Make chat context usage clickable and compact on narrow screens. Use equal icon-and-label phone navigation and show Output as a sheet, with one header, optional command input and a copy-output action.
 
 - Share immutable editor source with syntax request scopes, cooperative lexical jobs, parser preparation and validated worker results. Retain resolved worker request strings directly and preserve stale-source, cancellation and cache limits.

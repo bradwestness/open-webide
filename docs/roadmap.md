@@ -91,13 +91,16 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   paint-table iteration and shifted suffix metadata still visit the file.
   Structural metadata now transfers changed list spans against a validated ticket,
   avoiding complete wire copies for retained records. Lexical fallback/context assembly, list
-  reconstruction/validation and standalone lexical row-table construction still visit the whole file.
+  reconstruction/validation and changed-source lexical row-table construction still visit the whole file.
+  Identical lexical source with matching language and newline normalization now
+  shares complete immutable context/token tables without advancing row batches.
   Parser fallback metadata and lexical folding now scan borrowed source without
   creating temporary source snapshots; owned contexts share their scan/query policy.
   Worker/fallback request scopes share the active editor source across repeated
   pending queries and tab-width changes. Lexical jobs, parser preparation and
   validated worker results retain that immutable source; workers retain resolved
-  request strings directly. Borrowed external parser entry points still create snapshots.
+  request strings directly. Borrowed external parser entry points still create snapshots;
+  the editor facade and worker use shared entry points.
   Retained scopes validate source revision and immutable allocation ownership
   without scanning bytes. External scopes and changed-revision source reuse still
   require byte comparisons; transport serialization still visits complete source.
@@ -151,7 +154,7 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   publish shared handles; external write/recovery transfers retain owned strings.
   Document initialization shares host text, and projection provenance also validates
   the document version when multiple documents share one allocation. Reduce remaining
-  external parser snapshots, diff, serialization and native-text materialization. Unfolded projections share immutable document
+  diff shaping, serialization and native-text materialization. Unfolded projections share immutable document
   source, including LF native text; folded views reserve visible bytes and move
   assembled strings into shared storage. Unused projection caches release source
   before edits, while retained views and composition baselines detach on change.

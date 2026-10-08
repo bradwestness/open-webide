@@ -159,7 +159,7 @@ pub struct LexicalSnapshot {
     source: std::sync::Arc<String>,
     language: Language,
     normalize_crlf: bool,
-    rows: Vec<LexicalRow>,
+    rows: std::sync::Arc<Vec<LexicalRow>>,
     tokens: std::sync::Arc<TokenRows>,
     retokenized_rows: usize,
 }
@@ -194,6 +194,7 @@ pub struct LexicalPreparation {
     previous: Option<std::sync::Arc<LexicalSnapshot>>,
     retokenized_rows: usize,
     complete: bool,
+    unchanged: bool,
 }
 impl LexicalPreparation {
     pub fn new(source: std::sync::Arc<String>, language: Language) -> Self {
@@ -208,6 +209,7 @@ impl LexicalPreparation {
             previous: None,
             retokenized_rows: 0,
             complete: false,
+            unchanged: false,
         }
     }
     /// Match native textarea newline normalization without copying full source.
@@ -222,6 +224,19 @@ impl LexicalPreparation {
     /// insertions, deletions and disjoint edits cannot reuse mismatching context.
     pub fn reuse(mut self, previous: std::sync::Arc<LexicalSnapshot>) -> Self {
         if previous.language == self.language && previous.normalize_crlf == self.normalize_crlf {
+            self.next = 0;
+            self.state = State::Normal;
+            self.rows.clear();
+            self.contexts.clear();
+            self.retokenized_rows = 0;
+            self.complete = false;
+            self.unchanged = false;
+            if std::sync::Arc::ptr_eq(&self.source, &previous.source)
+                || self.source.as_str() == previous.source.as_str()
+            {
+                self.unchanged = true;
+                self.complete = true;
+            }
             self.previous = Some(previous);
         }
         self
@@ -297,14 +312,36 @@ impl LexicalPreparation {
         count
     }
     pub fn finish(self) -> Option<TokenRows> {
-        self.complete.then_some(self.rows)
+        if !self.complete {
+            return None;
+        }
+        Some(if self.unchanged {
+            self.previous
+                .expect("validated unchanged source")
+                .tokens
+                .as_ref()
+                .clone()
+        } else {
+            self.rows
+        })
     }
     pub fn finish_snapshot(self) -> Option<LexicalSnapshot> {
+        if self.unchanged {
+            let previous = self.previous.expect("validated unchanged source");
+            return Some(LexicalSnapshot {
+                source: self.source,
+                language: self.language,
+                normalize_crlf: self.normalize_crlf,
+                rows: previous.rows.clone(),
+                tokens: previous.tokens.clone(),
+                retokenized_rows: 0,
+            });
+        }
         self.complete.then_some(LexicalSnapshot {
             source: self.source,
             language: self.language,
             normalize_crlf: self.normalize_crlf,
-            rows: self.contexts,
+            rows: std::sync::Arc::new(self.contexts),
             tokens: std::sync::Arc::new(self.rows),
             retokenized_rows: self.retokenized_rows,
         })
@@ -1520,6 +1557,57 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_lexical_tables_preserve_source_settings_and_repeated_reuse() {
+        use std::sync::Arc;
+        let source = Arc::new("/*\r\n文😀\r\n*/\r\n".repeat(1000));
+        let prepare = |source: Arc<String>| {
+            let mut job = LexicalPreparation::for_textarea(source, Language::Rust);
+            while !job.is_complete() {
+                job.advance(128, 64 * 1024);
+            }
+            Arc::new(job.finish_snapshot().unwrap())
+        };
+        let old = prepare(source.clone());
+        for current in [source.clone(), Arc::new(source.as_ref().clone())] {
+            let mut job = LexicalPreparation::for_textarea(current.clone(), Language::Rust)
+                .reuse(old.clone());
+            assert!(job.is_complete());
+            assert_eq!(job.advance(128, 64 * 1024), 0);
+            let snapshot = job.finish_snapshot().unwrap();
+            assert!(Arc::ptr_eq(&snapshot.source, &current));
+            assert!(Arc::ptr_eq(&snapshot.rows, &old.rows));
+            assert!(Arc::ptr_eq(snapshot.tokens(), old.tokens()));
+            assert_eq!(snapshot.retokenized_rows(), 0);
+        }
+        assert_eq!(
+            &LexicalPreparation::for_textarea(source.clone(), Language::Rust)
+                .reuse(old.clone())
+                .finish()
+                .unwrap(),
+            old.tokens().as_ref()
+        );
+        let changed = prepare(Arc::new(source.replace("文😀", "changed")));
+        let mut job = LexicalPreparation::for_textarea(source.clone(), Language::Rust)
+            .reuse(old.clone())
+            .reuse(changed);
+        assert!(!job.is_complete());
+        while !job.is_complete() {
+            job.advance(128, 64 * 1024);
+        }
+        assert_eq!(job.finish_snapshot().unwrap().tokens(), old.tokens());
+        assert!(
+            !LexicalPreparation::new(source.clone(), Language::Rust)
+                .reuse(old.clone())
+                .is_complete()
+        );
+        assert!(
+            !LexicalPreparation::for_textarea(source, Language::Plain)
+                .reuse(old)
+                .is_complete()
+        );
+    }
+
+    #[test]
     fn incremental_lexical_rows_reuse_only_matching_source_and_context() {
         fn prepare(
             source: &str,
@@ -1590,6 +1678,8 @@ mod tests {
             }
             let unchanged = prepare(source, Some(old.clone()), language);
             assert_eq!(unchanged.retokenized_rows(), 0);
+            assert!(std::sync::Arc::ptr_eq(&old.rows, &unchanged.rows));
+            assert!(std::sync::Arc::ptr_eq(old.tokens(), unchanged.tokens()));
             assert!(
                 old.tokens()
                     .iter()

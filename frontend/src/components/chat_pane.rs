@@ -664,7 +664,7 @@ fn TuiStatusLine(
                 />
             </super::dropdown::Dropdown>
             <span class="tui-sep">"│"</span>
-            <button type="button" class=move || format!("btn ghost tui-ctx-gauge {}", gauge_color_class()) title="Context Window Utilization" aria-label="View context usage" on:click=move |_| ui.context_open.set(true)>
+            <button type="button" class=move || format!("btn sm ghost tui-ctx-gauge {}", gauge_color_class()) title="Context Window Utilization" aria-label="View context usage" on:click=move |_| ui.context_open.set(true)>
                 <span class="tui-context-detail">
                 "Ctx: "
                 {move || session_telemetry.with(SessionTelemetry::compact_context_tokens)}
