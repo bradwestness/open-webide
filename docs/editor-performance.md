@@ -1087,3 +1087,51 @@ CI runs the font matrix and near-1-MiB complete-geometry oracle in separate brow
 runs, retaining the 300-second binary deadline and existing short UI readiness
 assertions. This keeps the expanding suite's aggregate duration from hiding
 individual geometry failures.
+
+## Resuming paint at indexed run boundaries
+
+Continuation probes now carry the original paint-run boundary already proved by
+the shared plan. Plain viewport slices use the existing source index's binary
+lookup to make the same declaration. The renderer resumes grapheme segmentation
+from that boundary instead of rescanning the token's unused prefix, retaining
+original shaping spans even when the selected crop is shorter than 512 bytes.
+Styled viewport slices without a proved boundary retain prefix segmentation.
+
+The browser DOM oracle compares aligned and unaligned crops with cloned original
+markup, including Unicode, combining clusters and escaped text. Core index checks
+compare boundary declarations with the complete renderer's run ranges. Both-mode
+geometry contracts still compare complete extents/anchors through the 1 MiB row
+limit and all five fonts/features; the broader UI suite passes.
+
+Six fresh release samples on the same Linux/Chromium setup and Unicode source as
+the preceding table, three repetitions per mode (2026-10-08):
+
+| Mode | Cold paint median / range (ms) | Input paint median / range (ms) | Scroll paint median (ms) | Peak Chrome PSS median (KiB) | Largest task median (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Local | 10085 / 9720–10654 | 2086 / 2072–2110 | 21 | 823600 | 3581 |
+| Remote | 10603 / 9912–11571 | 2085 / 2066–2106 | 22 | 828989 | 3650 |
+
+Input medians decrease by about 20–22 percent against the preceding samples.
+These observations still do not satisfy interactive long-row latency: startup
+shaping and changed-paragraph preparation remain multi-second work. Tabbed,
+wrapped and bidirectional preparation, styled viewport prefix scans and
+incremental changed-paragraph reuse remain open. Local cases grant no native
+folder handle. The recorded `appModule` identifies the measured release bundle;
+the header's checkout is the pre-commit base.
+
+[Raw repeated measurements](editor-performance/aligned-paint-runs-linux.jsonl).
+
+The language/parser browser contract also uses a scoped synthetic clock for its
+synchronous facade calls: grammar correctness does not race the real 12 ms
+interactive budget on a slow runner. A separate advancing-clock check verifies
+deadline cancellation, alongside caller cancellation, oversized source rejection
+and recovery. The production parser budget is unchanged; the clock is restored
+before assertions or awaits.
+
+A separate instrumented repetition per mode recorded no complete-row fallback or
+trace truncation. Input preparation used 71 batches in each mode. Paragraph HTML
+generation totalled 12.5/13.0 ms, local layout 794.9/766.7 ms, and geometry plus
+final overflow 1234.4/1211.3 ms (local/remote). These diagnostic totals identify
+layout/geometry as the next input bottleneck; they do not include initial native
+shaping, and instrumented end-to-end timings are not substituted into the table.
+[Raw diagnostic records](editor-performance/aligned-paint-runs-linux-trace.jsonl).

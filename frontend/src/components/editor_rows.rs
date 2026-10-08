@@ -171,6 +171,7 @@ fn measure_paragraph_probe(
         bytes: probe.bytes.clone(),
         native_start: probe.native_start,
         reaches_end: probe.bytes.end == body.len(),
+        starts_paint_run: true,
     };
     let started = timing.as_ref().map(|trace| trace.clock.now());
     let html = render(&[source_line], false, &[slice]);

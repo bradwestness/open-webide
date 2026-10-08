@@ -60,8 +60,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   the requested window. Unwrapped source-monotonic rows now prepare exact
   extents and anchors in at most 16 KiB probes, retaining complete paint runs
   and validating every overlap glyph. Unsupported boundaries and failed proofs
-  use complete measurement. Tabbed/wrapped/bidi preparation, prefix segmentation,
-  initial native shaping and incremental changed-paragraph reuse remain.
+  use complete measurement. Continuation probes and indexed plain viewport
+  slices resume segmentation at proven original run boundaries. Tabbed/wrapped/bidi
+  preparation, styled viewport prefix segmentation, initial native shaping and
+  incremental changed-paragraph reuse remain.
   Cold probes briefly await the selected font, with bounded fallback and fresh ownership checks.
   The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)
   records why Rust shaping and canvas widths cannot replace current DOM geometry directly.

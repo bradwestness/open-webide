@@ -68,6 +68,12 @@ impl VisualLineIndex {
     pub fn text_run_boundaries(&self) -> impl Iterator<Item = usize> + '_ {
         self.0.points.iter().skip(1).map(|point| point.byte)
     }
+    pub fn is_text_run_boundary(&self, byte: usize) -> bool {
+        self.0
+            .points
+            .binary_search_by_key(&byte, |point| point.byte)
+            .is_ok()
+    }
     /// Includes the terminal insertion point, matching visual_line_offsets.
     pub fn len(&self) -> usize {
         self.0.end.glyph + 1
@@ -144,6 +150,16 @@ mod tests {
         ] {
             let index = VisualLineIndex::new(&body).unwrap();
             let expected = crate::editor::visual_line_offsets(&body).unwrap();
+            let run_starts = crate::editor::visual_text_run_ranges(&body)
+                .map(|run| run.start)
+                .chain(std::iter::once(body.len()))
+                .collect::<Vec<_>>();
+            for byte in 0..=body.len() {
+                assert_eq!(
+                    index.is_text_run_boundary(byte),
+                    run_starts.binary_search(&byte).is_ok()
+                );
+            }
             assert_eq!(index.len(), expected.len());
             for (glyph, &(byte, native)) in expected.iter().enumerate().step_by(31) {
                 assert_eq!(index.at(&body, glyph), Some((byte, native)));

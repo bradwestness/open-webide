@@ -126,6 +126,9 @@ pub struct EditorRowSourceSlice {
     pub bytes: std::ops::Range<usize>,
     pub native_start: usize,
     pub reaches_end: bool,
+    /// The continuation plan or plain source index proved this endpoint is an
+    /// original paint-run boundary; other viewport slices make no declaration.
+    pub starts_paint_run: bool,
 }
 impl EditorActions {
     pub fn paragraph_measurements(
@@ -446,11 +449,14 @@ impl EditorActions {
         if end.checked_sub(start)? > openwebide_core::editor::MAX_MEASURE_BYTES {
             return None;
         }
+        let starts_paint_run =
+            paint_row(paint, row)?.plain.is_some() && index.is_text_run_boundary(start);
         Some(EditorRowSourceSlice {
             source_line: line.source_line,
             bytes: start..end,
             native_start,
             reaches_end: end == body.len(),
+            starts_paint_run,
         })
     }
     pub fn forget_measured_row_geometry(self, cache: &mut EditorFragmentCache, row: usize) {

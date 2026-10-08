@@ -837,7 +837,12 @@ pub async fn bounded_paragraph_matches_complete(
 }
 
 /// Whitespace markers retain their original text node and therefore source offsets.
-fn paint_text_range(text: &str, range: std::ops::Range<usize>, show_whitespace: bool) -> String {
+fn paint_text_range(
+    text: &str,
+    range: std::ops::Range<usize>,
+    show_whitespace: bool,
+    starts_paint_run: bool,
+) -> String {
     let Some(selected) = text.get(range.clone()) else {
         return String::new();
     };
@@ -848,7 +853,11 @@ fn paint_text_range(text: &str, range: std::ops::Range<usize>, show_whitespace: 
         if text.len() <= 512 {
             return escape_html(selected);
         }
-        return openwebide_core::editor::visual_text_run_ranges(text)
+        // A proven original run boundary lets segmentation resume at the
+        // selected source, preserving the complete paint's span topology.
+        let start = if starts_paint_run { range.start } else { 0 };
+        return openwebide_core::editor::visual_text_run_ranges(&text[start..])
+            .map(|run| run.start + start..run.end + start)
             .take_while(|run| run.start < range.end)
             .filter(|run| run.end > range.start)
             .map(|run| {
@@ -968,7 +977,12 @@ fn highlight_html(
             } else {
                 0..text.len()
             };
-            html.push_str(&paint_text_range(text, range.clone(), show_whitespace));
+            html.push_str(&paint_text_range(
+                text,
+                range.clone(),
+                show_whitespace,
+                source_slice.is_some_and(|slice| slice.starts_paint_run),
+            ));
             #[cfg(feature = "test-support")]
             {
                 painted_bytes += range.len();
@@ -997,12 +1011,22 @@ fn highlight_html(
                 painted_bytes += range.len();
             }
             match tok.kind {
-                TokenKind::Plain => html.push_str(&paint_text_range(text, range, show_whitespace)),
+                TokenKind::Plain => html.push_str(&paint_text_range(
+                    text,
+                    range,
+                    show_whitespace,
+                    source_slice.is_some_and(|slice| slice.starts_paint_run),
+                )),
                 kind => {
                     html.push_str("<span class=\"");
                     html.push_str(token_class(kind));
                     html.push_str("\">");
-                    html.push_str(&paint_text_range(text, range, show_whitespace));
+                    html.push_str(&paint_text_range(
+                        text,
+                        range,
+                        show_whitespace,
+                        source_slice.is_some_and(|slice| slice.starts_paint_run),
+                    ));
                     html.push_str("</span>");
                 }
             }
@@ -3532,10 +3556,20 @@ mod tests {
             "\u{301}".repeat(600)
         );
         let full = document().create_element("div").unwrap();
-        full.set_inner_html(&paint_text_range(&source, 0..source.len(), false));
+        full.set_inner_html(&paint_text_range(&source, 0..source.len(), false, false));
         // Both endpoints fall inside runs, not at the 512-byte source boundary.
         // A DOM Range clones the original markup without re-segmenting its text.
-        for selected in [3..517, 517..source.len() - 2, 3..10] {
+        let mut selections = vec![
+            (3..517, false),
+            (517..source.len() - 2, false),
+            (3..10, false),
+        ];
+        for run in openwebide_core::editor::visual_text_run_ranges(&source).skip(2) {
+            let short_end = run.start + source[run.start..].chars().next().unwrap().len_utf8();
+            selections.push((run.start..short_end, true));
+            selections.push((run.start..run.end, true));
+        }
+        for (selected, starts_paint_run) in selections {
             let dom_range = document().create_range().unwrap();
             let runs = full.query_selector_all(".editor-text-run").unwrap();
             let mut offset = 0;
@@ -3576,7 +3610,12 @@ mod tests {
                 expected.append_child(&fragment).unwrap();
             }
             let cropped = document().create_element("div").unwrap();
-            cropped.set_inner_html(&paint_text_range(&source, selected.clone(), false));
+            cropped.set_inner_html(&paint_text_range(
+                &source,
+                selected.clone(),
+                false,
+                starts_paint_run,
+            ));
             assert_eq!(cropped.inner_html(), expected.inner_html());
             assert_eq!(cropped.text_content().unwrap(), source[selected]);
         }

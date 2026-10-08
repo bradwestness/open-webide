@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Make built-in language parser contracts independent of runner scheduling with a scoped test clock; verify deadline cancellation separately while retaining the production parser budget.
+
+- Resume editor text segmentation at proven original paint-run boundaries for continuation probes and indexed plain viewport slices, preserving the original shaping spans without repeatedly scanning the unused prefix.
+
 - Prepare eligible unwrapped editor paragraphs in at most 16 KiB styled probes, preserving original paint-run boundaries and validating every overlap glyph before publishing exact extents and anchors. Keep glyph measurements near the origin and fall back to complete layout when proof fails. Tabbed, wrapped and bidirectional paragraphs retain complete preparation.
 
 - Preserve original grapheme-safe text-run boundaries when painting a cropped editor row, including short crops of long tokens. Stream run boundaries without allocating a complete run vector or segmenting the unused suffix; retain exact geometry validation and full-row fallback.

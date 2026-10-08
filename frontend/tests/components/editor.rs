@@ -2126,6 +2126,22 @@ async fn folded_document_commands_projection_and_history_share_both_modes() {
     }
 }
 
+// Scope the browser clock override to one synchronous facade call. Restore it
+// before assertions or awaits so other UI timers keep their real clock.
+fn with_syntax_clock<T>(step_ms: f64, action: impl FnOnce() -> T) -> T {
+    let restore = js_sys::Function::new_with_args(
+        "step",
+        "const original = Date.now; let now = 0; Date.now = () => { const value = now; now += step; return value; }; return () => { Date.now = original; };",
+    )
+    .call1(&wasm_bindgen::JsValue::NULL, &step_ms.into())
+    .unwrap()
+    .dyn_into::<js_sys::Function>()
+    .unwrap();
+    let result = action();
+    restore.call0(&wasm_bindgen::JsValue::NULL).unwrap();
+    result
+}
+
 #[wasm_bindgen_test]
 async fn built_in_language_parser_folds_share_local_remote_and_wasm_contracts() {
     use openwebide_core::{
@@ -2148,18 +2164,24 @@ async fn built_in_language_parser_folds_share_local_remote_and_wasm_contracts() 
         for &(path, source, expected) in LANGUAGE_CASES {
             mounted.state.workspace.open_file.set(Some(path.into()));
             mounted.state.workspace.content.set(source.into());
-            let (status, folds) = actions.syntax_folds(|| true).unwrap();
+            let (status, folds) = with_syntax_clock(0.0, || actions.syntax_folds(|| true)).unwrap();
             assert_eq!(status, SyntaxStatus::Ready { incremental: false }, "{path}");
             assert!(folds.contains(&expected), "{mode:?} {path}: {folds:?}");
             let revised = source.replace("文😀", "😀文 changed").replace('\n', "\r\n");
             mounted.state.workspace.content.set(revised.clone().into());
-            let (status, folds) = actions.syntax_folds(|| true).unwrap();
+            let (status, folds) = with_syntax_clock(0.0, || actions.syntax_folds(|| true)).unwrap();
             assert_eq!(status, SyntaxStatus::Ready { incremental: true }, "{path}");
             let mut fresh = SyntaxDocument::new(language_from_path(path)).unwrap();
             fresh.update(&revised, || true);
             assert_eq!(folds, fresh.folds(), "{path}");
             assert_eq!(
-                actions.syntax_folds(|| false).unwrap(),
+                with_syntax_clock(0.0, || actions.syntax_folds(|| false)).unwrap(),
+                (SyntaxStatus::Cancelled, vec![])
+            );
+            // Budget cancellation is a separate deterministic contract, not a
+            // race between grammar correctness and host scheduling/JIT pauses.
+            assert_eq!(
+                with_syntax_clock(13.0, || actions.syntax_folds(|| true)).unwrap(),
                 (SyntaxStatus::Cancelled, vec![])
             );
             mounted
@@ -2168,12 +2190,14 @@ async fn built_in_language_parser_folds_share_local_remote_and_wasm_contracts() 
                 .content
                 .set(oversized.clone().into());
             assert_eq!(
-                actions.syntax_folds(|| true).unwrap(),
+                with_syntax_clock(0.0, || actions.syntax_folds(|| true)).unwrap(),
                 (SyntaxStatus::TooLarge, vec![])
             );
             mounted.state.workspace.content.set(source.into());
             assert_eq!(
-                actions.syntax_folds(|| true).unwrap().0,
+                with_syntax_clock(0.0, || actions.syntax_folds(|| true))
+                    .unwrap()
+                    .0,
                 SyntaxStatus::Ready { incremental: false }
             );
         }
