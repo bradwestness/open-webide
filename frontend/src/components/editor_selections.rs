@@ -89,10 +89,7 @@ pub(super) fn SelectionOverlay(
                 || !projection
                     .as_ref()
                     .zip(actions.projection().as_ref())
-                    .is_some_and(|(before, now)| {
-                        std::ptr::eq(before.text().as_ptr(), now.text().as_ptr())
-                            && before.text().len() == now.text().len()
-                    })
+                    .is_some_and(|(before, now)| before.shares_text_version(now))
                 || actions.current_selections() != selections
             {
                 return;

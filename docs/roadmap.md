@@ -111,7 +111,7 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Cold layout shares exact repeated paint dimensions after matching representative samples;
   distinct or conflicting rows still require fresh measurement. Browser contracts verify
   each cold probe independently of font/layout retries and await styled tokens plus
-  current source hit geometry for token-click checks.
+  current source hit geometry and pointer-adapter readiness for token-click checks.
   Initial bounded neutral unwrapped frames use the shared document index before lexical
   completion and browser frame callbacks. Held-frame contracts cover bounded native input,
   source columns and line-end clicks in both modes; identical frames revalidate without
@@ -144,7 +144,12 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   cancellation restores the original allocations. Commands, clipboard edits,
   search replacements and composition completion move their text into shared state
   and return selections without retaining a second publication copy. Reduce remaining
-  buffer/projection publication. Complete-native replacement compares borrowed,
+  buffer/projection publication. Unfolded projections share immutable document
+  source, including LF native text; folded views reserve visible bytes and move
+  assembled strings into shared storage. Unused projection caches release source
+  before edits, while retained views and composition baselines detach on change.
+  Native normalization uses one pass. Projection row/coordinate tables still
+  rebuild, and active-buffer publication still copies source. Complete-native replacement compares borrowed,
   newline-normalized source characters and maps edit boundaries directly to source
   bytes; duplicate composition commits reuse that comparison. Complete-value
   comparison still scans unchanged prefix/suffix characters. History snapshots

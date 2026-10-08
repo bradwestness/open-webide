@@ -9,6 +9,12 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share unfolded editor projections with the document's immutable source; LF native input shares that allocation too. Folded views reserve only visible bytes and keep assembled strings without copying them into another storage type. Release unused projection caches before edits, preserve retained snapshots, and normalize native text in one pass.
+
+- Validate projection provenance by immutable text allocation, preserving empty-document replacement rejection for native replay and deferred selection paint.
+
+- Expose source-pointer readiness separately from retained paint visibility, and await that capability in highlighted click/drag checks so a visible retained frame is not mistaken for an interactive replacement.
+
 - Validate retained syntax scopes with the shared source revision and immutable allocation ownership, avoiding full-file comparisons for current worker/fallback snapshots. Content replacement invalidates old scopes even when bytes match; external snapshots retain complete-byte validation.
 
 - Await current source hit-test geometry before highlighted click regressions, so CI does not dispatch clicks during a pending layout/font replacement; preserve exact column and line-end selection assertions.

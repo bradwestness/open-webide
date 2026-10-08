@@ -3163,7 +3163,7 @@ pub fn Editor(
                             }
                             _ => {
                                 view! {
-                                    <div class="editor-code" data-editor-view=move || editor_actions.view_revision().to_string() data-editor-account=editor_account_generation.to_string() style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + 42px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_visible.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
+                                    <div class="editor-code" data-editor-view=move || editor_actions.view_revision().to_string() data-editor-account=editor_account_generation.to_string() data-editor-pointer-ready=move || highlight_ready.get().to_string() style=move || content.with(|text| format!("--editor-gutter-width: calc({}ch + 42px); --editor-tab-width: {}", text.split('\n').count().to_string().len(), editor_actions.rules().indentation.tab_width())) class:highlight-ready=move || highlight_visible.get() class:editor-word-wrap=move || editor_actions.preferences().word_wrap>
                                         <div class="editor-scroll-surface" aria-hidden="true" on:scroll=move |event: web_sys::Event| {
                                             let Some(textarea) = ta.get_untracked() else { return; };
                                             let Some(target) = event.current_target().and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok()) else { return; };

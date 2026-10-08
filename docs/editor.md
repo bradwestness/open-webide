@@ -581,6 +581,15 @@ input costs remain performance follow-ups.
 CRLF inverse mapping still selects the original CR, and surrogate offsets retain
 the existing boundary behavior. Projected text, normalized textarea text and
 visible-row coordinates share immutable allocations until source or folds change.
+Unfolded document projections share the document's source storage; LF textarea
+text shares it too. Folded text reserves only visible bytes and moves its assembled
+String into shared storage. CR/LF normalization uses one pass with a source-size
+capacity bound. Unused projection caches release their source before edits;
+retained views and composition baselines remain immutable through copy-on-write.
+Projection provenance compares immutable allocations, including empty text whose
+String buffer pointer cannot distinguish document replacements.
+Retained paint visibility and source-pointer readiness are separate states; the
+editor exposes `data-editor-pointer-ready` for browser checks and diagnostics.
 Preparing a view does not change document identity. Short-line queries and warm
 projection access are measured in [editor performance](editor-performance.md);
 full String materialization and long-line query costs remain.

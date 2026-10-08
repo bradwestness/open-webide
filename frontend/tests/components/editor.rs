@@ -964,6 +964,13 @@ async fn highlighted_token_clicks_preserve_columns_and_line_ends_in_both_modes()
             let actions = EditorActions::new(mounted.state.workspace);
             let input: web_sys::HtmlTextAreaElement =
                 mounted.element(".editor-textarea").unchecked_into();
+            let pointer_ready = || {
+                mounted
+                    .element(".editor-code")
+                    .get_attribute("data-editor-pointer-ready")
+                    .as_deref()
+                    == Some("true")
+            };
             let start = source.find("    let").unwrap();
             for (column, expected, beyond) in [
                 (8, start + 8, false),
@@ -971,6 +978,9 @@ async fn highlighted_token_clicks_preserve_columns_and_line_ends_in_both_modes()
                 (24, start + 28, true),
             ] {
                 wait_until("current source hit before highlighted click", || {
+                    if !pointer_ready() {
+                        return false;
+                    }
                     let point = editorClickPoint(&input, 2, column, beyond);
                     let (Some(x), Some(y)) = (point.get(0).as_f64(), point.get(1).as_f64()) else {
                         return false;
@@ -997,6 +1007,7 @@ async fn highlighted_token_clicks_preserve_columns_and_line_ends_in_both_modes()
                 );
             }
             for vertical in [0.05, 0.5, 0.95] {
+                wait_until("pointer adapter before far-right click", pointer_ready).await;
                 assert!(editorClickFarRight(&input, 2, vertical));
                 frame().await;
                 assert_eq!(
@@ -1006,6 +1017,7 @@ async fn highlighted_token_clicks_preserve_columns_and_line_ends_in_both_modes()
                 );
             }
             for container in [false, true] {
+                wait_until("pointer adapter before highlighted drag", pointer_ready).await;
                 assert!(
                     editorPrimaryGesture(&input, 2, 16, 1, false, "mousedown").default_prevented()
                 );
@@ -13932,8 +13944,12 @@ async fn bounded_native_context_rejects_stale_source_selection_and_owner_scopes_
     };
     use openwebide_frontend::state_actions::editor::EditorActions;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
-        for changed in 0..9 {
-            let original = "α🦀 row\r\n".repeat(3000);
+        for changed in 0..10 {
+            let original = if changed == 9 {
+                String::new()
+            } else {
+                "α🦀 row\r\n".repeat(3000)
+            };
             let source = original.clone();
             let slot = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
             let captured = slot.clone();
@@ -13978,7 +13994,7 @@ async fn bounded_native_context_rejects_stale_source_selection_and_owner_scopes_
                     .auth
                     .generation
                     .update(|generation| *generation += 1),
-                7 => mounted
+                7 | 9 => mounted
                     .state
                     .workspace
                     .editor_documents

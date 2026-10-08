@@ -16,8 +16,7 @@ pub struct EditorNativeCommit {
 const CONTEXT_HEADROOM_BYTES: usize = 4 * 1024;
 
 pub(super) fn same_projection(first: &FoldProjection, second: &FoldProjection) -> bool {
-    std::ptr::eq(first.text().as_ptr(), second.text().as_ptr())
-        && first.text().len() == second.text().len()
+    first.shares_text_version(second)
 }
 
 impl EditorNativeContext {

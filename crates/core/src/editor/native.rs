@@ -48,6 +48,14 @@ pub fn textarea_value_matches(source: &str, value: &str) -> bool {
         .eq(value.chars())
 }
 
+pub(super) fn textarea_text(source: &str) -> String {
+    let mut text = String::with_capacity(source.len());
+    for (_, ch) in TextareaCharacters::new(source) {
+        text.push(ch);
+    }
+    text
+}
+
 fn textarea_change(source: &str, value: &str) -> Option<(Range<usize>, Range<usize>)> {
     let (mut source_start, mut value_start) = (0, 0);
     for ((range, old), (offset, new)) in TextareaCharacters::new(source).zip(value.char_indices()) {
@@ -249,7 +257,7 @@ fn changes(
         .collect())
 }
 pub(super) fn native_inserted_text(source: &str, text: &str) -> String {
-    let mut inserted = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut inserted = textarea_text(text);
     if inserted.contains('\n')
         && source
             .split_once('\n')

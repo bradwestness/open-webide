@@ -29,8 +29,8 @@ pub enum ProjectionError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoldProjection {
-    text: Arc<str>,
-    textarea_text: Arc<str>,
+    text: Arc<String>,
+    textarea_text: Arc<String>,
     source_len: usize,
     source_range: Range<usize>,
     textarea_origin: usize,
@@ -50,8 +50,30 @@ impl FoldProjection {
         folds: &FoldState,
         index: &super::index::LineIndex,
     ) -> Self {
+        Self::build(source, folds, index, None)
+    }
+
+    pub(super) fn for_document(
+        source: &Arc<String>,
+        folds: &FoldState,
+        index: &super::index::LineIndex,
+    ) -> Self {
+        let shared = folds
+            .ranges()
+            .iter()
+            .all(|range| folds.collapsed_at(range.start_line).is_none())
+            .then(|| source.clone());
+        Self::build(source, folds, index, shared)
+    }
+
+    fn build(
+        source: &str,
+        folds: &FoldState,
+        index: &super::index::LineIndex,
+        shared: Option<Arc<String>>,
+    ) -> Self {
         let logical = &index.rows;
-        let mut text = String::new();
+        let mut visible_len = 0;
         let mut visible = Vec::new();
         let mut coordinates = Vec::new();
         let mut hidden: Vec<HiddenText> = Vec::new();
@@ -62,11 +84,11 @@ impl FoldProjection {
             visible.push(VisibleLine {
                 source_line: row,
                 source: line.start..line.end,
-                visible_start: text.len(),
+                visible_start: visible_len,
                 textarea_start,
             });
             coordinates.push(index.coordinates[row].clone());
-            text.push_str(&source[line.start..line.end]);
+            visible_len += line.end - line.start;
             textarea_start += index.native_line_len(row);
             if let Some(range) = folds.collapsed_at(row) {
                 let end = range.end_line.min(logical.len() - 1);
@@ -75,7 +97,7 @@ impl FoldProjection {
                     if !omitted.is_empty() {
                         hidden.push(HiddenText {
                             source: omitted,
-                            visible_offset: text.len(),
+                            visible_offset: visible_len,
                             header_end: line.body_end,
                         });
                     }
@@ -84,6 +106,13 @@ impl FoldProjection {
             }
             row += 1;
         }
+        let text = shared.unwrap_or_else(|| {
+            let mut text = String::with_capacity(visible_len);
+            for line in &visible {
+                text.push_str(&source[line.source.clone()]);
+            }
+            Arc::new(text)
+        });
         // A trailing newline always creates a logical empty input row. Keep its
         // source identity even when a provider included it in a fold's range.
         if text.ends_with('\n')
@@ -104,9 +133,8 @@ impl FoldProjection {
         let uniform_rows = !text.as_bytes().iter().enumerate().any(|(offset, byte)| {
             *byte == b'\r' && text.as_bytes().get(offset + 1) != Some(&b'\n')
         });
-        let text: Arc<str> = text.into();
         let textarea_text = if text.contains('\r') {
-            Arc::from(text.replace("\r\n", "\n").replace('\r', "\n"))
+            Arc::new(super::native::textarea_text(&text))
         } else {
             text.clone()
         };
@@ -125,6 +153,10 @@ impl FoldProjection {
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+    /// Exact immutable text provenance, including empty strings with no buffer.
+    pub fn shares_text_version(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.text, &other.text)
     }
     pub fn textarea_text(&self) -> &str {
         &self.textarea_text
@@ -205,9 +237,9 @@ impl FoldProjection {
             native += super::byte_to_textarea(slice, slice.len())
                 .map_err(|_| ProjectionError::InvalidOffset)?;
         }
-        let text: Arc<str> = self.text[range.clone()].into();
+        let text = Arc::new(self.text[range.clone()].to_string());
         let textarea_text = if text.contains('\r') {
-            Arc::from(text.replace("\r\n", "\n").replace('\r', "\n"))
+            Arc::new(super::native::textarea_text(&text))
         } else {
             text.clone()
         };
@@ -1082,6 +1114,7 @@ mod tests {
         let mut document = Document::new("head 😀\r\nbody 文\r\nend\r\nnext");
         let before = document.clone();
         let first = document.projection();
+        assert!(Arc::ptr_eq(&document.text, &first.text));
         assert_eq!(
             document, before,
             "preparing a derived view does not mutate document identity"
@@ -1115,6 +1148,7 @@ mod tests {
         );
         document.fold_command(FoldCommand::CollapseAll);
         let folded = document.projection();
+        assert!(!Arc::ptr_eq(&document.text, &folded.text));
         assert_eq!(folded.text(), "header 😀\r\nnext");
         assert_eq!(folded.textarea_text(), "header 😀\nnext");
         for offset in 0..=folded.textarea_text.encode_utf16().count() + 2 {
@@ -1132,7 +1166,97 @@ mod tests {
         );
         assert_eq!(document.projection(), folded);
         document.fold_command(FoldCommand::ExpandAll);
-        assert_eq!(document.projection().text(), changed.text());
+        let expanded = document.projection();
+        assert_eq!(expanded.text(), changed.text());
+        assert!(Arc::ptr_eq(&document.text, &expanded.text));
+    }
+
+    #[test]
+    fn unused_projection_releases_source_before_edit_and_retained_views_stay_immutable() {
+        use crate::editor::{Document, Edit};
+        for source in [
+            "head 文😀\nbody\n",
+            "head 文😀\r\nbody\r\n",
+            "head 文😀\rbody\n",
+        ] {
+            let mut document = Document::new(source);
+            let first = document.projection();
+            assert!(Arc::ptr_eq(&document.text, &first.text));
+            assert_eq!(
+                first.textarea_text(),
+                source.replace("\r\n", "\n").replace('\r', "\n")
+            );
+            if !source.contains('\r') {
+                assert!(Arc::ptr_eq(&document.text, &first.textarea_text));
+            }
+            let address = document.text().as_ptr();
+            drop(first);
+            document
+                .apply(
+                    vec![Edit::replace(0..4, "HEAD")],
+                    vec![Selection::caret(4)],
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                document.text().as_ptr(),
+                address,
+                "an unused projection must not force a source copy"
+            );
+            let retained = document.projection();
+            document
+                .apply(
+                    vec![Edit::replace(0..4, "tail")],
+                    vec![Selection::caret(4)],
+                    None,
+                )
+                .unwrap();
+            assert_ne!(document.text().as_ptr(), retained.text().as_ptr());
+            assert!(retained.text().starts_with("HEAD"));
+            assert!(document.undo());
+            assert_eq!(document.text(), retained.text());
+            assert!(document.redo());
+            assert!(document.text().starts_with("tail"));
+            assert!(retained.text().starts_with("HEAD"));
+        }
+    }
+
+    #[test]
+    fn folded_storage_reserves_visible_bytes_without_retaining_hidden_capacity() {
+        use crate::editor::{Document, FoldCommand};
+        let source = format!("head\n{}last\n", "    body 文😀\r\n".repeat(10_000));
+        let mut document = Document::new(source);
+        document.fold_state_mut().set_ranges(
+            vec![FoldRange {
+                start_line: 0,
+                end_line: 10_000,
+            }],
+            10_003,
+        );
+        document.fold_command(FoldCommand::CollapseAll);
+        let folded = document.projection();
+        assert_eq!(folded.text(), "head\nlast\n");
+        assert!(
+            folded.text.capacity() < 100,
+            "a small visible projection must not reserve hidden source bytes"
+        );
+        assert!(Arc::ptr_eq(&folded.text, &folded.textarea_text));
+        let window = folded.window(0..5).unwrap();
+        assert_eq!(window.text(), "head\n");
+        assert!(window.text.capacity() < 100);
+        assert!(Arc::ptr_eq(&window.text, &window.textarea_text));
+    }
+
+    #[test]
+    fn empty_projection_versions_reject_distinct_documents_and_retain_clones() {
+        use crate::editor::Document;
+        let document = Document::new("");
+        let first = document.projection();
+        assert!(first.shares_text_version(&first.clone()));
+        assert!(first.shares_text_version(&document.clone().projection()));
+        let replacement = Document::new("").projection();
+        assert_eq!(first.text().as_ptr(), replacement.text().as_ptr());
+        assert!(!first.shares_text_version(&replacement));
     }
 
     proptest::proptest! {

@@ -340,7 +340,7 @@ impl Document {
     pub fn projection(&self) -> FoldProjection {
         self.projection
             .0
-            .get_or_init(|| FoldProjection::indexed(&self.text, &self.folds, &self.line_index))
+            .get_or_init(|| FoldProjection::for_document(&self.text, &self.folds, &self.line_index))
             .clone()
     }
 
@@ -730,6 +730,9 @@ fn replace_indexed_text(
     if edits.is_empty() {
         return;
     }
+    // An unused derived view must not force a detach of its shared source.
+    // Retained external views and composition baselines still require a copy.
+    projection.0.take();
     let boundaries = folds.prepare_rebase(&index.rows, &edits);
     // Merge edits whose row contexts overlap. Multiple cursors in one long row
     // rebuild it once, while distant edits retain unchanged interior indexes.
@@ -775,7 +778,6 @@ fn replace_indexed_text(
         let new_end = text.len() - (old_len - changed.end);
         index.update(old_len, text, changed, new_end);
     }
-    projection.0.take();
     folds.finish_rebase(boundaries, &index.rows);
 }
 
