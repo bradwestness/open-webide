@@ -2166,3 +2166,45 @@ worker verifier. The two separate heavy font/boundary geometry matrices were not
 rerun for this parser-only change; their assertions remain in CI. The local
 worker passed the cold 1,000-paragraph request, which does not erase the Linux
 CI cold-deadline failure recorded above.
+
+### Cooperative parser continuation (2026-10-08)
+
+The Rust syntax service now retains source-bound outer and embedded parser
+progress across work batches. Expiry of the unchanged 100 ms worker batch asks
+for a yield, not cancellation; the module-worker adapter schedules the next task
+and resumes the same included range. The synchronous message adapter drives that
+same engine without yielding. Explicit cancellation, replacement source, total
+parser progress, source/node/record limits and wire validation remain separate
+from the time-slice decision. Partial syntax is never published.
+
+The core message queue bounds pending/active request count and source bytes.
+Admission also checks the resolved size of source deltas before making them
+active. A task retains its exact immutable source allocation; resumed calls avoid
+repeating line admission for that allocation. Parser reset/destruction happens
+before unfinished source buffers are released.
+
+Native regressions force many slices, compare complete fresh and incremental
+publications across both message adapters, prove completed paragraphs parse only
+once, interrupt/resume a fenced Rust body, cancel that body and recover with a
+new source, verify supersession releases source allocations, retain the total
+progress limit across yields, and check count/byte limits, oversize and resync
+responses. All 476 all-feature core tests and strict core linting passed.
+The isolated browser suite passed 18 WASM unit tests, 434 ordinary component
+tests (145.51 s), four adapter integration checks and doctests. Strict WASM
+frontend linting passed. The two heavy geometry matrices retain their CI gates;
+this parser change does not alter layout measurement.
+
+The release worker verifier keeps its original cold 1,000-paragraph Markdown
+fixture and all readiness/source/reuse assertions. An additional module-worker
+probe advances a test-only clock and instruments real task scheduling, without
+changing the production deadline. It passed 1,063 forced yields and compared
+Unicode/CRLF source, token colors, structure and folds across cold, incremental
+and fresh parses. The normal release worker also passed its grammar, eviction,
+source-delta, structural-delta and size-fallback contracts.
+
+Selection traversal, retained-region matching and final metadata/paint assembly
+still complete synchronously within their source/node/record admission limits;
+they are not proved to meet a 100 ms wall-clock bound. Bounded selection and
+publication, cold native input/layout, physical-device checks and full CI
+reliability remain in the editor goal. The preceding e0174b7 checkpoint achieved
+one complete green CI run; this change still needs its own CI evidence.

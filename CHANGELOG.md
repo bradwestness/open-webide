@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Continue syntax parsing across worker tasks when its 100 ms batch expires,
+  retaining outer/embedded parser progress instead of discarding cold Markdown
+  analysis. Share request validation, queue limits, reply shaping and cancellation
+  with the synchronous Rust service; publish only complete source-bound results.
+
 - Reuse unchanged embedded syntax trees across paragraph insertion, removal and
   shifted Unicode/CRLF positions. Reparse only affected bodies; retain provider,
   range, cancellation and fresh-output validation.

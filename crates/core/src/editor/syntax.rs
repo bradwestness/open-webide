@@ -5,19 +5,22 @@ mod contexts;
 mod folds;
 mod highlighting;
 mod highlights;
+mod preparation;
 mod service;
 mod subtrees;
-pub use service::{MAX_SYNTAX_REQUEST_BYTES, SYNTAX_PROTOCOL_VERSION, SyntaxReply, SyntaxRequest};
+pub use service::{
+    MAX_SYNTAX_REQUEST_BYTES, SYNTAX_BATCH_MS, SYNTAX_PROTOCOL_VERSION, SyntaxReply, SyntaxRequest,
+    SyntaxWorker,
+};
 mod transfer;
 use super::{FoldRange, MAX_STRUCTURE_BYTES, SyntaxProvider, normalize_folds, syntax_provider};
 use super::{Structure, SyntaxContextKind, structure::RegionKind};
 use crate::highlight::Language;
 use std::collections::HashMap;
-use std::ops::ControlFlow;
 use std::ops::Range as ByteRange;
 use std::sync::Arc;
 pub use transfer::{MAX_ANALYSIS_MESSAGE_BYTES, SyntaxAnalysisData, SyntaxSource};
-use tree_sitter::{InputEdit, Node, ParseOptions, Parser, Point, Range, Tree};
+use tree_sitter::{InputEdit, Node, Parser, Point, Range, Tree};
 
 const MAX_PROGRESS_CHECKS: usize = 4_096;
 const MAX_FOLD_NODES: usize = 100_000;
@@ -92,6 +95,7 @@ pub struct SyntaxDocument {
     tree: Option<Tree>,
     embedded: Vec<EmbeddedSyntax>,
     embedded_parsers: Vec<(Language, Parser)>,
+    pending: Option<preparation::SyntaxWork>,
     #[cfg(test)]
     embedded_parses: usize,
     text: Arc<String>,
@@ -123,6 +127,7 @@ impl SyntaxDocument {
             tree: None,
             embedded: Vec::new(),
             embedded_parsers: Vec::new(),
+            pending: None,
             #[cfg(test)]
             embedded_parses: 0,
             text: Arc::new(String::new()),
@@ -148,88 +153,12 @@ impl SyntaxDocument {
         source: impl FnOnce() -> Arc<String>,
         resolved_change: Option<(&Arc<String>, &super::TextChange)>,
     ) -> SyntaxStatus {
-        if text.len() > MAX_STRUCTURE_BYTES {
-            self.clear();
-            return SyntaxStatus::TooLarge;
+        if let Some(status) = self.begin_update(text, &mut should_continue, source, resolved_change)
+        {
+            return status;
         }
-        if !should_continue() {
-            self.clear();
-            return SyntaxStatus::Cancelled;
-        }
-        // Only the resolver can supply a change, and it owns the exact base used
-        // to construct this source. An equal-content but distinct base is insufficient.
-        let resolved_change = resolved_change
-            .filter(|(base, _)| self.ready && Arc::ptr_eq(base, &self.text))
-            .map(|(_, change)| change);
-        let unchanged = resolved_change.map_or_else(
-            || std::ptr::eq(self.text.as_str(), text) || self.text.as_str() == text,
-            |change| change.range.is_empty() && change.new_end == change.range.start,
-        );
-        if self.ready && unchanged {
-            return SyntaxStatus::Ready { incremental: true };
-        }
-        self.prepared = None;
-        let Some(parser) = self.parser.as_mut() else {
-            self.text = source();
-            self.ready = true;
-            return SyntaxStatus::Ready { incremental: false };
-        };
-        let edit_result = if let Some(change) = resolved_change {
-            input_edit_change(
-                &self.text,
-                text,
-                Some(&mut self.source_lines),
-                change.clone(),
-            )
-        } else {
-            input_edit(&self.text, text, Some(&mut self.source_lines))
-        };
-        let edit = match edit_result {
-            Ok(edit) => edit,
-            Err(status) => {
-                self.clear();
-                return status;
-            }
-        };
-        let mut previous = self.tree.clone();
-        if let Some(tree) = previous.as_mut() {
-            tree.edit(&edit);
-        }
-        let incremental = previous.is_some();
-        let mut checks = 0;
-        let result = parse_tree(
-            parser,
-            text,
-            previous.as_ref(),
-            &mut checks,
-            &mut should_continue,
-        )
-        .and_then(|tree| {
-            let selected = select_injections(
-                &tree,
-                self.provider,
-                text,
-                &self.source_lines,
-                &mut should_continue,
-            )?;
-            self.update_embedded(text, selected, &edit, &mut checks, &mut should_continue)?;
-            Ok(tree)
-        });
-        match result {
-            Ok(tree) => {
-                self.ready = true;
-                self.tree = Some(tree);
-                let mut paint = self.paint.borrow_mut();
-                paint.source_change = Arc::ptr_eq(&paint.source, &self.text).then_some(edit);
-                drop(paint);
-                self.text = source();
-                SyntaxStatus::Ready { incremental }
-            }
-            Err(status) => {
-                self.clear();
-                status
-            }
-        }
+        self.advance_update(&mut should_continue, &mut || false)
+            .expect("synchronous syntax does not yield")
     }
 
     /// Prepare all consumers once per source/tab width. Cancellation clears the
@@ -259,17 +188,6 @@ impl SyntaxDocument {
         self.prepare_source(&text, tab_width, should_continue, || text.clone(), None)
     }
 
-    /// Internal resolver path; a mismatched cached base uses complete comparison.
-    fn prepare_resolved(
-        &mut self,
-        text: Arc<String>,
-        tab_width: usize,
-        should_continue: impl FnMut() -> bool,
-        change: Option<(&Arc<String>, &super::TextChange)>,
-    ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
-        self.prepare_source(&text, tab_width, should_continue, || text.clone(), change)
-    }
-
     fn prepare_source(
         &mut self,
         text: &str,
@@ -284,6 +202,15 @@ impl SyntaxDocument {
         }
         let mut should_continue = should_continue;
         let status = self.update_source(text, &mut should_continue, source, resolved_change);
+        self.finish_preparation(status, tab_width, &mut should_continue)
+    }
+
+    fn finish_preparation(
+        &mut self,
+        status: SyntaxStatus,
+        tab_width: usize,
+        should_continue: &mut impl FnMut() -> bool,
+    ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
         if !matches!(status, SyntaxStatus::Ready { .. }) {
             return (status, None);
         }
@@ -336,122 +263,6 @@ impl SyntaxDocument {
         }
         self.prepared = Some((tab_width, analysis.clone()));
         (status, Some(analysis))
-    }
-
-    fn update_embedded(
-        &mut self,
-        text: &str,
-        selected: Vec<(Language, Range)>,
-        edit: &InputEdit,
-        checks: &mut usize,
-        should_continue: &mut impl FnMut() -> bool,
-    ) -> Result<(), SyntaxStatus> {
-        let mut unchanged: HashMap<(usize, usize), Vec<EmbeddedSyntax>> = HashMap::new();
-        let mut changed = Vec::new();
-        for mut body in std::mem::take(&mut self.embedded) {
-            if !should_continue() {
-                return Err(SyntaxStatus::Cancelled);
-            }
-            let bytes = if body.range.end_byte <= edit.start_byte {
-                Some(body.range.start_byte..body.range.end_byte)
-            } else if body.range.start_byte >= edit.old_end_byte {
-                Some(
-                    edit.new_end_byte + (body.range.start_byte - edit.old_end_byte)
-                        ..edit.new_end_byte + (body.range.end_byte - edit.old_end_byte),
-                )
-            } else {
-                None
-            };
-            if let Some(bytes) = bytes {
-                let range = Range {
-                    start_byte: bytes.start,
-                    end_byte: bytes.end,
-                    start_point: indexed_point(&self.source_lines, bytes.start),
-                    end_point: indexed_point(&self.source_lines, bytes.end),
-                };
-                if body.range != range
-                    && let Some(tree) = body.tree.as_mut()
-                {
-                    tree.edit(edit);
-                }
-                body.range = range;
-                unchanged
-                    .entry((bytes.start, bytes.end))
-                    .or_default()
-                    .push(body);
-            } else {
-                changed.push(body);
-            }
-        }
-        let mut old = changed.into_iter();
-        #[cfg(test)]
-        {
-            self.embedded_parses = 0;
-        }
-        let mut next = Vec::with_capacity(selected.len());
-        for (language, range) in selected {
-            if !should_continue() {
-                return Err(SyntaxStatus::Cancelled);
-            }
-            if let Some(bodies) = unchanged.get_mut(&(range.start_byte, range.end_byte))
-                && let Some(index) = bodies
-                    .iter()
-                    .position(|body| body.provider.language == language && body.range == range)
-            {
-                next.push(bodies.swap_remove(index));
-                continue;
-            }
-            let provider = syntax_provider(language).ok_or(SyntaxStatus::Cancelled)?;
-            let mut embedded = if let Some(previous) = old
-                .next()
-                .filter(|previous| previous.provider.language == language)
-            {
-                previous
-            } else {
-                EmbeddedSyntax {
-                    provider,
-                    tree: None,
-                    folds: std::cell::RefCell::default(),
-                    contexts: std::cell::RefCell::default(),
-                    highlights: std::cell::RefCell::default(),
-                    range,
-                }
-            };
-            let mut previous = embedded.tree.clone();
-            if let Some(tree) = previous.as_mut() {
-                tree.edit(edit);
-            }
-            let parser_index = if let Some(index) = self
-                .embedded_parsers
-                .iter()
-                .position(|(retained, _)| *retained == language)
-            {
-                index
-            } else {
-                self.embedded_parsers
-                    .push((language, new_parser(provider)?));
-                self.embedded_parsers.len() - 1
-            };
-            let parser = &mut self.embedded_parsers[parser_index].1;
-            parser
-                .set_included_ranges(&[range])
-                .map_err(|_| SyntaxStatus::Cancelled)?;
-            embedded.tree = Some(parse_tree(
-                parser,
-                text,
-                previous.as_ref(),
-                checks,
-                should_continue,
-            )?);
-            #[cfg(test)]
-            {
-                self.embedded_parses += 1;
-            }
-            embedded.range = range;
-            next.push(embedded);
-        }
-        self.embedded = next;
-        Ok(())
     }
 
     /// Insertions at the end of an embedded body still belong to that body.
@@ -592,10 +403,11 @@ impl SyntaxDocument {
     }
 
     fn clear(&mut self) {
-        self.embedded_parsers.clear();
         if let Some(parser) = self.parser.as_mut() {
             parser.reset();
         }
+        self.embedded_parsers.clear();
+        self.pending = None;
         self.ready = false;
         self.tree = None;
         self.embedded.clear();
@@ -672,33 +484,6 @@ fn new_parser(provider: SyntaxProvider) -> Result<Parser, SyntaxStatus> {
         .set_language(&(provider.grammar)())
         .map_err(|_| SyntaxStatus::Cancelled)?;
     Ok(parser)
-}
-
-fn parse_tree(
-    parser: &mut Parser,
-    text: &str,
-    previous: Option<&Tree>,
-    checks: &mut usize,
-    should_continue: &mut impl FnMut() -> bool,
-) -> Result<Tree, SyntaxStatus> {
-    if !should_continue() {
-        return Err(SyntaxStatus::Cancelled);
-    }
-    let mut progress = |_: &tree_sitter::ParseState| {
-        *checks += 1;
-        if *checks > MAX_PROGRESS_CHECKS || !should_continue() {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
-    };
-    parser
-        .parse_with_options(
-            &mut |offset, _| &text.as_bytes()[offset..],
-            previous,
-            Some(ParseOptions::new().progress_callback(&mut progress)),
-        )
-        .ok_or(SyntaxStatus::Cancelled)
 }
 
 fn visit_tree<'tree>(

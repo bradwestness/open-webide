@@ -5,6 +5,7 @@ use super::{
 use crate::{editor::MAX_STRUCTURE_BYTES, highlight::Language};
 
 pub const SYNTAX_PROTOCOL_VERSION: u32 = 6;
+pub const SYNTAX_BATCH_MS: u32 = 100;
 pub const MAX_SYNTAX_REQUEST_BYTES: usize = MAX_STRUCTURE_BYTES * 6 + 8192;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -49,53 +50,82 @@ impl SyntaxRequest {
     }
 }
 
+fn decode_request(message: &str) -> Option<SyntaxRequest> {
+    if message.len() > MAX_SYNTAX_REQUEST_BYTES {
+        return None;
+    }
+    let request: SyntaxRequest = serde_json::from_str(message).ok()?;
+    (request.version == SYNTAX_PROTOCOL_VERSION
+        && !request.document.is_empty()
+        && request.document.len() <= 4096
+        && (1..=16).contains(&request.tab_width))
+    .then_some(request)
+}
+fn control_reply(ticket: u32, status: SyntaxStatus) -> Option<String> {
+    serde_json::to_string(&SyntaxReply {
+        version: SYNTAX_PROTOCOL_VERSION,
+        ticket,
+        status,
+        analysis: None,
+    })
+    .ok()
+}
+struct SyntaxTask {
+    ticket: u32,
+    key: String,
+    language: Language,
+    tab_width: usize,
+    source: std::sync::Arc<String>,
+    previous: Option<(u32, std::sync::Arc<super::SyntaxAnalysis>)>,
+    change: Option<crate::editor::TextChange>,
+    document: super::SyntaxDocument,
+}
+enum Start {
+    Task(Box<SyntaxTask>),
+    Reply(String),
+}
+
 impl SyntaxPreparations<String> {
-    /// Malformed envelopes are transport failures; valid oversized sources receive
-    /// an explicit fallback status. Limits and shaping are shared above adapters.
+    /// The synchronous adapter drives the same source-bound task without yielding.
     pub fn handle_message(
         &mut self,
         message: &str,
         mut should_continue: impl FnMut() -> bool,
     ) -> Option<String> {
-        if message.len() > MAX_SYNTAX_REQUEST_BYTES {
-            return None;
+        let request = decode_request(message)?;
+        match self.begin_request(request, &mut should_continue)? {
+            Start::Reply(reply) => Some(reply),
+            Start::Task(mut task) => {
+                let result = task
+                    .advance(&mut should_continue, &mut || false)
+                    .expect("synchronous syntax task does not yield");
+                task.finish(self, result)
+            }
         }
-        let request: SyntaxRequest = serde_json::from_str(message).ok()?;
-        if request.version != SYNTAX_PROTOCOL_VERSION
-            || request.document.len() > 4096
-            || request.document.is_empty()
-            || !(1..=16).contains(&request.tab_width)
-        {
-            return None;
-        }
+    }
+    fn begin_request(
+        &mut self,
+        request: SyntaxRequest,
+        should_continue: &mut impl FnMut() -> bool,
+    ) -> Option<Start> {
         let previous = self
             .previous_publication(&request.document)
             .filter(|(ticket, _)| request.base_ticket == Some(*ticket));
-        let control_reply = |status| {
-            serde_json::to_string(&SyntaxReply {
-                version: SYNTAX_PROTOCOL_VERSION,
-                ticket: request.ticket,
-                status,
-                analysis: None,
-            })
-            .ok()
-        };
         if matches!(request.source, SyntaxSource::Replace { .. }) {
-            // A delta without an advertised base is malformed, rather than a resync.
             request.base_ticket?;
             if previous.is_none() {
-                return control_reply(SyntaxStatus::NeedsSource);
+                return control_reply(request.ticket, SyntaxStatus::NeedsSource).map(Start::Reply);
             }
         }
         let base_source = previous.as_ref().map(|(_, analysis)| analysis.source());
         let length = request.source.result_length(base_source)?;
         if length > MAX_STRUCTURE_BYTES {
             self.remove(&request.document);
-            return control_reply(SyntaxStatus::TooLarge);
+            return control_reply(request.ticket, SyntaxStatus::TooLarge).map(Start::Reply);
         }
         if !should_continue() {
             self.remove(&request.document);
-            return control_reply(SyntaxStatus::Cancelled);
+            return control_reply(request.ticket, SyntaxStatus::Cancelled).map(Start::Reply);
         }
         let change = match &request.source {
             SyntaxSource::Full(_) => None,
@@ -104,55 +134,165 @@ impl SyntaxPreparations<String> {
                 new_end: start.checked_add(text.len())?,
             }),
         };
-        let source = request.source.resolve(base_source)?;
-        let resolved_change = previous
-            .as_ref()
-            .zip(change.as_ref())
-            .map(|((_, analysis), change)| (analysis.source_snapshot(), change));
-        let (mut status, prepared) = self.prepare_resolved(
-            request.document.clone(),
-            request.language,
-            std::sync::Arc::new(source),
-            request.tab_width,
-            should_continue,
-            resolved_change,
-        );
-        let analysis = prepared.as_ref().and_then(|value| {
-            value
-                .transfer_data_reusing(
-                    previous
-                        .as_ref()
-                        .map(|(ticket, analysis)| (*ticket, analysis.as_ref())),
-                )
-                .or_else(|| value.transfer_data())
-        });
-        if matches!(status, SyntaxStatus::Ready { .. }) && analysis.is_none() {
-            status = SyntaxStatus::TooLarge;
-        }
-        let mut reply = SyntaxReply {
-            version: SYNTAX_PROTOCOL_VERSION,
+        let source = std::sync::Arc::new(request.source.resolve(base_source)?);
+        let document = self.take_document(&request.document, request.language)?;
+        Some(Start::Task(Box::new(SyntaxTask {
             ticket: request.ticket,
+            key: request.document,
+            language: request.language,
+            tab_width: request.tab_width,
+            source,
+            previous,
+            change,
+            document,
+        })))
+    }
+}
+impl SyntaxTask {
+    fn advance(
+        &mut self,
+        should_continue: &mut impl FnMut() -> bool,
+        should_yield: &mut impl FnMut() -> bool,
+    ) -> Option<(SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>)> {
+        let change = self
+            .previous
+            .as_ref()
+            .zip(self.change.as_ref())
+            .map(|((_, analysis), change)| (analysis.source_snapshot(), change));
+        self.document.prepare_resolved_cooperative(
+            self.source.clone(),
+            self.tab_width,
+            should_continue,
+            should_yield,
+            change,
+        )
+    }
+    fn finish(
+        mut self,
+        service: &mut SyntaxPreparations<String>,
+        result: (SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>),
+    ) -> Option<String> {
+        let (status, prepared) = result;
+        let (message, published) = shape_reply(
+            self.ticket,
             status,
-            analysis,
-        };
-        let mut message = serde_json::to_string(&reply).ok()?;
-        if message.len() > MAX_ANALYSIS_MESSAGE_BYTES {
-            reply.analysis = prepared.as_ref()?.transfer_data();
-            if reply.analysis.is_none() {
-                reply.status = SyntaxStatus::TooLarge;
+            prepared.as_ref(),
+            self.previous.as_ref(),
+        )?;
+        if let Some(prepared) = prepared {
+            if published {
+                self.document.publication = Some((self.ticket, prepared));
             }
-            message = serde_json::to_string(&reply).ok()?;
-            if message.len() > MAX_ANALYSIS_MESSAGE_BYTES {
-                return None;
-            }
-        }
-        if reply.analysis.is_some()
-            && let Some(prepared) = prepared
-        {
-            self.remember_publication(&request.document, request.ticket, prepared);
+            service.install_document(self.key, self.language, self.document, self.source.len());
         }
         Some(message)
     }
+}
+fn shape_reply(
+    ticket: u32,
+    mut status: SyntaxStatus,
+    prepared: Option<&std::sync::Arc<super::SyntaxAnalysis>>,
+    previous: Option<&(u32, std::sync::Arc<super::SyntaxAnalysis>)>,
+) -> Option<(String, bool)> {
+    let analysis = prepared.and_then(|value| {
+        value
+            .transfer_data_reusing(previous.map(|(ticket, analysis)| (*ticket, analysis.as_ref())))
+            .or_else(|| value.transfer_data())
+    });
+    if matches!(status, SyntaxStatus::Ready { .. }) && analysis.is_none() {
+        status = SyntaxStatus::TooLarge;
+    }
+    let mut reply = SyntaxReply {
+        version: SYNTAX_PROTOCOL_VERSION,
+        ticket,
+        status,
+        analysis,
+    };
+    let mut message = serde_json::to_string(&reply).ok()?;
+    if message.len() > MAX_ANALYSIS_MESSAGE_BYTES {
+        reply.analysis = prepared?.transfer_data();
+        if reply.analysis.is_none() {
+            reply.status = SyntaxStatus::TooLarge;
+        }
+        message = serde_json::to_string(&reply).ok()?;
+        if message.len() > MAX_ANALYSIS_MESSAGE_BYTES {
+            return None;
+        }
+    }
+
+    Some((message, reply.analysis.is_some()))
+}
+
+/// Bounded message admission and parser continuation shared above the worker runtime.
+#[derive(Default)]
+pub struct SyntaxWorker {
+    service: SyntaxPreparations<String>,
+    queued: std::collections::VecDeque<SyntaxRequest>,
+    active: Option<Box<SyntaxTask>>,
+}
+impl SyntaxWorker {
+    pub fn has_work(&self) -> bool {
+        self.active.is_some() || !self.queued.is_empty()
+    }
+    pub fn retained_request_bytes(&self) -> usize {
+        self.active.as_ref().map_or(0, |task| task.source.len())
+            + self.queued.iter().map(request_bytes).sum::<usize>()
+    }
+    pub fn enqueue(&mut self, message: &str) -> Option<String> {
+        let request = decode_request(message)?;
+        let source_bytes = match &request.source {
+            SyntaxSource::Full(source) => source.len(),
+            SyntaxSource::Replace { text, .. } => text.len(),
+        };
+        if source_bytes > MAX_STRUCTURE_BYTES {
+            self.service.remove(&request.document);
+            return control_reply(request.ticket, SyntaxStatus::TooLarge);
+        }
+        if self.queued.len() + usize::from(self.active.is_some()) >= super::MAX_SYNTAX_DOCUMENTS
+            || self
+                .retained_request_bytes()
+                .saturating_add(request_bytes(&request))
+                > super::MAX_SYNTAX_SOURCE_BYTES
+        {
+            self.service.remove(&request.document);
+            return control_reply(request.ticket, SyntaxStatus::Cancelled);
+        }
+        self.queued.push_back(request);
+        None
+    }
+    pub fn advance(
+        &mut self,
+        mut should_continue: impl FnMut() -> bool,
+        mut should_yield: impl FnMut() -> bool,
+    ) -> Option<String> {
+        if self.active.is_none() {
+            let request = self.queued.pop_front()?;
+            match self.service.begin_request(request, &mut should_continue)? {
+                Start::Reply(reply) => return Some(reply),
+                Start::Task(task) => {
+                    let queued_bytes = self.queued.iter().map(request_bytes).sum::<usize>();
+                    if queued_bytes.saturating_add(task.source.len())
+                        > super::MAX_SYNTAX_SOURCE_BYTES
+                    {
+                        return control_reply(task.ticket, SyntaxStatus::Cancelled);
+                    }
+                    self.active = Some(task);
+                }
+            }
+        }
+        let result = self
+            .active
+            .as_mut()?
+            .advance(&mut should_continue, &mut should_yield)?;
+        self.active.take()?.finish(&mut self.service, result)
+    }
+}
+fn request_bytes(request: &SyntaxRequest) -> usize {
+    request.document.len()
+        + match &request.source {
+            SyntaxSource::Full(source) => source.len(),
+            SyntaxSource::Replace { text, .. } => text.len(),
+        }
 }
 
 impl SyntaxReply {
@@ -217,6 +357,216 @@ impl SyntaxReply {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synchronous_and_yielding_message_adapters_publish_identical_results() {
+        for (language, source) in [
+            (
+                Language::Rust,
+                "fn main() {\r\n call(\"文😀\");\r\n}\r\n".repeat(300),
+            ),
+            (
+                Language::Html,
+                "<script>call(\"文😀\");</script><style>a {color:red}</style>".to_owned(),
+            ),
+            (
+                Language::Markdown,
+                "**文😀** and `code`.\r\n\r\n".repeat(1_000),
+            ),
+        ] {
+            let mut synchronous = SyntaxPreparations::default();
+            let mut worker = SyntaxWorker::default();
+            let mut previous = None::<(u32, std::sync::Arc<super::super::SyntaxAnalysis>)>;
+            for (index, text) in [source.clone(), source.replacen("文😀", "changed 文😀", 1)]
+                .into_iter()
+                .enumerate()
+            {
+                let ticket = u32::try_from(index + 1).unwrap();
+                let request = SyntaxRequest::new(
+                    ticket,
+                    "document".into(),
+                    language,
+                    &text,
+                    4,
+                    previous
+                        .as_ref()
+                        .map(|(ticket, analysis)| (*ticket, analysis.as_ref())),
+                );
+                let message = serde_json::to_string(&request).unwrap();
+                let expected = synchronous.handle_message(&message, || true).unwrap();
+                assert!(worker.enqueue(&message).is_none());
+                let mut batches = 0;
+                let actual = loop {
+                    let mut checks = 0;
+                    let reply = worker.advance(
+                        || true,
+                        || {
+                            checks += 1;
+                            checks >= 8
+                        },
+                    );
+                    batches += 1;
+                    assert!(batches < 10_000);
+                    if let Some(reply) = reply {
+                        break reply;
+                    }
+                    assert!(worker.has_work());
+                };
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&actual).unwrap(),
+                    serde_json::from_str::<serde_json::Value>(&expected).unwrap()
+                );
+                let (status, analysis) = SyntaxReply::receive_reusing(
+                    &actual,
+                    ticket,
+                    &text,
+                    previous
+                        .as_ref()
+                        .map(|(ticket, analysis)| (*ticket, analysis.as_ref())),
+                )
+                .unwrap();
+                assert!(matches!(status, SyntaxStatus::Ready { .. }));
+                previous = Some((ticket, analysis.unwrap()));
+                assert!(!worker.has_work());
+                assert_eq!(worker.retained_request_bytes(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn worker_queue_limits_cancellation_and_resync_keep_reply_contracts() {
+        let mut worker = SyntaxWorker::default();
+        for ticket in 0..u32::try_from(super::super::MAX_SYNTAX_DOCUMENTS).unwrap() {
+            let request = SyntaxRequest::new(
+                ticket,
+                format!("document-{ticket}"),
+                Language::Rust,
+                "fn main() {}",
+                4,
+                None,
+            );
+            assert!(
+                worker
+                    .enqueue(&serde_json::to_string(&request).unwrap())
+                    .is_none()
+            );
+        }
+        let excess = SyntaxRequest::new(
+            100,
+            "excess".into(),
+            Language::Rust,
+            "fn main() {}",
+            4,
+            None,
+        );
+        let reply = worker
+            .enqueue(&serde_json::to_string(&excess).unwrap())
+            .unwrap();
+        assert_eq!(
+            SyntaxReply::receive(&reply, 100, "fn main() {}").unwrap().0,
+            SyntaxStatus::Cancelled
+        );
+        assert!(worker.retained_request_bytes() <= super::super::MAX_SYNTAX_SOURCE_BYTES);
+        assert!(worker.advance(|| true, || true).is_none());
+        let reply = worker.advance(|| false, || false).unwrap();
+        assert_eq!(
+            SyntaxReply::receive(&reply, 0, "fn main() {}").unwrap().0,
+            SyntaxStatus::Cancelled
+        );
+        while worker.has_work() {
+            worker.advance(|| false, || false);
+        }
+        assert_eq!(worker.retained_request_bytes(), 0);
+        let request = SyntaxRequest {
+            source: SyntaxSource::Replace {
+                start: 0,
+                end: 0,
+                text: "new".into(),
+            },
+            base_ticket: Some(1),
+            ..excess
+        };
+        assert!(
+            worker
+                .enqueue(&serde_json::to_string(&request).unwrap())
+                .is_none()
+        );
+        let reply = worker.advance(|| true, || false).unwrap();
+        assert_eq!(
+            SyntaxReply::receive(&reply, 100, "new").unwrap().0,
+            SyntaxStatus::NeedsSource
+        );
+    }
+
+    #[test]
+    fn resolved_deltas_and_oversized_sources_obey_worker_admission_limits() {
+        let source = "x".repeat(MAX_STRUCTURE_BYTES);
+        let mut worker = SyntaxWorker::default();
+        let initial = SyntaxRequest::new(1, "base".into(), Language::Plain, &source, 4, None);
+        let reply = worker
+            .service
+            .handle_message(&serde_json::to_string(&initial).unwrap(), || true)
+            .unwrap();
+        assert!(matches!(
+            SyntaxReply::receive(&reply, 1, &source).unwrap().0,
+            SyntaxStatus::Ready { .. }
+        ));
+        let delta = SyntaxRequest {
+            ticket: 2,
+            source: SyntaxSource::Replace {
+                start: 0,
+                end: 0,
+                text: String::new(),
+            },
+            base_ticket: Some(1),
+            ..initial
+        };
+        assert!(
+            worker
+                .enqueue(&serde_json::to_string(&delta).unwrap())
+                .is_none()
+        );
+        for ticket in 3..6 {
+            let request = SyntaxRequest::new(
+                ticket,
+                format!("queued-{ticket}"),
+                Language::Plain,
+                &source,
+                4,
+                None,
+            );
+            assert!(
+                worker
+                    .enqueue(&serde_json::to_string(&request).unwrap())
+                    .is_none()
+            );
+        }
+        let reply = worker.advance(|| true, || true).unwrap();
+        assert_eq!(
+            SyntaxReply::receive(&reply, 2, &source).unwrap().0,
+            SyntaxStatus::Cancelled
+        );
+        assert!(worker.retained_request_bytes() <= super::super::MAX_SYNTAX_SOURCE_BYTES);
+        while worker.has_work() {
+            worker.advance(|| false, || false);
+        }
+        let oversized = SyntaxRequest::new(
+            6,
+            "oversized".into(),
+            Language::Plain,
+            &(source + "x"),
+            4,
+            None,
+        );
+        let reply = worker
+            .enqueue(&serde_json::to_string(&oversized).unwrap())
+            .unwrap();
+        assert_eq!(
+            SyntaxReply::receive(&reply, 6, "unused").unwrap().0,
+            SyntaxStatus::TooLarge
+        );
+        assert!(!worker.has_work());
+    }
     fn request(source: &str) -> SyntaxRequest {
         SyntaxRequest {
             version: SYNTAX_PROTOCOL_VERSION,

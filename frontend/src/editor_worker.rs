@@ -1,5 +1,5 @@
 //! Thin browser worker adapter. Preparation policy and wire validation live in core.
-use openwebide_core::editor::SyntaxPreparations;
+use openwebide_core::editor::{SYNTAX_BATCH_MS, SyntaxWorker};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -22,20 +22,39 @@ pub fn mount_worker() -> bool {
     let Ok(scope) = js_sys::global().dyn_into::<web_sys::DedicatedWorkerGlobalScope>() else {
         return false;
     };
-    let service = Rc::new(RefCell::new(SyntaxPreparations::<String>::default()));
+    let service = Rc::new(RefCell::new(SyntaxWorker::default()));
+    let running = Rc::new(Cell::new(false));
     let send = scope.clone();
     let callback =
         Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
             let Some(message) = event.data().as_string() else {
                 return;
             };
-            let deadline = js_sys::Date::now() + 100.0;
-            if let Some(reply) = service
-                .borrow_mut()
-                .handle_message(&message, || js_sys::Date::now() <= deadline)
-            {
+            if let Some(reply) = service.borrow_mut().enqueue(&message) {
                 let _ = send.post_message(&reply.into());
             }
+            if !service.borrow().has_work() || running.replace(true) {
+                return;
+            }
+            let service = service.clone();
+            let running = running.clone();
+            let send = send.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                loop {
+                    let deadline = js_sys::Date::now() + f64::from(SYNTAX_BATCH_MS);
+                    let reply = service
+                        .borrow_mut()
+                        .advance(|| true, || js_sys::Date::now() >= deadline);
+                    if let Some(reply) = reply {
+                        let _ = send.post_message(&reply.into());
+                    }
+                    if !service.borrow().has_work() {
+                        running.set(false);
+                        break;
+                    }
+                    crate::util::yield_task().await;
+                }
+            });
         });
     scope.set_onmessage(Some(callback.as_ref().unchecked_ref()));
     let _ = scope.post_message(&READY_MESSAGE.into());

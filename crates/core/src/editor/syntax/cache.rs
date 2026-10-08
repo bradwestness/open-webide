@@ -44,17 +44,6 @@ impl<K: Eq> SyntaxPreparations<K> {
             .publication
             .clone()
     }
-    pub(super) fn remember_publication(
-        &mut self,
-        key: &K,
-        ticket: u32,
-        analysis: Arc<SyntaxAnalysis>,
-    ) {
-        if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.0 == key) {
-            entry.2.publication = Some((ticket, analysis));
-        }
-    }
-
     pub fn prepare(
         &mut self,
         key: K,
@@ -81,20 +70,6 @@ impl<K: Eq> SyntaxPreparations<K> {
         })
     }
 
-    pub(super) fn prepare_resolved(
-        &mut self,
-        key: K,
-        language: Language,
-        source: Arc<String>,
-        tab_width: usize,
-        should_continue: impl FnMut() -> bool,
-        change: Option<(&Arc<String>, &super::super::TextChange)>,
-    ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
-        self.prepare_with(key, language, source.len(), |document| {
-            document.prepare_resolved(source, tab_width, should_continue, change)
-        })
-    }
-
     fn prepare_with(
         &mut self,
         key: K,
@@ -102,31 +77,42 @@ impl<K: Eq> SyntaxPreparations<K> {
         source_len: usize,
         prepare: impl FnOnce(&mut SyntaxDocument) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>),
     ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
-        let old = self
-            .entries
-            .iter()
-            .position(|entry| entry.0 == key)
-            .and_then(|index| self.entries.remove(index));
-        let mut document = match old {
-            Some((_, old_language, document, _)) if old_language == language => document,
-            _ => {
-                let Some(document) = SyntaxDocument::new(language) else {
-                    return (SyntaxStatus::Cancelled, None);
-                };
-                document
-            }
+        let Some(mut document) = self.take_document(&key, language) else {
+            return (SyntaxStatus::Cancelled, None);
         };
         let result = prepare(&mut document);
         if result.1.is_some() {
-            while self.entries.len() >= MAX_SYNTAX_DOCUMENTS
-                || self.retained_source_bytes().saturating_add(source_len) > MAX_SYNTAX_SOURCE_BYTES
-            {
-                self.entries.pop_front();
-            }
-            self.entries
-                .push_back((key, language, document, source_len));
+            self.install_document(key, language, document, source_len);
         }
         result
+    }
+
+    pub(super) fn take_document(&mut self, key: &K, language: Language) -> Option<SyntaxDocument> {
+        let old = self
+            .entries
+            .iter()
+            .position(|entry| &entry.0 == key)
+            .and_then(|index| self.entries.remove(index));
+        match old {
+            Some((_, old_language, document, _)) if old_language == language => Some(document),
+            _ => SyntaxDocument::new(language),
+        }
+    }
+
+    pub(super) fn install_document(
+        &mut self,
+        key: K,
+        language: Language,
+        document: SyntaxDocument,
+        source_len: usize,
+    ) {
+        while self.entries.len() >= MAX_SYNTAX_DOCUMENTS
+            || self.retained_source_bytes().saturating_add(source_len) > MAX_SYNTAX_SOURCE_BYTES
+        {
+            self.entries.pop_front();
+        }
+        self.entries
+            .push_back((key, language, document, source_len));
     }
 }
 

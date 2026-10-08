@@ -171,9 +171,76 @@ def check():
                                 structure: !!warm.analysis?.structure && ['language','scopes','selections','opaque_starts','protected','brackets'].every(key =>
                                     JSON.stringify(warm.analysis.structure[key]) === JSON.stringify(cold.analysis?.structure?.[key]))});
                         }
+                        // Exercise real task yields deterministically without changing
+                        // the production batch budget or the normal cold-workload oracle.
+                        const bootstrap = `
+                            let clock = Date.now();
+                            Date.now = () => (clock += 10);
+                            Object.defineProperty(globalThis, 'scheduler', {value: {yield() {
+                                postMessage({kind:'syntax-test-yield'});
+                                return new Promise(resolve => {
+                                    const channel = new MessageChannel();
+                                    channel.port1.onmessage = () => {
+                                        channel.port1.close(); channel.port2.close(); resolve();
+                                    };
+                                    channel.port2.postMessage(0);
+                                });
+                            }}});
+                            await import(${JSON.stringify(location.origin + '/editor-worker.js')});
+                        `;
+                        const probeUrl = URL.createObjectURL(new Blob([bootstrap], {type:'text/javascript'}));
+                        const probe = new Worker(probeUrl, {type:'module'});
+                        let yields = 0, readyResolve, readyReject;
+                        const probeReady = new Promise((resolve, reject) => {readyResolve = resolve; readyReject = reject;});
+                        const pendingProbe = new Map();
+                        probe.onmessage = event => {
+                            if (event.data?.kind === 'syntax-test-yield') {yields++; return;}
+                            if (event.data === 'openwebide-editor-ready:6') {readyResolve(); return;}
+                            const reply = JSON.parse(event.data), waiter = pendingProbe.get(reply.ticket);
+                            pendingProbe.delete(reply.ticket); waiter?.resolve(reply);
+                        };
+                        probe.onerror = event => {
+                            const error = new Error(event.message || 'Cooperative probe worker failed');
+                            readyReject(error);
+                            for (const waiter of pendingProbe.values()) waiter.reject(error);
+                        };
+                        const probeRequest = (ticket, document, source, base_ticket = null) => new Promise((resolve, reject) => {
+                            pendingProbe.set(ticket, {resolve, reject});
+                            probe.postMessage(JSON.stringify({version:6, ticket, document, language:'Markdown', source, tab_width:4, base_ticket}));
+                        });
+                        let batches;
+                        try {
+                            await probeReady;
+                            const prose = Array.from({length:1000}, (_, index) => `Paragraph ${index}: **文😀** and \`code\`.\r\n\r\n`).join('');
+                            const seed = await probeRequest(900, 'yielded-prose', prose);
+                            const coldYields = yields, changed = prose.replace('Paragraph 500', 'Changed 500');
+                            const warm = await probeRequest(901, 'yielded-prose', changed, 900);
+                            const fresh = await probeRequest(902, 'fresh-prose', changed);
+                            const span = warm.analysis?.source;
+                            const before = new TextEncoder().encode(prose);
+                            const restored = typeof span === 'string' ? span : span && new TextDecoder().decode(Uint8Array.from([
+                                ...before.slice(0,span.start), ...new TextEncoder().encode(span.text), ...before.slice(span.end)]));
+                            const colors = warm.analysis?.highlights?.flatMap(row => Array.isArray(row) ? [row] :
+                                seed.analysis.highlights.slice(row.reuse,row.reuse + row.count));
+                            let structure = warm.analysis?.structure;
+                            if (structure?.changes) {
+                                const changes = structure.changes, old = seed.analysis.structure;
+                                structure = {language:changes.language};
+                                for (const key of ['scopes','selections','opaque_starts','protected','brackets']) {
+                                    const span = changes[key];
+                                    structure[key] = Array.isArray(span) ? span : [...old[key].slice(0,span.start), ...span.items, ...old[key].slice(span.end)];
+                                }
+                            }
+                            batches = {coldYields, yields, ready:[seed,warm,fresh].every(reply => !!reply.status?.Ready),
+                                source:seed.analysis?.source === prose && restored === changed && fresh.analysis?.source === changed,
+                                colors:!!colors && JSON.stringify(colors) === JSON.stringify(fresh.analysis?.highlights),
+                                structure:!!structure && ['language','scopes','selections','opaque_starts','protected','brackets'].every(key =>
+                                    JSON.stringify(structure[key]) === JSON.stringify(fresh.analysis?.structure?.[key])),
+                                folds:JSON.stringify(warm.analysis?.folds) === JSON.stringify(fresh.analysis?.folds)};
+                        } finally {probe.terminate(); URL.revokeObjectURL(probeUrl);}
                         const oversized = await request('large', 'Rust', 'x'.repeat(2*1024*1024+1));
                         worker.terminate();
-                        done({first, next, providers, configs, nested, structuralDelta, heavyStatus: prepared.status,
+                        done({first, next, providers, configs, nested, batches, structuralDelta, heavyStatus: prepared.status,
                             heavySource: prepared.analysis?.source === heavy, uiEvent,
                             heavyDelta: heavyUpdate.analysis?.sourceDelta === true,
                             heavyRowRuns: heavyUpdate.analysis?.highlights?.length,
@@ -203,8 +270,11 @@ def check():
                 for nested in result['nested']:
                     assert all(nested[key] for key in ['incremental', 'fresh', 'source', 'folds', 'structure', 'colors']), nested
                 assert result['oversizedStatus'] == 'TooLarge' and result['oversizedAnalysis'] is None, result
+                assert result['batches']['coldYields'] > 0 and result['batches']['yields'] > result['batches']['coldYields'], result['batches']
+                assert all(result['batches'][key] for key in ['ready','source','colors','structure','folds']), result['batches']
                 print(json.dumps({'providers': len(result['providers'])+1, 'config_languages': len(result['configs']) - 1, 'plain_fallback_languages': 1, 'nested_languages': len(result['nested']), 'incremental': True, 'structural_delta': result['structuralDelta'],
-                                  'ui_event_during_worker': result['uiEvent'], 'oversize_fallback': True, 'changed_row_records': result['heavyRowRuns']}))
+                                  'ui_event_during_worker': result['uiEvent'], 'oversize_fallback': True, 'changed_row_records': result['heavyRowRuns'],
+                                  'cooperative_yields': result['batches']['yields']}))
             finally:
                 browser.stop()
     finally:
