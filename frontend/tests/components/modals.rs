@@ -768,3 +768,68 @@ async fn long_project_tabs_keep_close_buttons_inside_their_bounds() {
         }
     }
 }
+
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function pointerFocusTab(button) {
+    const event = new MouseEvent('mousedown', {bubbles:true,cancelable:true,button:0});
+    if (button.dispatchEvent(event)) button.focus();
+    button.click();
+}
+"#)]
+extern "C" {
+    fn pointerFocusTab(button: &web_sys::HtmlElement);
+}
+
+#[wasm_bindgen_test]
+async fn pointer_file_tab_selection_preserves_overflow_scroll_and_focus_in_both_modes() {
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.projects.projects.update(|items| items[0].mode = mode);
+            for index in 0..10 {
+                state
+                    .workspace
+                    .register_editor_tab(1, format!("long-file-name-{index}.rs"));
+            }
+            state
+                .workspace
+                .open_file
+                .set(Some("long-file-name-0.rs".into()));
+            view! { <style>{include_str!("../../styles.css")}</style>{super::support::editor_view(state)} }
+        });
+        settle().await;
+        let editor = mounted.element(".editor");
+        editor.style().set_property("width", "520px").unwrap();
+        editor.style().set_property("flex", "none").unwrap();
+        settle().await;
+        let tab = mounted.element("[data-editor-tab='long-file-name-3.rs']");
+        let strip = mounted.element(".editor-file-tabs");
+        strip.set_scroll_left(f64::from(tab.offset_left()) + 20.0);
+        let scroll = strip.scroll_left();
+        pointerFocusTab(&tab);
+        settle().await;
+        assert_eq!(
+            strip.scroll_left().to_bits(),
+            scroll.to_bits(),
+            "Pointer focus moved the tab strip"
+        );
+        assert!(
+            tab.is_same_node(
+                mounted
+                    .root
+                    .owner_document()
+                    .unwrap()
+                    .active_element()
+                    .as_ref()
+                    .map(AsRef::as_ref)
+            )
+        );
+        assert_eq!(
+            mounted.state.workspace.open_file.get_untracked().as_deref(),
+            Some("long-file-name-3.rs")
+        );
+    }
+}

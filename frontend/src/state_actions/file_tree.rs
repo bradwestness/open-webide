@@ -255,11 +255,9 @@ impl FileTreeActions {
             return;
         };
         if path.split('/').any(|part| part.starts_with('.'))
-            && let Some((actions, state)) = self.layout.zip(self.layout_state)
+            && let Some(actions) = self.layout
         {
-            actions
-                .set_tree_preferences
-                .run((true, state.preferences.get_untracked().compact_tree));
+            actions.set_tree_preferences.run(true);
         }
         if let Some(layout) = self.layout {
             layout

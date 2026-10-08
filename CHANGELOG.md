@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Use compact file-tree rows automatically outside phone mode and larger touch rows in phone mode; remove the density menu option and ignore its legacy saved setting.
+- Keep pointer focus from scrolling file tabs, retain keyboard focus navigation, and skip redundant project-tab list and selection updates.
+
 - Look up sparse editor paragraph anchors within each measured glyph range,
   avoiding repeated whole-line anchor scans while preserving exact geometry and
   terminal-anchor behavior.

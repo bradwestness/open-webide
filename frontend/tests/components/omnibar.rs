@@ -460,7 +460,7 @@ async fn compact_editor_uses_one_footer_and_shared_tree_preferences_in_both_mode
                 .unwrap()
                 .is_none()
         );
-        slot.get().unwrap().set_tree_preferences.run((true, true));
+        slot.get().unwrap().set_tree_preferences.run(true);
         settle().await;
         assert!(
             mounted
@@ -492,6 +492,19 @@ async fn compact_editor_uses_one_footer_and_shared_tree_preferences_in_both_mode
             .set_attribute("style", "width:320px;height:700px")
             .unwrap();
         settle().await;
+        assert!(
+            !mounted
+                .element(".file-tree")
+                .class_list()
+                .contains("compact-tree")
+        );
+        assert!(
+            mounted
+                .element(".tree-item")
+                .get_bounding_client_rect()
+                .height()
+                >= 44.0
+        );
         let selector = mounted.element(".editor-view-narrow button[aria-label='Editor view']");
         assert!(selector.get_bounding_client_rect().height() >= 44.0);
         assert!(

@@ -430,3 +430,89 @@ async fn project_close_menu_and_middle_click_close_only_the_target_in_both_modes
         );
     }
 }
+
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function projectTabObserver(root) {
+    const records = []; const observer = new MutationObserver(changes => records.push(...changes));
+    observer.observe(root, {subtree:true, childList:true, attributes:true});
+    return {observer,records};
+}
+export function projectTabChanges(state) { const count = state.records.length + state.observer.takeRecords().length; state.records.length=0; return count; }
+export function projectTabStop(state) { state.observer.disconnect(); }
+"#)]
+extern "C" {
+    fn projectTabObserver(root: &web_sys::HtmlElement) -> wasm_bindgen::JsValue;
+    fn projectTabChanges(state: &wasm_bindgen::JsValue) -> u32;
+    fn projectTabStop(state: &wasm_bindgen::JsValue);
+}
+
+#[wasm_bindgen_test]
+async fn project_tab_nodes_and_scroll_stay_stable_during_file_and_project_switches() {
+    use openwebide_frontend::state_actions::projects::{
+        ProjectsActionContext, build_projects_actions,
+    };
+    let capture = std::rc::Rc::new(std::cell::Cell::new(None));
+    let slot = capture.clone();
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let capture = capture.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            let projects = (1..=6)
+                .map(|id| {
+                    let mut project = state.projects.project(1).unwrap();
+                    project.id = id;
+                    project.mode = mode;
+                    project.name = format!("Long project name number {id}");
+                    project
+                })
+                .collect();
+            state.projects.projects.set(projects);
+            state.projects.open_tab_ids.set(vec![1, 2, 3, 4, 5, 6]);
+            let actions = build_projects_actions(ProjectsActionContext {
+                api: state.api,
+                projects: state.projects,
+                workspace: state.workspace,
+                git: state.git,
+                chat: state.chat,
+                ui: state.ui,
+                ensure_root: Callback::new(|_| ()),
+                refresh_git: Callback::new(|()| ()),
+            });
+            capture.set(Some(actions.select_project));
+            view! { <style>{include_str!("../../styles.css")}</style><div class="app" style="width:1000px;height:600px">
+                <TopBar on_open_settings=Callback::new(|()| ()) on_logout=Callback::new(|()| ())>
+                    <TabBar show_chat=false on_select=actions.select_project on_select_chat=actions.select_chat on_close=actions.close_project on_tab_action=actions.tab_action />
+                </TopBar>
+            </div> }
+        });
+        settle().await;
+        let strip = mounted.element(".app-navigation .tabbar");
+        strip.set_scroll_left(80.0);
+        let scroll = strip.scroll_left();
+        let tab = mounted.element("[data-project-tab='3']");
+        let bounds = tab.get_bounding_client_rect();
+        let observer = projectTabObserver(&strip);
+        for path in ["a.rs", "b.md", "a.rs"] {
+            mounted.state.workspace.open_file.set(Some(path.into()));
+            mounted.state.workspace.content.set(path.into());
+            mounted.state.projects.open_tab(1);
+            mounted.state.projects.select_project(1);
+            settle().await;
+            assert_eq!(
+                projectTabChanges(&observer),
+                0,
+                "Unrelated updates repainted project tabs"
+            );
+        }
+        projectTabStop(&observer);
+        for id in [2, 1, 3, 1] {
+            slot.get().unwrap().run(id);
+            settle().await;
+            assert!(tab.is_same_node(Some(&mounted.element("[data-project-tab='3']"))));
+            assert_eq!(strip.scroll_left().to_bits(), scroll.to_bits());
+            let current = tab.get_bounding_client_rect();
+            assert!((current.x() - bounds.x()).abs() < 0.1);
+            assert!((current.width() - bounds.width()).abs() < 0.1);
+        }
+    }
+}

@@ -180,7 +180,7 @@ pub fn FileTree(
     view! {
         <div
             class="file-tree" node_ref=root
-            class:compact-tree=move || layout.preferences.with(|prefs| prefs.compact_tree)
+            class:compact-tree=move || !layout.phone.get()
             style=move || format!("width: {}px; flex: none;", tree_width.get())
         >
             <Show when=move || needs_grant.get() fallback=|| ()>
@@ -380,8 +380,7 @@ pub fn FileActions(on_new_file: Callback<()>, on_new_dir: Callback<()>) -> impl 
         <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=tree_actions.is_none() on:click=move |_| { if let Some(actions) = tree_actions { actions.collapse_all(); } }>"Collapse all"</button>
 
         <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=workspace_actions.is_none() on:click=move |_| { if let Some(actions) = workspace_actions { actions.refresh_tree.run(()); } }><crate::components::ui::Icon name=crate::components::ui::IconName::RefreshCw /><span>"Refresh files"</span></button>
-        <button role="menuitemcheckbox" type="button" class="ui-dropdown-item recent-item" aria-checked=move || layout.preferences.with(|prefs| prefs.include_hidden).to_string() disabled=layout_actions.is_none() on:click=move |_| { if let Some(actions) = layout_actions { actions.set_tree_preferences.run((!layout.preferences.get_untracked().include_hidden, layout.preferences.get_untracked().compact_tree)); } }><crate::components::ui::Icon name=crate::components::ui::IconName::Eye /><span>"Include hidden files and folders"</span></button>
-        <button role="menuitemcheckbox" type="button" class="ui-dropdown-item recent-item" aria-checked=move || layout.preferences.with(|prefs| prefs.compact_tree).to_string() disabled=layout_actions.is_none() on:click=move |_| { if let Some(actions) = layout_actions { actions.set_tree_preferences.run((layout.preferences.get_untracked().include_hidden, !layout.preferences.get_untracked().compact_tree)); } }><span>"Compact tree rows"</span></button>
+        <button role="menuitemcheckbox" type="button" class="ui-dropdown-item recent-item" aria-checked=move || layout.preferences.with(|prefs| prefs.include_hidden).to_string() disabled=layout_actions.is_none() on:click=move |_| { if let Some(actions) = layout_actions { actions.set_tree_preferences.run(!layout.preferences.get_untracked().include_hidden); } }><crate::components::ui::Icon name=crate::components::ui::IconName::Eye /><span>"Include hidden files and folders"</span></button>
         <Show when=move || layout_actions.is_some()>
             <h3 class="ui-menu-heading">"Panel"</h3>
             <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = layout_actions { actions.move_panel.run((crate::state::layout::Panel::Files, false)); } }>"Move panel left"</button>

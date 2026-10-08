@@ -84,6 +84,9 @@ impl ProjectsState {
             return false;
         }
 
+        if self.open_tab_ids.with_untracked(|ids| ids.contains(&id)) {
+            return false;
+        }
         let mut opened = false;
         self.open_tab_ids.update(|ids| {
             if !ids.contains(&id) {
@@ -95,7 +98,9 @@ impl ProjectsState {
     }
 
     pub fn select_project(&self, id: i64) {
-        self.active_project.set(Some(id));
+        if self.active_project.get_untracked() != Some(id) {
+            self.active_project.set(Some(id));
+        }
     }
 
     /// Close a tab and select the tab now occupying its position, or the last

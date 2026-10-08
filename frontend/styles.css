@@ -3425,7 +3425,6 @@ button.browser-item {
 }
 .phone-layout .editor-view-desktop { display: none; }
 .phone-layout .editor-view-narrow { display: block; }
-.phone-layout .compact-tree .tree-item { min-height: 44px; }
 .phone-layout .editor-header .btn, .phone-layout .editor-header .icon-btn { min-height: 44px; }
 .phone-layout .statusbar { padding-bottom: max(var(--space-2), env(safe-area-inset-bottom)); }
 

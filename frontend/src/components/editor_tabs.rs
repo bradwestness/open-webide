@@ -39,8 +39,8 @@ pub(super) fn EditorTabs() -> impl IntoView {
                     let position = Signal::derive(move || paths.with(|paths| paths.iter().position(|path| path == &menu_path).map(|index| (index, paths.len()))));
                     let entry = openwebide_core::FileEntry { path: path.clone(), name: path.rsplit('/').next().unwrap_or(&path).to_string(), is_dir: false, size: 0 };
 
-                    let selected = Signal::derive(move || workspace.open_file.with(|file| file.as_ref() == Some(&selected_path)));
-                    let dirty = Signal::derive(move || {
+                    let selected = Memo::new(move |_| workspace.open_file.with(|file| file.as_ref() == Some(&selected_path)));
+                    let dirty = Memo::new(move |_| {
                         if workspace.open_file.with(|file| file.as_ref() == Some(&dirty_path)) {
                             workspace.dirty.get()
                         } else {
@@ -63,6 +63,15 @@ pub(super) fn EditorTabs() -> impl IntoView {
                                 aria-selected=move || selected.get().to_string()
                                 tabindex=move || if selected.get() { "0" } else { "-1" }
                                 data-editor-tab=path
+                                on:mousedown=move |event: web_sys::MouseEvent| {
+                                    if event.button() == 0 {
+                                        event.prevent_default();
+                                        if let Some(button) = event.current_target().and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok()) {
+                                            let options = web_sys::FocusOptions::new(); options.set_prevent_scroll(true);
+                                            let _ = button.focus_with_options(&options);
+                                        }
+                                    }
+                                }
                                 on:click=move |_| { if !selected.get_untracked() && let Some(actions) = actions { actions.request_open.run(open_path.clone()); } }
                                 on:keydown=move |event: web_sys::KeyboardEvent| {
                                     let items = paths.get_untracked();

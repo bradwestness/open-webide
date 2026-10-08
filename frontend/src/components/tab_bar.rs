@@ -13,8 +13,8 @@ pub fn TabBar(
     #[prop(default = Callback::new(|_| ()))] on_tab_action: Callback<(i64, crate::tabs::TabAction)>,
 ) -> impl IntoView {
     let projects = expect_context::<ProjectsState>();
-    let open_tabs = Signal::derive(move || projects.open_tabs());
-    let active_project = projects.active_project.read_only();
+    let open_tabs = Memo::new(move |_| projects.open_tabs());
+    let active_project = Memo::new(move |_| projects.active_project.get());
     view! {
         <div class="tabbar-wrap">
             <div class="tabbar">
@@ -25,15 +25,10 @@ pub fn TabBar(
                         let id = p.id;
                         let name = p.name.clone();
                         let mode = p.mode;
+                        let selected = Memo::new(move |_| active_project.get() == Some(id));
                         view! {
                             <div
-                                class=move || {
-                                    if active_project.get() == Some(id) {
-                                        "tab active".to_string()
-                                    } else {
-                                        "tab".to_string()
-                                    }
-                                }
+                                class="tab" class:active=move || selected.get()
                                 data-project-tab=id.to_string()
                                 data-context-menu=""
                                 on:mousedown=move |event: web_sys::MouseEvent| { if event.button() == 1 { event.prevent_default(); } }

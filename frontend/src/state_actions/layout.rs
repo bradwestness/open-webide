@@ -15,7 +15,7 @@ pub struct LayoutActions {
     pub save_width: Callback<ActiveResizer>,
     pub toggle: Callback<Panel>,
     pub select_files_view: Callback<FilesView>,
-    pub set_tree_preferences: Callback<(bool, bool)>,
+    pub set_tree_preferences: Callback<bool>,
     pub show: Callback<Panel>,
     pub set_mode: Callback<LayoutMode>,
     pub pin: Callback<(Panel, PanelSide)>,
@@ -241,10 +241,9 @@ impl LayoutActions {
                     save_preferences.run(preferences);
                 }
             }),
-            set_tree_preferences: Callback::new(move |(include_hidden, compact_tree)| {
+            set_tree_preferences: Callback::new(move |include_hidden| {
                 let mut preferences = layout.preferences.get_untracked();
                 preferences.include_hidden = include_hidden;
-                preferences.compact_tree = compact_tree;
                 save_preferences.run(preferences);
                 change.run((Panel::Files, true));
             }),
