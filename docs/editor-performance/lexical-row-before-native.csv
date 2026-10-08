@@ -1,0 +1,13 @@
+operation,bytes,total_ms
+lexical_begin_20,65516,6.457
+lexical_middle_20,65516,5.643
+lexical_end_20,65516,4.814
+lexical_begin_20,65527,4.352
+lexical_middle_20,65527,3.847
+lexical_end_20,65527,3.230
+lexical_begin_20,2097150,92.875
+lexical_middle_20,2097150,90.224
+lexical_end_20,2097150,90.649
+lexical_begin_20,2097140,88.327
+lexical_middle_20,2097140,89.235
+lexical_end_20,2097140,100.010

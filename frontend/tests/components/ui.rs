@@ -69,6 +69,7 @@ async fn startup_retains_prepaint_theme_until_database_settings_arrive() {
     assert!(html.contains("<script src=\"/api/theme.js\"></script>"));
     assert!(!html.contains("localStorage"));
     let (release, pending) = futures::channel::oneshot::channel();
+    let (request_started, started) = futures::channel::oneshot::channel();
     let notifications = RwSignal::new(false);
     let mounted = mount_test(move |mut state| {
         state.settings = SettingsState::new(Theme::from_root(), "ws://localhost:3001".into());
@@ -83,6 +84,7 @@ async fn startup_retains_prepaint_theme_until_database_settings_arrive() {
             .settings_load_results
             .borrow_mut()
             .push_back(pending);
+        *state.fake.settings_load_started.borrow_mut() = Some(request_started);
         let auth = expect_context::<AuthState>();
         auth.set_user(User {
             id: UserId::new(1),
@@ -104,14 +106,17 @@ async fn startup_retains_prepaint_theme_until_database_settings_arrive() {
     });
     settle().await;
     assert_eq!(root.get_attribute("data-theme").as_deref(), Some("light"));
+    // Cold IndexedDB setup precedes the request. Its browser I/O is not the
+    // theme-application deadline: release only after the real request is waiting.
+    started.await.unwrap();
+    assert_eq!(root.get_attribute("data-theme").as_deref(), Some("light"));
     release
         .send(Ok(std::collections::BTreeMap::from([
             ("theme".into(), "dark".into()),
             ("browser_notifications".into(), "true".into()),
         ])))
         .unwrap();
-    // Startup awaits IndexedDB before settings; wait for the observable state,
-    // using the suite's deadline rather than a one-second scheduling assumption.
+    // Keep the ordinary deadline for applying the released database response.
     super::support::wait_until("startup database theme and notifications", || {
         root.get_attribute("data-theme").as_deref() == Some("dark") && notifications.get_untracked()
     })

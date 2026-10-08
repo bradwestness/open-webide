@@ -206,6 +206,9 @@ pub struct LexicalPreparation {
     complete: bool,
     unchanged: bool,
     source_change: Option<crate::editor::TextChange>,
+    previous_row: usize,
+    #[cfg(test)]
+    indexed_searches: std::cell::Cell<usize>,
     #[cfg(test)]
     boundary_scans: usize,
 }
@@ -224,6 +227,9 @@ impl LexicalPreparation {
             complete: false,
             unchanged: false,
             source_change: None,
+            previous_row: 0,
+            #[cfg(test)]
+            indexed_searches: std::cell::Cell::new(0),
             #[cfg(test)]
             boundary_scans: 0,
         }
@@ -241,6 +247,7 @@ impl LexicalPreparation {
     pub fn reuse(mut self, previous: std::sync::Arc<LexicalSnapshot>) -> Self {
         if previous.language == self.language && previous.normalize_crlf == self.normalize_crlf {
             self.next = 0;
+            self.previous_row = 0;
             self.state = State::Normal;
             self.rows.clear();
             self.contexts.clear();
@@ -278,10 +285,20 @@ impl LexicalPreparation {
         } else {
             return None;
         };
-        let index = previous
+        let index = if previous
             .rows
-            .binary_search_by_key(&old_start, |row| row.start)
-            .ok()?;
+            .get(self.previous_row)
+            .is_some_and(|row| row.start == old_start)
+        {
+            self.previous_row
+        } else {
+            #[cfg(test)]
+            self.indexed_searches.set(self.indexed_searches.get() + 1);
+            previous
+                .rows
+                .binary_search_by_key(&old_start, |row| row.start)
+                .ok()?
+        };
         let row = &previous.rows[index];
         let end = if prefix {
             if row.end > change.range.start {
@@ -374,6 +391,11 @@ impl LexicalPreparation {
                 let (tokens, state) = highlight_line(line, self.language, self.state);
                 (std::sync::Arc::from(tokens), state)
             };
+            // Exact source boundaries remain valid even when multiline state
+            // requires fresh tokens. Changed/new rows recover via indexed lookup.
+            if let Some(index) = indexed.map(|(index, _, _)| index).or(reusable) {
+                self.previous_row = index + 1;
+            }
             self.contexts.push(LexicalRow {
                 start: self.next,
                 end: next,
@@ -1693,6 +1715,7 @@ mod tests {
                 job.advance(128, usize::MAX);
             }
             assert_eq!(job.boundary_scans, 1);
+            assert_eq!(job.indexed_searches.get(), 1);
             let next = job.finish_snapshot().unwrap();
             assert_eq!(next.retokenized_rows(), 1);
             assert_eq!(
@@ -1712,6 +1735,7 @@ mod tests {
         let mut job = LexicalPreparation::new(changed.clone(), Language::Rust).reuse(old);
         job.advance(128, usize::MAX);
         assert_eq!(job.boundary_scans, 1);
+        assert_eq!(job.indexed_searches.get(), 1);
         let next = job.finish_snapshot().unwrap();
         assert!(next.retokenized_rows() > 1);
         assert_eq!(

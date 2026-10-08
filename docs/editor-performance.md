@@ -58,6 +58,48 @@ viewport memory bounds. Comparison remains linear in unchanged text. Full record
 [browser before](editor-performance/browser-source-change-before.csv),
 [browser after](editor-performance/browser-source-change-after.csv).
 
+## Sequential lexical row reuse
+
+Unchanged source rows now try the exact next retained row position before an
+indexed search. The validated UTF-8 source replacement still proves unchanged
+prefix/suffix bytes; raw changed rows, incoming multiline state, terminal rows,
+normalization settings and cooperative budgets retain their existing checks.
+A changed row resumes the retained table through indexed lookup. Exhaustive
+Unicode/CRLF/EOF edits compare with fresh tokens; work-count checks require one
+indexed recovery across a 3,001-row update, including multiline state propagation.
+Source comparison and complete table publication remain linear.
+
+Run the same primitive workload in native and browser release builds:
+
+```sh
+cargo run -p openwebide-editor-bench --release -- --lexical
+CHROMEDRIVER=<matching-driver> cargo test -p openwebide-editor-bench --target wasm32-unknown-unknown --release shared_lexical_workloads -- --nocapture
+```
+
+Each record times twenty complete preparations against a retained lexical base,
+including source comparison, token-row/context-table assembly and publication.
+Fixtures and fresh-token verification are outside timing. Source contains Unicode
+Rust strings and LF or CRLF; begin/middle/end insertions retokenize exactly one row.
+The 65,516/2,097,150-byte fixtures use LF; 65,527/2,097,140-byte fixtures use CRLF.
+Consecutive observations on this machine (2026-10-08, Rust 1.98.1, macOS arm64,
+Chrome 154):
+
+| Ending / insertion | Source bytes | Native before / after ms | Chrome WASM before / after ms |
+| --- | ---: | ---: | ---: |
+| LF / begin | 2,097,150 | 92.875 / 28.443 | 66.805 / 30.035 |
+| LF / middle | 2,097,150 | 90.224 / 32.722 | 60.900 / 29.590 |
+| LF / end | 2,097,150 | 90.649 / 26.239 | 61.835 / 27.870 |
+| CRLF / begin | 2,097,140 | 88.327 / 24.737 | 64.255 / 27.005 |
+| CRLF / middle | 2,097,140 | 89.235 / 23.991 | 58.555 / 26.930 |
+| CRLF / end | 2,097,140 | 100.010 / 23.413 | 60.765 / 30.490 |
+
+These are single paired primitive runs, not application input-to-paint latency,
+percentiles or proof that remaining long-row stalls are resolved. Full records:
+[native before](editor-performance/lexical-row-before-native.csv),
+[native after](editor-performance/lexical-row-after-native.csv),
+[browser before](editor-performance/lexical-row-before-browser.csv),
+[browser after](editor-performance/lexical-row-after-browser.csv).
+
 ## Complete native-input comparison
 
 Complete textarea replacements and duplicate composition commits compare borrowed

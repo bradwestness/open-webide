@@ -120,7 +120,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   shares complete immutable context/token tables without advancing row batches.
   Changed lexical source reuses indexed prefix/suffix row boundaries outside one
   validated UTF-8 replacement span, preserving incoming-state checks and terminal
-  row handling. Source-change comparison and changed-source table assembly still
+  row handling. Sequential unchanged-row queries retain exact prior row positions,
+  recovering by indexed lookup after changed rows instead of searching every row.
+  Source-change comparison and changed-source table assembly still
   traverse the source; rows intersecting the span retain raw-byte validation.
   Cooperative lexical rendering now uses a 4 ms elapsed budget with a 64-batch
   hard cap, retaining task yields and conservative clock fallback instead of a

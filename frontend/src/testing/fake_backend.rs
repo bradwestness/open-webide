@@ -153,6 +153,7 @@ pub struct FakeBackend {
     pub settings: RefCell<BTreeMap<String, String>>,
     pub editor_save_results: RefCell<VecDeque<Deferred<()>>>,
     pub settings_load_error: RefCell<Option<String>>,
+    pub settings_load_started: RefCell<Option<futures::channel::oneshot::Sender<()>>>,
     pub settings_load_results: RefCell<VecDeque<SettingsLoad>>,
     pub history_save_results:
         RefCell<VecDeque<futures::channel::oneshot::Receiver<Result<(), String>>>>,
@@ -865,6 +866,9 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "get_settings",
             });
+            if let Some(started) = self.settings_load_started.borrow_mut().take() {
+                let _ = started.send(());
+            }
             let result = self.settings_load_results.borrow_mut().pop_front();
             if let Some(result) = result {
                 return result.await.map_err(|error| error.to_string())?;

@@ -21,6 +21,60 @@ fn time(
         milliseconds: clock() - start,
     });
 }
+/// Measure complete changed-source lexical preparation, including comparison and
+/// row-table publication. Fixture creation and fresh-token verification are untimed.
+pub fn measure_lexical(clock: impl Fn() -> f64) -> Vec<Measurement> {
+    use openwebide_core::highlight::{Language, LexicalPreparation};
+    use std::sync::Arc;
+    let mut records = Vec::new();
+    for size in [64 * 1024, 2 * 1024 * 1024] {
+        for ending in ["\n", "\r\n"] {
+            let pattern = format!("let text = \"文😀\";{ending}");
+            let source = Arc::new(pattern.repeat(size / pattern.len()));
+            let mut initial = LexicalPreparation::for_textarea(source.clone(), Language::Rust);
+            while !initial.is_complete() {
+                initial.advance(128, usize::MAX);
+            }
+            let previous = Arc::new(initial.finish_snapshot().unwrap());
+            let middle = source[..source.len() / 2]
+                .rfind('\n')
+                .map_or(0, |byte| byte + 1);
+            for (label, at) in [
+                ("lexical_begin_20", 0),
+                ("lexical_middle_20", middle),
+                ("lexical_end_20", source.len()),
+            ] {
+                let mut changed = source.as_ref().clone();
+                changed.insert_str(at, "changed ");
+                let changed = Arc::new(changed);
+                let prepare = || {
+                    let mut job = LexicalPreparation::for_textarea(changed.clone(), Language::Rust)
+                        .reuse(previous.clone());
+                    while !job.is_complete() {
+                        job.advance(128, 32 * 1024);
+                    }
+                    job.finish_snapshot().unwrap()
+                };
+                let expected = openwebide_core::highlight::share_token_rows(
+                    openwebide_core::highlight::highlight_lines(
+                        &changed.replace("\r\n", "\n"),
+                        Language::Rust,
+                    ),
+                );
+                let verified = prepare();
+                assert_eq!(verified.tokens().as_ref(), &expected);
+                assert_eq!(verified.retokenized_rows(), 1);
+                time(&mut records, &clock, label, source.len(), || {
+                    for _ in 0..20 {
+                        black_box(prepare());
+                    }
+                });
+            }
+        }
+    }
+    records
+}
+
 /// Run identical storage workloads with a platform clock supplied by the caller.
 /// Ropes are comparison dependencies only; production text storage remains String.
 pub fn measure(clock: impl Fn() -> f64) -> Vec<Measurement> {
@@ -437,6 +491,21 @@ fn measure_visual_lines(records: &mut Vec<Measurement>, clock: &impl Fn() -> f64
 mod browser {
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
     #[wasm_bindgen_test::wasm_bindgen_test]
+    fn shared_lexical_workloads() {
+        let clock = js_sys::Function::new_no_args("return performance.now()");
+        for record in
+            super::measure_lexical(|| clock.call0(&js_sys::global()).unwrap().as_f64().unwrap())
+        {
+            wasm_bindgen_test::console_log!(
+                "{},{},{:.3}",
+                record.operation,
+                record.bytes,
+                record.milliseconds
+            );
+            assert!(record.milliseconds.is_finite() && record.milliseconds >= 0.0);
+        }
+    }
+    #[wasm_bindgen_test::wasm_bindgen_test]
     fn shared_storage_workloads() {
         let clock = js_sys::Function::new_no_args("return performance.now()");
         let records = super::measure(|| clock.call0(&js_sys::global()).unwrap().as_f64().unwrap());
@@ -454,6 +523,17 @@ mod browser {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod native {
+    #[test]
+    fn shared_lexical_workloads() {
+        let start = std::time::Instant::now();
+        let records = super::measure_lexical(|| start.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(records.len(), 12);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.milliseconds.is_finite() && record.milliseconds >= 0.0)
+        );
+    }
     #[test]
     fn shared_storage_workloads() {
         let start = std::time::Instant::now();
