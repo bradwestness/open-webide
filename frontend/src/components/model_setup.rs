@@ -244,6 +244,10 @@ pub(crate) fn ModelSettingsEditor(
     let api = expect_context::<Api>();
     let auth = expect_context::<AuthState>();
     let state = expect_context::<SettingsState>();
+    let budget_selection = probe
+        .as_ref()
+        .and_then(|probe| probe.transport.tool_selection.clone());
+    let budget_server = selection.server_id;
     let saved = initial.unwrap_or_else(|| {
         state.model_setup.with_untracked(|setup| {
             setup
@@ -445,6 +449,10 @@ pub(crate) fn ModelSettingsEditor(
             </Show>
 
             <FormSection title="Context and output" class="ui-form-grid">
+            <p class="form-hint tool-budget">{move || {
+                let selection = budget_selection.clone().unwrap_or_else(|| state.connections.with(|connections| connections.iter().find(|connection| connection.id == budget_server).map_or_else(Default::default, |connection| connection.tool_selection.clone())));
+                super::tool_budget::budget(&selection, tools.get() != Some(false), context.get().parse().ok())
+            }}</p>
             <TextSetting label="Context tokens" value=context input_type="number" placeholder="Detect from server" />
             <TextSetting label="Max output tokens" value=output input_type="number" placeholder="Remaining context" />
             </FormSection>
@@ -474,9 +482,14 @@ fn BooleanSetting(label: &'static str, value: RwSignal<Option<bool>>) -> impl In
 pub fn ServerOptions(
     #[prop(optional_no_strip)] id: Option<i64>,
     on_edit: Callback<Result<ServerSettingsUpdate, String>>,
+    #[prop(default = Signal::derive(|| false))] disabled: Signal<bool>,
 ) -> impl IntoView {
     let api = expect_context::<Api>();
     let auth = expect_context::<AuthState>();
+    let tool_selection = RwSignal::new(openwebide_core::ToolSelection::All);
+    let edited = RwSignal::new(false);
+    let loading = RwSignal::new(id.is_some());
+    let load_error = RwSignal::new(None::<String>);
     let clear_key = RwSignal::new(false);
     let timeout = RwSignal::new("300".to_string());
     let keep_alive = RwSignal::new(String::new());
@@ -485,15 +498,35 @@ pub fn ServerOptions(
     if let Some(id) = id {
         let epoch = auth.generation.get_untracked();
         spawn_local(async move {
-            if let Ok(settings) = api.with_value(Clone::clone).server_settings(id).await
-                && auth.generation.try_get_untracked() == Some(epoch)
+            let result = api.with_value(Clone::clone).server_settings(id).await;
+            if auth.generation.try_get_untracked() != Some(epoch)
+                || loading.try_get_untracked().is_none()
             {
-                timeout.try_set(settings.timeout_seconds.to_string());
-                keep_alive.try_set(settings.keep_alive.unwrap_or_default());
+                return;
+            }
+            loading.set(false);
+            match result {
+                Ok(settings) => {
+                    timeout.set(settings.timeout_seconds.to_string());
+                    keep_alive.set(settings.keep_alive.unwrap_or_default());
+                    if !edited.get_untracked() {
+                        tool_selection.set(settings.tool_selection);
+                    }
+                }
+                Err(error) => load_error.set(Some(error)),
             }
         });
     }
     Effect::new(move |_| {
+        if loading.get() {
+            on_edit.run(Err("Wait for server options to load.".into()));
+            return;
+        }
+        if let Some(error) = load_error.get() {
+            on_edit.run(Err(error));
+            return;
+        }
+        let selection = tool_selection.get();
         let timeout = timeout.get();
         let keep_alive = keep_alive.get();
         let headers = headers.get();
@@ -511,6 +544,7 @@ pub fn ServerOptions(
                 extra_headers.insert(name.trim().to_string(), value.trim().to_string());
             }
             let update = ServerSettingsUpdate {
+                tool_selection: Some(selection),
                 clear_api_key,
                 headers: (clear_headers || !headers.trim().is_empty()).then_some(extra_headers),
                 timeout_seconds: Some(timeout_seconds),
@@ -522,7 +556,11 @@ pub fn ServerOptions(
         })();
         on_edit.run(result);
     });
-    view! { <details class="ui-disclosure"><summary>"Advanced server options"</summary>
+    view! {
+        <super::tool_budget::ToolBudget disabled=disabled selection=tool_selection on_edit=Callback::new(move |()| edited.set(true)) />
+        <Show when=move || loading.get()><p class="form-hint">"Loading server options…"</p></Show>
+        <Show when=move || load_error.get().is_some()><FormNotice tone=NoticeTone::Error>{move || load_error.get()}</FormNotice></Show>
+        <details class="ui-disclosure"><summary>"Advanced server options"</summary>
         <CheckboxField label="Clear stored auth token" checked=clear_key.into() on_change=Callback::new(move |value| clear_key.set(value)) />
         <TextSetting label="Timeout (seconds)" value=timeout input_type="number" />
         <TextSetting label="Ollama keep alive" value=keep_alive placeholder="Server default (e.g. 5m)" />

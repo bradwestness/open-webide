@@ -650,6 +650,22 @@ where
                             .pending
                             .pop_front()
                             .expect("pending calls are nonempty");
+                        if !state
+                            .request
+                            .tools
+                            .iter()
+                            .any(|tool| tool.name == pending.call.name)
+                        {
+                            state.next = Next::UnavailableResult(pending.clone());
+                            return Some((
+                                AgentEvent::ToolCall {
+                                    id: pending.call.id,
+                                    name: pending.call.name,
+                                    summary: "Tool is unavailable for this run".into(),
+                                },
+                                state,
+                            ));
+                        }
                         if !state.executor.has_context() {
                             state.next = Next::PrepareTool(pending);
                             continue;
@@ -715,6 +731,31 @@ where
                                 ok: false,
                                 summary: "Deferred until directory instructions are reviewed"
                                     .into(),
+                                diff: None,
+                            },
+                            state,
+                        ));
+                    }
+                    Next::UnavailableResult(pending) => {
+                        state.tool_calls += 1;
+                        let content = "Tool is unavailable for this run. Use an advertised tool or respond without tools.";
+                        state.request.messages.push(ChatMessage {
+                            id: 0,
+                            session_id: 0,
+                            role: Role::Tool,
+                            content: content.into(),
+                            created_at: 0,
+                            tool_calls: None,
+                            tool_call_id: Some(pending.wire_id),
+                            usage: None,
+                        });
+                        state.next = Next::EmitToolCall;
+                        return Some((
+                            AgentEvent::ToolResult {
+                                id: pending.call.id,
+                                name: pending.call.name,
+                                ok: false,
+                                summary: content.into(),
                                 diff: None,
                             },
                             state,
@@ -1174,6 +1215,7 @@ enum Next {
     PrepareTool(PendingCall),
     DeferTool(PendingCall),
     DeferredResult(PendingCall),
+    UnavailableResult(PendingCall),
     CallModel,
     StreamModel,
     HandleResponse,
@@ -1508,6 +1550,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn unadvertised_tools_never_reach_execution_or_approval() {
+        let (provider, seen) = FakeProvider::new(vec![
+            Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                "bad",
+                "write_file",
+                "{}",
+            )]))),
+            Ok(no_usage(ChatResponse::Text("done".into()))),
+        ]);
+        let executor = FakeExecutor::new(vec![]);
+        let executed = executor.executed.clone();
+        let mut request = request();
+        request.tools.retain(|tool| tool.name == "read_file");
+        let events = collect(run(
+            provider,
+            executor,
+            request,
+            AgentConfig::default(),
+            NoopCancel,
+            NoopGate,
+            1,
+        ));
+        assert!(executed.lock().unwrap().is_empty());
+        assert!(events.iter().any(|event| matches!(event, AgentEvent::ToolResult { ok: false, summary, .. } if summary.contains("unavailable"))));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::PermissionRequest { .. }))
+        );
+        let requests = seen.lock().unwrap();
+        assert!(
+            requests[1]
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool
+                    && message.tool_call_id.as_deref() == Some("bad"))
+        );
+    }
+
     fn request() -> ChatRequest {
         ChatRequest {
             model_settings: Default::default(),
@@ -1524,11 +1606,11 @@ mod tests {
                 tool_call_id: None,
                 usage: None,
             }],
-            tools: vec![ToolDefinition {
-                name: "read_file".into(),
-                description: "Read a file".into(),
-                parameters: serde_json::json!({ "type": "object" }),
-            }],
+            tools: {
+                let mut tools = vfs_tools();
+                tools.push(tasks::executor::definition());
+                tools
+            },
         }
     }
 
@@ -3225,6 +3307,7 @@ mod tests {
                     context_limit: Some(1024),
                     tool_stream_unsupported: false,
                     tool_stream_revision: 0,
+                    tool_selection: Default::default(),
                 },
                 settings: openwebide_core::ModelSettings {
                     context_limit: Some(1024),
@@ -3257,6 +3340,16 @@ mod tests {
         }
     }
 
+    fn compact_request() -> ChatRequest {
+        let mut request = request();
+        request.tools = vec![ToolDefinition {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({"type":"object"}),
+        }];
+        request
+    }
+
     #[test]
     fn compaction_waits_for_tool_results_and_precedes_the_continuation() {
         let (provider, requests) = FakeProvider::new(vec![
@@ -3269,7 +3362,7 @@ mod tests {
         ]);
         let source = summary_source(false, false);
         let summaries = source.requests.clone();
-        let mut request = request();
+        let mut request = compact_request();
         request.model_settings.context_limit = Some(2048);
         let events = collect(run_with_compaction(
             provider,
@@ -3322,7 +3415,7 @@ mod tests {
             }
             let (provider, _) = FakeProvider::new(vec![]);
             let source = summary_source(false, false);
-            let mut input = request();
+            let mut input = compact_request();
             let messages = input.messages.clone();
             assert!(
                 compaction::prepare_manual_cancelled(&provider, &source, &mut input, &Stopped)
@@ -3340,7 +3433,7 @@ mod tests {
             for fail in [false, true] {
                 let (provider, _) = FakeProvider::new(vec![]);
                 let source = summary_source(fail, true);
-                let mut input = request();
+                let mut input = compact_request();
                 let mut old = input.messages[0].clone();
                 old.role = Role::Assistant;
                 old.content = "saved progress ".repeat(80);
@@ -3378,7 +3471,7 @@ mod tests {
         futures::executor::block_on(async {
             for scenario in ["disabled", "failure", "fast"] {
                 let (provider, _) = FakeProvider::new(vec![]);
-                let mut request = request();
+                let mut request = compact_request();
                 let mut old = request.messages[0].clone();
                 old.role = Role::Assistant;
                 old.content = "old conversation ".repeat(600);
@@ -3427,7 +3520,7 @@ mod tests {
                 )]))),
                 Ok(no_usage(ChatResponse::Text("done".into()))),
             ]);
-            let mut input = request();
+            let mut input = compact_request();
             input.model_settings.context_limit = Some(81920);
             input.model_settings.max_output_tokens = explicit;
             input.model_settings.auto_compact_threshold = Some(0);
@@ -3479,7 +3572,7 @@ mod tests {
         futures::executor::block_on(async {
             let (provider, _) = FakeProvider::new(vec![]);
             for disabled in [false, true] {
-                let mut input = request();
+                let mut input = compact_request();
                 if disabled {
                     input.model_settings.auto_compact_threshold = Some(0);
                 }
@@ -3491,7 +3584,7 @@ mod tests {
                 );
                 assert_eq!(input.model_settings.max_output_tokens, Some(81920 - 1234));
             }
-            let mut unknown = request();
+            let mut unknown = compact_request();
             assert!(
                 compaction::prepare(&provider, &compaction::NoopCompactionSource, &mut unknown)
                     .await
@@ -3499,7 +3592,7 @@ mod tests {
                     .is_none()
             );
             assert_eq!(unknown.model_settings.max_output_tokens, None);
-            let mut bounded = request();
+            let mut bounded = compact_request();
             bounded.model_settings.context_limit = Some(81920);
             bounded.model_settings.max_output_tokens = Some(81000);
             bounded.model_settings.auto_compact_threshold = Some(0);
@@ -3515,7 +3608,7 @@ mod tests {
         futures::executor::block_on(async {
             for pending in [false, true] {
                 let (provider, _) = FakeProvider::new(vec![]);
-                let mut request = request();
+                let mut request = compact_request();
                 request.model_settings.context_limit = Some(4096);
                 request.model_settings.max_output_tokens = Some(2048);
                 let mut old = request.messages[0].clone();
@@ -3541,7 +3634,7 @@ mod tests {
         });
     }
     #[test]
-    fn cancellation_during_summary_prevents_model_request() {
+    fn cancellation_during_summary_prevents_model_compact_request() {
         struct BlockedSummary;
         impl compaction::CompactionSource for BlockedSummary {
             fn available(&self) -> bool {
@@ -3552,7 +3645,7 @@ mod tests {
             }
         }
         let (provider, requests) = FakeProvider::new(vec![]);
-        let mut request = request();
+        let mut request = compact_request();
         request.model_settings.context_limit = Some(2048);
         let mut old = request.messages[0].clone();
         old.role = Role::Assistant;
@@ -3574,7 +3667,7 @@ mod tests {
     #[test]
     fn failed_compaction_ends_the_agent_without_requesting_a_reply() {
         let (provider, requests) = FakeProvider::new(vec![]);
-        let mut request = request();
+        let mut request = compact_request();
         request.model_settings.context_limit = Some(2048);
         let mut old = request.messages[0].clone();
         old.role = Role::Assistant;
@@ -3786,6 +3879,7 @@ mod tests {
             };
             let mut parent = request();
             parent.tools = vfs_tools();
+            parent.tools.push(tasks::executor::definition());
             let (provider, parent_seen) = FakeProvider::new(vec![
                 Ok(no_usage(ChatResponse::ToolCalls(vec![call(
                     "parent-wire",

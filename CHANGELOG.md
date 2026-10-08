@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add server-scoped All tools, Selected tools and Chat only controls with estimated per-tool schema cost and model-context share. Persist selections, filter shared local/remote/projectless requests and child agents, and reject unadvertised calls before execution. Count delegation during planning and shorten tool descriptions while preserving parameter schemas and approval rules.
+
 - Reuse indexed line-ending summaries for native normalization and row-height eligibility, avoiding full projection-text scans in unfolded and folded editor views.
 
 - Share lazily prepared visible-row tables with unfolded editor projections. Edit batches update changed rows and shifted suffixes, retain unchanged prefixes and preserve immutable older views; row growth uses bounded headroom and large deletions release excess capacity; folded and bounded projections keep their own visible rows.

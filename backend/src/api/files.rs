@@ -128,11 +128,22 @@ pub(crate) async fn files_get(
         "files/context" => {
             let (base, _) = remote_project_path(state, user_id, id, "").await?;
             let project = state.store.get_project(id, user_id).await?;
-            let tools = if params.get("tools").map(String::as_str) == Some("false") {
+            let mut tools = if params.get("tools").map(String::as_str) == Some("false") {
                 Vec::new()
             } else {
                 crate::agent::workspace_tools()
             };
+            if let Some(connection) = params.get("connection").filter(|value| !value.is_empty()) {
+                let connection: i64 = connection
+                    .parse()
+                    .map_err(|_| ApiError::bad_request("invalid connection"))?;
+                state
+                    .store
+                    .get_connection(connection)
+                    .await?
+                    .tool_selection
+                    .apply(&mut tools);
+            }
             let environment = openwebide_core::RunEnvironment {
                 browser_preferences: params
                     .get("browser_preferences")

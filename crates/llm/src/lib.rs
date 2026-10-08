@@ -437,6 +437,7 @@ mod tests {
             context_limit: None,
             tool_stream_unsupported: true,
             tool_stream_revision: 0,
+            tool_selection: Default::default(),
         };
         let original = connection.clone();
         let old_memo = memos.get_or_insert(&connection);

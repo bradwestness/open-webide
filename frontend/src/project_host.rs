@@ -98,24 +98,25 @@ impl ProjectHost {
             .projects
             .project(id)
             .ok_or("Project is no longer available")?;
-        let tools_enabled = match connection {
-            Some(connection) => {
+        let runtime = match connection {
+            Some(connection) => Some(
                 self.api
                     .with_value(Clone::clone)
                     .model_runtime(connection, model)
-                    .await?
-                    .settings
-                    .tools
-                    != Some(false)
-            }
-            None => true,
+                    .await?,
+            ),
+            None => None,
         };
+        let tools_enabled = runtime.as_ref().is_none_or(|runtime| {
+            runtime.settings.tools != Some(false)
+                && runtime.connection.tool_selection != openwebide_core::ToolSelection::ChatOnly
+        });
         // Adapter selection; both hosts use RunContext and the same tool policy.
         if project.mode == WorkspaceMode::Remote {
             return self
                 .api
                 .with_value(Clone::clone)
-                .startup_context(id, tools_enabled)
+                .startup_context(id, tools_enabled, connection)
                 .await;
         }
         let handle = self
@@ -135,11 +136,14 @@ impl ProjectHost {
             mode: Some(project.mode),
             timestamp: openwebide_core::now_seconds(js_sys::Date::now()),
         };
-        let tools = if tools_enabled {
+        let mut tools = if tools_enabled {
             crate::local_agent::local_tools(cwd.as_deref())
         } else {
             Vec::new()
         };
+        if let Some(runtime) = runtime {
+            runtime.connection.tool_selection.apply(&mut tools);
+        }
         let mut context = openwebide_agent::context::RunContext::new(environment);
         let vfs = crate::local_fs::BrowserFsaVfs::new(handle);
         let bridge = host.and_then(|host| match host {

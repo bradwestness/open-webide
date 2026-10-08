@@ -111,6 +111,7 @@ impl TestState {
             context_limit: Some(8192),
             tool_stream_unsupported: false,
             tool_stream_revision: 0,
+            tool_selection: Default::default(),
         };
         self.fake.connections.borrow_mut().push(connection.clone());
         self.settings.connections.set(vec![connection]);

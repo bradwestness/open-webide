@@ -1,7 +1,7 @@
 //! One child-loop implementation over provider, execution and permission primitives.
 use super::{
     budget::TaskBudget,
-    executor::{TaskExecutor, TaskGate, definition},
+    executor::{TaskExecutor, TaskGate},
     model_budget::LimitedProvider,
     mutations::MutationExecutor,
     scheduler::{ChildStream, TaskHost},
@@ -156,7 +156,7 @@ pub fn run_tree<F, C, S, P>(
     provider: P,
     executor: F::Executor,
     gate: F::Gate,
-    mut request: ChatRequest,
+    request: ChatRequest,
     config: AgentConfig,
     anchor: i64,
 ) -> impl futures::Stream<Item = crate::AgentEvent> + Send
@@ -166,12 +166,6 @@ where
     C: CancelCheck + Clone + Sync + 'static,
     S: ModelSource + Clone + 'static,
 {
-    if !request.tools.is_empty()
-        && request.model_settings.tools != Some(false)
-        && !request.tools.iter().any(|tool| tool.name == "task")
-    {
-        request.tools.push(definition());
-    }
     let budget = TaskBudget::new(config.max_tool_calls);
     let host = ChildHost {
         factory,

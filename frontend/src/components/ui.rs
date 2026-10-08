@@ -242,7 +242,7 @@ pub fn FormNotice(
 /// A native checkbox with a descriptive label and shared control spacing.
 #[component]
 pub fn CheckboxField(
-    label: &'static str,
+    #[prop(into)] label: String,
     checked: Signal<bool>,
     on_change: Callback<bool>,
     #[prop(into, optional)] disabled: Option<Signal<bool>>,

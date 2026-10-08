@@ -154,6 +154,7 @@ async fn prepare_with<P: LlmProvider, S: CompactionSource>(
             context_limit: Some(limit),
             tool_stream_unsupported: false,
             tool_stream_revision: 0,
+            tool_selection: Default::default(),
         },
         settings: request.model_settings.clone(),
         transport: Default::default(),

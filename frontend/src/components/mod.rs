@@ -90,3 +90,5 @@ mod editor_recovery;
 mod tab_actions;
 
 pub mod goal;
+
+pub mod tool_budget;

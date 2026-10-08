@@ -462,10 +462,16 @@ impl BackendApi {
             .await
     }
 
-    pub async fn startup_context(&self, project_id: i64, tools: bool) -> Result<String, String> {
+    pub async fn startup_context(
+        &self,
+        project_id: i64,
+        tools: bool,
+        connection: Option<i64>,
+    ) -> Result<String, String> {
         let response: serde_json::Value = self
             .get(&format!(
-                "/projects/{project_id}/files/context?tools={tools}&browser_preferences={}",
+                "/projects/{project_id}/files/context?tools={tools}&connection={}&browser_preferences={}",
+                connection.map_or_else(String::new, |id| id.to_string()),
                 js_sys::encode_uri_component(
                     &serde_json::to_string(&crate::browser_preferences::capture())
                         .map_err(|error| error.to_string())?

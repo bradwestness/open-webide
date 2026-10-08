@@ -166,6 +166,7 @@ pub trait Backend {
         &self,
         project: i64,
         tools: bool,
+        connection: Option<i64>,
     ) -> LocalBoxFuture<'_, Result<String, String>>;
     fn create_session<'a>(
         &'a self,
@@ -757,8 +758,11 @@ impl Backend for BackendApi {
         &self,
         project: i64,
         tools: bool,
+        connection: Option<i64>,
     ) -> LocalBoxFuture<'_, Result<String, String>> {
-        Box::pin(BackendApi::startup_context(self, project, tools))
+        Box::pin(BackendApi::startup_context(
+            self, project, tools, connection,
+        ))
     }
     fn create_session<'a>(
         &'a self,

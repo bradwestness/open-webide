@@ -350,7 +350,7 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, kind, base_url, model, enabled, context_limit, tool_stream_unsupported, tool_stream_revision
+                "SELECT id, name, kind, base_url, model, enabled, context_limit, tool_stream_unsupported, tool_stream_revision, tool_selection
                  FROM connections ORDER BY id",
                 &[],
             )
@@ -362,7 +362,7 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, kind, base_url, model, enabled, context_limit, tool_stream_unsupported, tool_stream_revision
+                "SELECT id, name, kind, base_url, model, enabled, context_limit, tool_stream_unsupported, tool_stream_revision, tool_selection
                  FROM connections WHERE id = ?",
                 &[DbValue::Int(id)],
             )
@@ -398,13 +398,16 @@ impl<D: Db> Store<D> {
     }
 
     pub async fn update_connection(&self, conn: &Connection) -> Result<(), StorageError> {
+        conn.tool_selection
+            .validate()
+            .map_err(StorageError::InvalidValue)?;
         let res = self
             .db
             .execute(
                 "UPDATE connections
                  SET tool_stream_unsupported = CASE WHEN base_url != ? OR kind != ? THEN 0 ELSE tool_stream_unsupported END,
                      tool_stream_revision = CASE WHEN base_url != ? OR kind != ? THEN tool_stream_revision + 1 ELSE tool_stream_revision END,
-                     name = ?, kind = ?, base_url = ?, model = ?, enabled = ?, context_limit = ?
+                     name = ?, kind = ?, base_url = ?, model = ?, enabled = ?, context_limit = ?, tool_selection = ?
                  WHERE id = ?",
                 &[
                     DbValue::Text(conn.base_url.clone()),
@@ -422,6 +425,7 @@ impl<D: Db> Store<D> {
                     conn.context_limit
                         .map(|n| DbValue::Int(i64::try_from(n).unwrap_or(i64::MAX)))
                         .unwrap_or(DbValue::Null),
+                    DbValue::Text(serde_json::to_string(&conn.tool_selection).map_err(|error| StorageError::InvalidValue(error.to_string()))?),
                     DbValue::Int(conn.id),
                 ],
             )
@@ -1758,35 +1762,23 @@ mod tests {
                 .await
                 .unwrap()
                 .id;
-            let server = store
-                .insert_connection(&NewConnection {
-                    name: "host".into(),
-                    kind: openwebide_core::ProviderKind::Ollama,
-                    base_url: "http://host".into(),
-                    model: Some("main".into()),
-                    context_limit: None,
-                })
-                .await
-                .unwrap();
+            // Populate the historical schema without using today's row decoder.
+            let server = store.db.execute("INSERT INTO connections (name, kind, base_url, model) VALUES ('host', 'ollama', 'http://host', 'main')", &[]).await.unwrap().last_insert_rowid;
             for (user, model, threshold) in [(alice, "main", 80), (bob, "other", 0)] {
-                store.set_user_setting(user, "model_defaults", &serde_json::json!({"primary":{"server_id":server.id,"model":model},"auto_compact_threshold":threshold}).to_string()).await.unwrap();
+                store.set_user_setting(user, "model_defaults", &serde_json::json!({"primary":{"server_id":server,"model":model},"auto_compact_threshold":threshold}).to_string()).await.unwrap();
             }
             for (user, context, fast) in [
                 (
                     alice,
                     4096,
-                    serde_json::json!({"server_id":server.id,"model":"quick"}),
+                    serde_json::json!({"server_id":server,"model":"quick"}),
                 ),
                 (bob, 8192, serde_json::Value::Null),
             ] {
-                store.db.execute("INSERT INTO model_settings (user_id, server_id, model, settings) VALUES (?, ?, 'main', ?)", &[DbValue::Int(user.get()),DbValue::Int(server.id),DbValue::Text(serde_json::json!({"context_limit":context,"fast":fast}).to_string())]).await.unwrap();
+                store.db.execute("INSERT INTO model_settings (user_id, server_id, model, settings) VALUES (?, ?, 'main', ?)", &[DbValue::Int(user.get()),DbValue::Int(server),DbValue::Text(serde_json::json!({"context_limit":context,"fast":fast}).to_string())]).await.unwrap();
             }
             store
-                .set_user_setting(
-                    alice,
-                    &format!("model_detection_{}_main", server.id),
-                    "cached",
-                )
+                .set_user_setting(alice, &format!("model_detection_{server}_main"), "cached")
                 .await
                 .unwrap();
             store
@@ -1798,13 +1790,13 @@ mod tests {
             let first = store.model_setup(alice).await.unwrap();
             let second = store.model_setup(bob).await.unwrap();
             assert_eq!(first.profiles, second.profiles);
-            assert_eq!(first.resolve(server.id, "main").context_limit, Some(4096));
+            assert_eq!(first.resolve(server, "main").context_limit, Some(4096));
             assert_eq!(
-                first.resolve(server.id, "main").auto_compact_threshold,
+                first.resolve(server, "main").auto_compact_threshold,
                 Some(80)
             );
             assert_eq!(
-                second.resolve(server.id, "other").auto_compact_threshold,
+                second.resolve(server, "other").auto_compact_threshold,
                 Some(0)
             );
             assert_eq!(first.defaults.fast.as_ref().unwrap().model, "quick");
@@ -1818,7 +1810,7 @@ mod tests {
             );
             assert_eq!(
                 store
-                    .get_setting(&format!("model_detection_{}_main", server.id))
+                    .get_setting(&format!("model_detection_{server}_main"))
                     .await
                     .unwrap()
                     .as_deref(),
@@ -2497,6 +2489,102 @@ mod tests {
                     .await
                     .unwrap()
             );
+        });
+    }
+
+    #[test]
+    fn connection_tool_selection_is_shared_persisted_and_validated() {
+        let store = test_store();
+        block_on(async {
+            let mut connection = store
+                .insert_connection(&NewConnection {
+                    name: "test".into(),
+                    kind: ProviderKind::Ollama,
+                    base_url: "http://localhost".into(),
+                    model: None,
+                    context_limit: Some(4096),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                connection.tool_selection,
+                openwebide_core::ToolSelection::All
+            );
+            for selection in [
+                openwebide_core::ToolSelection::Selected(vec!["read_file".into()]),
+                openwebide_core::ToolSelection::ChatOnly,
+                openwebide_core::ToolSelection::All,
+            ] {
+                store
+                    .save_server_settings(
+                        connection.id,
+                        &openwebide_core::ServerSettingsUpdate {
+                            tool_selection: Some(selection.clone()),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    store
+                        .get_connection(connection.id)
+                        .await
+                        .unwrap()
+                        .tool_selection,
+                    selection
+                );
+                assert_eq!(
+                    store.list_connections().await.unwrap()[0].tool_selection,
+                    selection
+                );
+                assert_eq!(
+                    store
+                        .server_settings(connection.id)
+                        .await
+                        .unwrap()
+                        .tool_selection,
+                    selection
+                );
+                store
+                    .save_server_settings(connection.id, &Default::default())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    store
+                        .get_connection(connection.id)
+                        .await
+                        .unwrap()
+                        .tool_selection,
+                    selection
+                );
+            }
+            connection.tool_selection =
+                openwebide_core::ToolSelection::Selected(vec!["read_file".into()]);
+            store.update_connection(&connection).await.unwrap();
+            connection.tool_selection =
+                openwebide_core::ToolSelection::Selected(vec!["bad name".into()]);
+            assert!(store.update_connection(&connection).await.is_err());
+            assert!(
+                store
+                    .save_server_settings(
+                        connection.id,
+                        &openwebide_core::ServerSettingsUpdate {
+                            tool_selection: Some(connection.tool_selection),
+                            ..Default::default()
+                        }
+                    )
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                store
+                    .get_connection(connection.id)
+                    .await
+                    .unwrap()
+                    .tool_selection,
+                openwebide_core::ToolSelection::Selected(vec!["read_file".into()])
+            );
+            store.migrate().await.unwrap();
         });
     }
 

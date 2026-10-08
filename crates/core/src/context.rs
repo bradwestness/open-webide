@@ -14,6 +14,14 @@ pub fn conservative_tokens(request: &ChatRequest) -> usize {
     })
 }
 
+/// Conservative schema-only estimate; exact provider tokenization can differ.
+pub fn tool_schema_tokens(tools: &[crate::ToolDefinition]) -> usize {
+    if tools.is_empty() {
+        return 0;
+    }
+    serde_json::to_vec(tools).map_or(usize::MAX, |bytes| bytes.len().div_ceil(3))
+}
+
 /// Estimated allocation of the latest model input, scaled to its token count.
 /// Providers report whole-request counts, so category counts remain estimates.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

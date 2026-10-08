@@ -233,6 +233,7 @@ pub struct ServerSettings {
     pub has_api_key: bool,
     /// Only non-secret header names are returned; values are never read back.
     pub header_names: Vec<String>,
+    pub tool_selection: crate::ToolSelection,
     pub timeout_seconds: u32,
     pub keep_alive: Option<String>,
 }
@@ -241,6 +242,7 @@ pub struct ServerSettings {
 #[serde(default)]
 pub struct ServerSettingsUpdate {
     pub preset: Option<ServerPreset>,
+    pub tool_selection: Option<crate::ToolSelection>,
     /// None preserves the stored key; clear_api_key explicitly removes it.
     pub api_key: Option<String>,
     pub clear_api_key: bool,
@@ -266,6 +268,7 @@ impl ModelRuntime {
             request.model_settings.max_output_tokens =
                 Some(budget.min(self.settings.max_output_tokens.unwrap_or(usize::MAX)));
         }
+        self.connection.tool_selection.apply(&mut request.tools);
         if self.settings.tools == Some(false) {
             request.tools.clear();
         }
@@ -431,6 +434,7 @@ mod tests {
                 context_limit: Some(4096),
                 tool_stream_unsupported: false,
                 tool_stream_revision: 0,
+                tool_selection: Default::default(),
             },
             settings: ModelSettings {
                 max_output_tokens: Some(2048),

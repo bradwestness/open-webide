@@ -16,7 +16,7 @@ use std::sync::Arc;
 pub fn definition() -> ToolDefinition {
     ToolDefinition {
         name: "task".into(),
-        description: "Delegate 1–4 independent tasks to child agents with separate contexts. Provide all required context in each prompt. Children inherit this run's project, tools and approval rules. Tasks run in parallel; return concise findings or results. Avoid delegating overlapping file changes.".into(),
+        description: "Delegate 1–4 independent tasks in parallel. Include required context; children inherit project, tools and approvals. Return concise results. Avoid overlapping file changes.".into(),
         parameters: serde_json::json!({"type":"object","properties":{"tasks":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"description":{"type":"string","minLength":1,"maxLength":80},"prompt":{"type":"string","minLength":1,"maxLength":16000}},"required":["description","prompt"],"additionalProperties":false}}},"required":["tasks"],"additionalProperties":false}),
     }
 }

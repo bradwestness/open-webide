@@ -197,7 +197,7 @@ pub fn ModelSetupWizard(on_close: Callback<()>) -> impl IntoView {
                     <FormField label="Server URL"><input class="form-input" type="url" disabled=move || busy.get() prop:value=move || url.get() on:input=move |event| url.set(event_target_value(&event)) /></FormField>
                     <FormField label="Auth token (optional)"><input class="form-input" type="password" disabled=move || busy.get() autocomplete="new-password" prop:value=move || token.get() on:input=move |event| token.set(event_target_value(&event)) /></FormField>
                     <p class="form-hint">{move || if has_key.get() { "A token is saved. Leave this blank to keep it." } else { "Leave the token blank for servers without authentication." }}</p>
-                    <super::model_setup::ServerOptions id=server_id.get_untracked() on_edit=Callback::new(move |value| options.set(value)) />
+                    <super::model_setup::ServerOptions disabled=Signal::derive(move || busy.get()) id=server_id.get_untracked() on_edit=Callback::new(move |value| options.set(value)) />
 
 
                     </FormSection>

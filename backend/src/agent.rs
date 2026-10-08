@@ -497,7 +497,7 @@ mod tests {
             system_prompt: None,
             model: None,
             messages: vec![],
-            tools: vec![],
+            tools: workspace_tools(),
         }
     }
 

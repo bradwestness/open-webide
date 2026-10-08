@@ -73,8 +73,11 @@ pub fn request(
     runtime: &ModelRuntime,
     system_prompt: Option<String>,
     messages: Vec<ChatMessage>,
-    tools: Vec<ToolDefinition>,
+    mut tools: Vec<ToolDefinition>,
 ) -> ChatRequest {
+    if !tools.is_empty() && !tools.iter().any(|tool| tool.name == "task") {
+        tools.push(crate::tasks::executor::definition());
+    }
     let mut request = ChatRequest {
         connection_id: runtime.connection.id,
         model: None,
@@ -123,7 +126,7 @@ pub fn plan(runtime: &ModelRuntime, input: PlanInput) -> openwebide_core::RunPla
         Some(root) if !request.tools.is_empty() => openwebide_core::RunKind::Agent {
             project_path: root.clone(),
         },
-        _ if projectless => openwebide_core::RunKind::WebChat,
+        _ if projectless && !request.tools.is_empty() => openwebide_core::RunKind::WebChat,
         _ => openwebide_core::RunKind::Chat,
     };
     openwebide_core::RunPlan {
@@ -1316,5 +1319,112 @@ mod tests {
                     .contains(&format!("result:{nested_parent}:false"))
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod tool_selection_contract {
+    use super::*;
+    use openwebide_core::{ToolSelection, WorkspaceMode};
+    #[test]
+    fn both_hosts_filter_before_run_kind_context_and_children() {
+        for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+            for host in [false, true] {
+                let mut runtime: ModelRuntime = serde_json::from_value(serde_json::json!({"connection":{"id":1,"name":"test","kind":"ollama","base_url":"http://localhost","model":"test","enabled":true},"settings":{},"transport":{}})).unwrap();
+                for selection in [
+                    ToolSelection::All,
+                    ToolSelection::Selected(vec!["read_file".into(), "run_command".into()]),
+                    ToolSelection::Selected(vec![]),
+                    ToolSelection::ChatOnly,
+                    ToolSelection::Selected(vec!["unknown_tool".into()]),
+                ] {
+                    runtime.connection.tool_selection = selection.clone();
+                    let plan = plan(
+                        &runtime,
+                        PlanInput {
+                            environment: openwebide_core::RunEnvironment {
+                                project_name: Some("p".into()),
+                                project_root: Some("p".into()),
+                                mode: Some(mode),
+                                ..Default::default()
+                            },
+                            system_prompt: None,
+                            messages: vec![],
+                            tools: tools_for_host(host),
+                            content: "go".into(),
+                            editor: None,
+                        },
+                    );
+                    assert!(
+                        plan.request
+                            .tools
+                            .iter()
+                            .all(|tool| selection.allows(&tool.name))
+                    );
+                    assert_eq!(
+                        plan.request
+                            .tools
+                            .iter()
+                            .any(|tool| tool.name == "run_command"),
+                        host && selection.allows("run_command")
+                    );
+                    assert_eq!(
+                        matches!(plan.kind, openwebide_core::RunKind::Chat),
+                        plan.request.tools.is_empty()
+                    );
+                    assert_eq!(
+                        plan.request.tools.iter().any(|tool| tool.name == "task"),
+                        selection == ToolSelection::All
+                    );
+                    if !plan.request.tools.is_empty() {
+                        let child = crate::tasks::child_request(
+                            &plan.request,
+                            &openwebide_core::NewAgentTask {
+                                description: "child".into(),
+                                prompt: "go".into(),
+                            },
+                            1,
+                        )
+                        .unwrap();
+                        assert!(
+                            child
+                                .tools
+                                .iter()
+                                .all(|tool| plan.request.tools.contains(tool))
+                        );
+                        assert_eq!(
+                            child.tools,
+                            plan.request
+                                .tools
+                                .into_iter()
+                                .filter(|tool| tool.name != "todo_write")
+                                .collect::<Vec<_>>()
+                        );
+                    }
+                }
+                runtime.connection.tool_selection = ToolSelection::All;
+                runtime.settings.tools = Some(false);
+                assert!(
+                    request(&runtime, None, vec![], tools_for_host(host))
+                        .tools
+                        .is_empty()
+                );
+                runtime.settings.tools = None;
+                runtime.connection.tool_selection = ToolSelection::ChatOnly;
+                let projectless = plan(
+                    &runtime,
+                    PlanInput {
+                        environment: Default::default(),
+                        system_prompt: None,
+                        messages: vec![],
+                        tools: vec![],
+                        content: "go".into(),
+                        editor: None,
+                    },
+                );
+                assert!(matches!(projectless.kind, openwebide_core::RunKind::Chat));
+                assert!(projectless.request.tools.is_empty());
+            }
+        }
     }
 }

@@ -157,6 +157,7 @@ mod tests {
                 context_limit: None,
                 tool_stream_unsupported: false,
                 tool_stream_revision: 0,
+                tool_selection: Default::default(),
             },
             settings: Default::default(),
             transport: Default::default(),

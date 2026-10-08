@@ -175,6 +175,7 @@ fn persisted_memo_skips_streaming() {
             context_limit: None,
             tool_stream_unsupported: true,
             tool_stream_revision: 0,
+            tool_selection: Default::default(),
         };
         let http = MemoHttp::default();
         let provider = Provider::for_connection(&connection, http.clone());
@@ -317,14 +318,49 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
                         project_path: "repos/app".into()
                     }
                 );
-                assert_eq!(plan.request.tools, workspace_tools());
+                let mut tools = workspace_tools();
+                tools.push(openwebide_agent::tasks::executor::definition());
+                assert_eq!(plan.request.tools, tools);
             } else {
                 assert_eq!(plan.kind, RunKind::WebChat);
-                assert_eq!(
-                    plan.request.tools,
-                    openwebide_agent::session::projectless_tools()
-                );
+                let mut tools = openwebide_agent::session::projectless_tools();
+                tools.push(openwebide_agent::tasks::executor::definition());
+                assert_eq!(plan.request.tools, tools);
             }
+            let mut configured = state.store.get_connection(connection.id).await.unwrap();
+            for selection in [
+                openwebide_core::ToolSelection::Selected(vec![
+                    "read_file".into(),
+                    "search_web".into(),
+                ]),
+                openwebide_core::ToolSelection::ChatOnly,
+            ] {
+                configured.tool_selection = selection.clone();
+                state.store.update_connection(&configured).await.unwrap();
+                let selected = build_run_plan(&state, user.id, session.id, make_body())
+                    .await
+                    .unwrap();
+                assert!(
+                    selected
+                        .request
+                        .tools
+                        .iter()
+                        .all(|tool| selection.allows(&tool.name))
+                );
+                assert!(
+                    !selected
+                        .request
+                        .tools
+                        .iter()
+                        .any(|tool| tool.name == "task")
+                );
+                if selection == openwebide_core::ToolSelection::ChatOnly {
+                    assert_eq!(selected.kind, RunKind::Chat);
+                    assert!(selected.request.tools.is_empty());
+                }
+            }
+            configured.tool_selection = openwebide_core::ToolSelection::All;
+            state.store.update_connection(&configured).await.unwrap();
             assert_eq!(
                 state.store.list_messages(session.id).await.unwrap(),
                 vec![history]

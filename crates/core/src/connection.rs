@@ -53,6 +53,8 @@ pub struct Connection {
     pub tool_stream_unsupported: bool,
     #[serde(default)]
     pub tool_stream_revision: i64,
+    #[serde(default)]
+    pub tool_selection: ToolSelection,
 }
 
 /// Payload for creating a new connection.
@@ -64,4 +66,70 @@ pub struct NewConnection {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_limit: Option<usize>,
+}
+
+/// Server-scoped tools advertised to the model; host and model capabilities still apply.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSelection {
+    #[default]
+    All,
+    Selected(Vec<String>),
+    ChatOnly,
+}
+impl ToolSelection {
+    pub fn allows(&self, name: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Selected(names) => names.iter().any(|selected| selected == name),
+            Self::ChatOnly => false,
+        }
+    }
+    pub fn apply(&self, tools: &mut Vec<crate::ToolDefinition>) {
+        tools.retain(|tool| self.allows(&tool.name));
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        if let Self::Selected(names) = self {
+            if names.len() > 128 {
+                return Err("Select at most 128 tools.".into());
+            }
+            let mut seen = std::collections::HashSet::new();
+            for name in names {
+                if name.is_empty()
+                    || name.len() > 128
+                    || !name.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+                    })
+                    || !seen.insert(name)
+                {
+                    return Err("Tool names must be unique and contain only letters, numbers, underscores, hyphens or dots.".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn legacy_connections_keep_tools_and_invalid_selections_fail() {
+        let connection: Connection = serde_json::from_value(serde_json::json!({"name":"test","kind":"ollama","base_url":"http://localhost","model":null,"enabled":true})).unwrap();
+        assert_eq!(connection.tool_selection, ToolSelection::All);
+        for names in [vec!["read_file", "read_file"], vec!["bad name"], vec![""]] {
+            assert!(
+                ToolSelection::Selected(names.into_iter().map(str::to_string).collect())
+                    .validate()
+                    .is_err()
+            );
+        }
+        assert!(
+            ToolSelection::Selected(vec!["future.tool".into()])
+                .validate()
+                .is_ok()
+        );
+        assert!(!ToolSelection::Selected(vec![]).allows("read_file"));
+        assert_eq!(crate::context::tool_schema_tokens(&[]), 0);
+    }
 }

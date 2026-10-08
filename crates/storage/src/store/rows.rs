@@ -19,6 +19,8 @@ pub(super) fn connection_from_row(row: &QueryRow) -> Result<Connection, StorageE
             .and_then(|n| usize::try_from(n).ok()),
         tool_stream_unsupported: row.get_int(7)? != 0,
         tool_stream_revision: row.get_int(8)?,
+        tool_selection: serde_json::from_str(row.get_text(9)?)
+            .map_err(|error| StorageError::Db(error.to_string()))?,
     })
 }
 

@@ -121,6 +121,7 @@ impl<D: Db> Store<D> {
     pub async fn server_settings(&self, id: i64) -> Result<ServerSettings, StorageError> {
         let transport = self.server_transport(id).await?;
         Ok(ServerSettings {
+            tool_selection: self.get_connection(id).await?.tool_selection,
             preset: transport.preset,
             has_api_key: transport.api_key.is_some(),
             header_names: transport.headers.keys().cloned().collect(),
@@ -133,11 +134,22 @@ impl<D: Db> Store<D> {
         id: i64,
         update: &ServerSettingsUpdate,
     ) -> Result<(), StorageError> {
+        if let Some(selection) = &update.tool_selection {
+            selection.validate().map_err(StorageError::InvalidValue)?;
+        }
         let previous = self.server_transport(id).await?;
         let transport = previous
             .updated(update)
             .map_err(StorageError::InvalidValue)?;
         self.db.execute("INSERT INTO server_transport (server_id, settings) VALUES (?, ?) ON CONFLICT(server_id) DO UPDATE SET settings = excluded.settings", &[DbValue::Int(id), DbValue::Text(encode(&transport)?)]).await?;
+        if let Some(selection) = &update.tool_selection {
+            self.db
+                .execute(
+                    "UPDATE connections SET tool_selection = ? WHERE id = ?",
+                    &[DbValue::Text(encode(selection)?), DbValue::Int(id)],
+                )
+                .await?;
+        }
         if transport != previous {
             self.db.execute("UPDATE connections SET tool_stream_revision = tool_stream_revision + 1, tool_stream_unsupported = 0 WHERE id = ?", &[DbValue::Int(id)]).await?;
         }

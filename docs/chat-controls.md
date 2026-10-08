@@ -24,6 +24,27 @@ group open, so neither is hidden behind a collapsed summary. Running tools and t
 activity summary use the same animated spinner as thinking blocks; approval waits,
 completed tools and cancelled runs stop the animation. Replies remain visible.
 
+## Keep tools within the context budget
+
+Edit a server through **Servers**. On the server-connection step, **Available tools**
+offers **All tools** (the default), **Selected tools**, and **Chat only**. The choice
+applies to every model on that server and is stored in the database. Changes take
+effect after Save when starting a new run.
+
+The selector estimates the total schema tokens and each tool's cost, including
+its parameters. Model settings show the estimated share of that model's configured
+context. These are conservative estimates, not exact tokenizer counts. Host and
+model capabilities can reduce the actual set; the **Context** view shows the latest
+request breakdown after sending. No tools are silently removed to meet a percentage.
+
+On a small-context model, keep the tools your task needs. `task` enables child-agent
+delegation and has its own schema cost. An empty selection or Chat only sends no
+tools and uses ordinary chat. Tool selection works in local, remote and projectless
+sessions. Children inherit the parent's available tools; a fast model's server
+selection can narrow them further. Existing approval rules apply, and a model call
+to an unadvertised tool is rejected before execution. These controls govern model
+tool calls; manual commands and terminal use keep their existing behavior.
+
 ## Compact saved context
 
 When the run is idle, send `/compact` to summarize its saved conversation with

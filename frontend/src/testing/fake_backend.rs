@@ -110,6 +110,7 @@ pub struct FakeBackend {
     pub model_setup: RefCell<openwebide_core::ModelSetup>,
     pub detections: RefCell<BTreeMap<(i64, String), openwebide_core::ModelDetection>>,
     pub test_results: RefCell<VecDeque<Result<openwebide_core::ModelTestResult, String>>>,
+    pub server_settings_results: RefCell<VecDeque<Deferred<openwebide_core::ServerSettings>>>,
     pub server_settings: RefCell<BTreeMap<i64, openwebide_core::ServerSettings>>,
     pub endpoint_latency_ms: RefCell<i32>,
     pub project_results: RefCell<VecDeque<Deferred<Vec<Project>>>>,
@@ -285,6 +286,13 @@ impl Backend for FakeBackend {
                 profiles,
             );
             let setup = self.save_model_defaults(&defaults).await?;
+            let server = self
+                .connections
+                .borrow()
+                .iter()
+                .find(|connection| connection.id == server.id)
+                .cloned()
+                .unwrap();
             Ok((server, setup))
         })
     }
@@ -418,6 +426,12 @@ impl Backend for FakeBackend {
         id: i64,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::ServerSettings, String>> {
         Box::pin(async move {
+            let pending = self.server_settings_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .map_err(|_| "Server settings request dropped".to_string())?;
+            }
             Ok(self.server_settings.borrow().get(&id).cloned().unwrap_or(
                 openwebide_core::ServerSettings {
                     timeout_seconds: 300,
@@ -439,6 +453,18 @@ impl Backend for FakeBackend {
                     timeout_seconds: 300,
                     ..Default::default()
                 });
+            if let Some(selection) = &update.tool_selection {
+                selection.validate()?;
+                item.tool_selection = selection.clone();
+                if let Some(connection) = self
+                    .connections
+                    .borrow_mut()
+                    .iter_mut()
+                    .find(|connection| connection.id == id)
+                {
+                    connection.tool_selection = selection.clone();
+                }
+            }
             if let Some(preset) = update.preset {
                 item.preset = preset;
             }
@@ -503,6 +529,7 @@ impl Backend for FakeBackend {
                 context_limit,
                 tool_stream_unsupported: false,
                 tool_stream_revision: 0,
+                tool_selection: Default::default(),
             };
             self.connections.borrow_mut().push(connection.clone());
             Ok(connection)
@@ -887,6 +914,7 @@ impl Backend for FakeBackend {
         &self,
         _project: i64,
         _tools: bool,
+        _connection: Option<i64>,
     ) -> LocalBoxFuture<'_, Result<String, String>> {
         Box::pin(async { Ok("Environment\nProject instructions ready".into()) })
     }

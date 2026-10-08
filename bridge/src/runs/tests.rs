@@ -233,6 +233,10 @@ fn plan(kind: RunKind, content: &str) -> RunPlan {
         RunKind::WebChat => openwebide_agent::session::projectless_tools(),
         RunKind::Chat => Vec::new(),
     };
+    let mut tools = tools;
+    if !tools.is_empty() {
+        tools.push(openwebide_agent::tasks::executor::definition());
+    }
     RunPlan {
         transport: Default::default(),
         environment: openwebide_core::RunEnvironment::default(),
@@ -256,6 +260,7 @@ fn plan(kind: RunKind, content: &str) -> RunPlan {
             context_limit: None,
             tool_stream_unsupported: false,
             tool_stream_revision: 0,
+            tool_selection: Default::default(),
         },
     }
 }

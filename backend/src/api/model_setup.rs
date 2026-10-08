@@ -307,6 +307,7 @@ pub(crate) async fn preview(
             context_limit: None,
             tool_stream_unsupported: false,
             tool_stream_revision: 0,
+            tool_selection: Default::default(),
         };
         let model = probe
             .model
@@ -329,6 +330,7 @@ pub(crate) async fn preview(
             context_limit: None,
             tool_stream_unsupported: false,
             tool_stream_revision: 0,
+            tool_selection: Default::default(),
         };
         let detected =
             openwebide_llm::discovery::detect_models(&connection, &result.models, preset, http)
@@ -369,6 +371,7 @@ pub(crate) async fn test_model(req: Request, state: &AppState) -> Result<JsonRes
         context_limit: None,
         tool_stream_unsupported: false,
         tool_stream_revision: 0,
+        tool_selection: Default::default(),
     };
     let provider = Provider::for_connection(
         &connection,

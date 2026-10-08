@@ -1029,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn vfs_tools_json_unchanged() {
+    fn vfs_tool_parameter_schemas_and_order_unchanged() {
         // Snapshot of `vfs_tools()` captured before the schemas moved into
         // `ToolName::definition()`; guards against the move silently changing
         // the tool set advertised to the model. Step 51 intentionally added
@@ -1184,7 +1184,16 @@ mod tests {
             .into_iter()
             .filter(|tool| !matches!(tool.name.as_str(), "host_info" | "todo_write"))
             .collect::<Vec<_>>();
-        assert_eq!(serde_json::to_value(existing_tools).unwrap(), snapshot);
+        let baseline_tokens = serde_json::to_vec(&snapshot).unwrap().len().div_ceil(3);
+        assert!(openwebide_core::context::tool_schema_tokens(&existing_tools) < baseline_tokens);
+        let mut actual = serde_json::to_value(existing_tools).unwrap();
+        let mut snapshot = snapshot;
+        for value in [&mut actual, &mut snapshot] {
+            for tool in value.as_array_mut().unwrap() {
+                tool.as_object_mut().unwrap().remove("description");
+            }
+        }
+        assert_eq!(actual, snapshot);
     }
 
     #[test]

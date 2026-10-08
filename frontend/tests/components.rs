@@ -84,3 +84,6 @@ mod file_tree;
 
 #[path = "components/chat_controls.rs"]
 mod chat_controls;
+
+#[path = "components/tool_budgets.rs"]
+mod tool_budgets;

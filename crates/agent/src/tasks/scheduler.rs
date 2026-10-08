@@ -80,7 +80,9 @@ async fn candidates<H: TaskHost>(
                         .map_or(2048, |limit| (limit / 4).max(1)),
                 ),
         );
-        requests.push_back(request);
+        if primary.tools.is_empty() || !request.tools.is_empty() {
+            requests.push_back(request);
+        }
     }
     requests.push_back(primary);
     Ok(requests)
@@ -337,6 +339,7 @@ mod tests {
         requests: Recorded,
         replies: Arc<Mutex<BTreeMap<String, oneshot::Receiver<AgentEvent>>>>,
         fast_effect: bool,
+        tool_selection: openwebide_core::ToolSelection,
     }
     impl ModelSource for Host {
         async fn runtime(&self, selection: &ModelSelection) -> Result<ModelRuntime, String> {
@@ -351,6 +354,7 @@ mod tests {
                     context_limit: Some(8192),
                     tool_stream_unsupported: false,
                     tool_stream_revision: 0,
+                    tool_selection: self.tool_selection.clone(),
                 },
                 settings: openwebide_core::ModelSettings {
                     context_limit: Some(32768),
@@ -437,6 +441,46 @@ mod tests {
                 .collect(),
         }
     }
+    #[test]
+    fn fast_model_selection_cannot_widen_tools_and_chat_only_falls_back() {
+        futures::executor::block_on(async {
+            let mut parent = parent();
+            parent.tools = crate::vfs_tools();
+            parent.model_settings.fast = Some(ModelSelection {
+                server_id: 2,
+                model: "fast".into(),
+            });
+            let task = NewAgentTask {
+                description: "child".into(),
+                prompt: "go".into(),
+            };
+            for selection in [
+                openwebide_core::ToolSelection::Selected(vec!["read_file".into()]),
+                openwebide_core::ToolSelection::ChatOnly,
+            ] {
+                let host = Host {
+                    tool_selection: selection.clone(),
+                    ..Default::default()
+                };
+                let candidates = candidates(&host, &parent, &task, 1).await.unwrap();
+                if selection == openwebide_core::ToolSelection::ChatOnly {
+                    assert_eq!(candidates.len(), 1);
+                    assert_eq!(candidates[0].connection_id, parent.connection_id);
+                } else {
+                    assert_eq!(candidates.len(), 2);
+                    assert_eq!(
+                        candidates[0]
+                            .tools
+                            .iter()
+                            .map(|tool| tool.name.as_str())
+                            .collect::<Vec<_>>(),
+                        vec!["read_file"]
+                    );
+                }
+            }
+        });
+    }
+
     #[test]
     fn blocked_child_does_not_block_siblings_and_failure_preserves_results() {
         futures::executor::block_on(async {

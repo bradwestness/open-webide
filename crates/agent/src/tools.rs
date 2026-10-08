@@ -226,7 +226,7 @@ impl ToolName {
         match self {
             ToolName::TodoWrite => ToolDefinition {
                 name: "todo_write".into(),
-                description: "Replace the session checklist for a task with several steps. Keep stable IDs, mark completed work, and keep at most one item in progress. An empty list clears the plan.".into(),
+                description: "Replace the checklist: stable IDs, at most one in_progress; [] clears it.".into(),
                 parameters: json!({ "type": "object", "properties": { "todos": { "type": "array", "maxItems": 64, "items": { "type": "object", "properties": {
                     "id": { "type": "string", "maxLength": 64, "description": "Stable item ID" },
                     "content": { "type": "string", "maxLength": 2048, "description": "Short actionable task" },
@@ -235,7 +235,7 @@ impl ToolName {
             },
             ToolName::ReadFile => ToolDefinition {
                 name: "read_file".into(),
-                description: "Read the contents of a file in the workspace.".into(),
+                description: "Read a workspace file.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -248,7 +248,7 @@ impl ToolName {
             },
             ToolName::WriteFile => ToolDefinition {
                 name: "write_file".into(),
-                description: "Create or overwrite a file in the workspace with the given full contents.".into(),
+                description: "Write a complete workspace file (create or overwrite).".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -260,7 +260,7 @@ impl ToolName {
             },
             ToolName::ListDir => ToolDefinition {
                 name: "list_dir".into(),
-                description: "List the entries of a directory in the workspace.".into(),
+                description: "List a workspace directory.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -270,7 +270,7 @@ impl ToolName {
             },
             ToolName::Search => ToolDefinition {
                 name: "search".into(),
-                description: "Search file names in the workspace for a substring.".into(),
+                description: "Find workspace file names containing a substring.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -283,7 +283,7 @@ impl ToolName {
             },
             ToolName::GrepSearch => ToolDefinition {
                 name: "grep_search".into(),
-                description: "Search workspace file contents for lines matching a substring.".into(),
+                description: "Find workspace lines containing a substring.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -296,7 +296,7 @@ impl ToolName {
             },
             ToolName::SearchWeb => ToolDefinition {
                 name: "search_web".into(),
-                description: "Search the web for up-to-date documentation, API references, or error solutions.".into(),
+                description: "Search the web.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -308,7 +308,7 @@ impl ToolName {
             },
             ToolName::FetchWebPage => ToolDefinition {
                 name: "fetch_web_page".into(),
-                description: "Fetch a web page URL and convert its content to clean Markdown.".into(),
+                description: "Fetch an HTTP(S) page as Markdown.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -319,7 +319,7 @@ impl ToolName {
             },
             ToolName::RunCommand => ToolDefinition {
                 name: "run_command".into(),
-                description: "Execute a shell command in the project directory. Use this to run builds, tests, linters, or inspect git status.".into(),
+                description: "Run a shell command in the project directory.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -337,12 +337,12 @@ impl ToolName {
             },
             ToolName::HostInfo => ToolDefinition {
                 name: "host_info".into(),
-                description: "Read CPU, RAM, disk capacity, GPUs and available temperature/fan sensors on the execution bridge host. This is not necessarily the machine hosting the model. Unsupported readings are unavailable; container readings may reflect container limits.".into(),
+                description: "Read bridge-host CPU, RAM, disks, GPUs and sensors. The model may run elsewhere; missing readings are unavailable and containers may report limits.".into(),
                 parameters: json!({"type":"object", "properties":{}, "additionalProperties":false}),
             },
             ToolName::GitStatus => ToolDefinition {
                 name: "git_status".into(),
-                description: "Inspect uncommitted modifications, untracked files, and current branch status.".into(),
+                description: "Show branch, uncommitted and untracked Git status.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {}
@@ -350,7 +350,7 @@ impl ToolName {
             },
             ToolName::GitDiff => ToolDefinition {
                 name: "git_diff".into(),
-                description: "View the unified diff of uncommitted changes in the repository or for a specific file.".into(),
+                description: "Show uncommitted Git diff (optionally one file).".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -360,7 +360,7 @@ impl ToolName {
             },
             ToolName::GitCommit => ToolDefinition {
                 name: "git_commit".into(),
-                description: "Create a Git commit on the host with a descriptive conventional commit message. Omit `paths` to commit all tracked modifications.".into(),
+                description: "Commit selected paths; omit paths for all tracked changes. Use a conventional commit message.".into(),
                 parameters: json!({
                     "type": "object",
                     "required": ["message"],
@@ -372,7 +372,7 @@ impl ToolName {
             },
             ToolName::GitBranch => ToolDefinition {
                 name: "git_branch".into(),
-                description: "Create and checkout a new git feature branch before starting a task.".into(),
+                description: "Create and switch to a Git branch.".into(),
                 parameters: json!({
                     "type": "object",
                     "required": ["branch_name"],

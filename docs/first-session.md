@@ -21,6 +21,9 @@ fast model for automatic approval decisions. Server/model configuration is share
 your default model selections are personal preferences.
 
 You can rerun setup from Servers to discover models again or revise configuration.
+For small-context models, choose a smaller tool set or Chat only under
+**Available tools**; the [tool budget guide](chat-controls.md#keep-tools-within-the-context-budget)
+explains the schema-cost estimates.
 Use `/model` in Chat to change the model for your conversation. Type `/` for
 command suggestions; see [chat commands and goals](chat-controls.md) for
 activity summaries, manual compaction and saved objectives.
