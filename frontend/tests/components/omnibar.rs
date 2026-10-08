@@ -266,6 +266,7 @@ async fn phone_drawer_and_desktop_menu_share_configuration_and_project_actions()
             </div>}
         });
         settle().await;
+        assert_logo_fits_app_bar(&mounted);
         assert!(
             !mounted
                 .element(".sidebar")
@@ -319,6 +320,7 @@ async fn phone_drawer_and_desktop_menu_share_configuration_and_project_actions()
             .set_attribute("style", "width:320px;height:700px")
             .unwrap();
         settle().await;
+        assert_logo_fits_app_bar(&mounted);
         mounted.click(".app-drawer-trigger");
         settle().await;
         let drawer = mounted.element(".app-drawer").get_bounding_client_rect();
@@ -532,4 +534,22 @@ async fn compact_editor_uses_one_footer_and_shared_tree_preferences_in_both_mode
             .set(Default::default());
         settle().await;
     }
+}
+
+fn assert_logo_fits_app_bar(mounted: &super::support::Mounted) {
+    let bar = mounted
+        .element(".app-navigation")
+        .get_bounding_client_rect();
+    let mark = mounted
+        .element(".app-navigation .logo-mark")
+        .get_bounding_client_rect();
+    let svg = mounted
+        .element(".app-navigation .logo-mark svg")
+        .get_bounding_client_rect();
+    assert!((mark.width() - 28.0).abs() < 1.0);
+    assert!((mark.height() - 28.0).abs() < 1.0);
+    assert!((svg.width() - mark.width()).abs() < 1.0);
+    assert!((svg.height() - mark.height()).abs() < 1.0);
+    assert!(bar.height() <= 48.0);
+    assert!(mark.top() >= bar.top() && mark.bottom() <= bar.bottom());
 }
