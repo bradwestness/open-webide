@@ -808,23 +808,30 @@ pub fn take_highlight_source_bytes() -> usize {
 }
 
 /// Whitespace markers retain their original text node and therefore source offsets.
-fn paint_text(text: &str, show_whitespace: bool) -> String {
+fn paint_text_range(text: &str, range: std::ops::Range<usize>, show_whitespace: bool) -> String {
+    let Some(selected) = text.get(range.clone()) else {
+        return String::new();
+    };
+    if selected.is_empty() {
+        return String::new();
+    }
     if !show_whitespace {
         if text.len() <= 512 {
-            return escape_html(text);
+            return escape_html(selected);
         }
-        return openwebide_core::editor::visual_text_runs(text)
-            .into_iter()
+        return openwebide_core::editor::visual_text_run_ranges(text)
+            .take_while(|run| run.start < range.end)
+            .filter(|run| run.end > range.start)
             .map(|run| {
                 format!(
                     "<span class=\"editor-text-run\">{}</span>",
-                    escape_html(run)
+                    escape_html(&text[run.start.max(range.start)..run.end.min(range.end)])
                 )
             })
             .collect();
     }
     let mut html = String::new();
-    for ch in text.chars() {
+    for ch in selected.chars() {
         match ch {
             ' ' => html.push_str("<span class=\"editor-space\"> </span>"),
             '\t' => html.push_str("<span class=\"editor-tab\">\t</span>"),
@@ -927,16 +934,15 @@ fn highlight_html(
         #[cfg(feature = "test-support")]
         let mut painted_bytes = 0;
         if let Some(text) = plain {
-            let text = if let Some(slice) = source_slice {
-                text.get(slice.bytes.start.min(text.len())..slice.bytes.end.min(text.len()))
-                    .unwrap_or("")
+            let range = if let Some(slice) = source_slice {
+                slice.bytes.start.min(text.len())..slice.bytes.end.min(text.len())
             } else {
-                text
+                0..text.len()
             };
-            html.push_str(&paint_text(text, show_whitespace));
+            html.push_str(&paint_text_range(text, range.clone(), show_whitespace));
             #[cfg(feature = "test-support")]
             {
-                painted_bytes += text.len();
+                painted_bytes += range.len();
             }
         }
         for (position, tok) in line.iter().enumerate() {
@@ -947,27 +953,27 @@ fn highlight_html(
             };
             let token_start = source_offset;
             source_offset += text.len();
-            let text = if let Some(slice) = source_slice {
+            let range = if let Some(slice) = source_slice {
                 let start = slice.bytes.start.max(token_start);
                 let finish = slice.bytes.end.min(source_offset);
                 if start >= finish {
                     continue;
                 }
-                &text[start - token_start..finish - token_start]
+                start - token_start..finish - token_start
             } else {
-                text
+                0..text.len()
             };
             #[cfg(feature = "test-support")]
             {
-                painted_bytes += text.len();
+                painted_bytes += range.len();
             }
             match tok.kind {
-                TokenKind::Plain => html.push_str(&paint_text(text, show_whitespace)),
+                TokenKind::Plain => html.push_str(&paint_text_range(text, range, show_whitespace)),
                 kind => {
                     html.push_str("<span class=\"");
                     html.push_str(token_class(kind));
                     html.push_str("\">");
-                    html.push_str(&paint_text(text, show_whitespace));
+                    html.push_str(&paint_text_range(text, range, show_whitespace));
                     html.push_str("</span>");
                 }
             }
@@ -3462,7 +3468,8 @@ pub fn Editor(
 
 #[cfg(test)]
 mod tests {
-    use super::browser_matches;
+    use super::{browser_matches, paint_text_range};
+    use leptos::prelude::document;
     fn find_matches(text: &str, query: &str) -> Vec<(u32, u32, usize)> {
         let pattern =
             openwebide_core::editor::SearchPattern::new(query, Default::default()).unwrap();
@@ -3481,5 +3488,63 @@ mod tests {
             find_matches("a\nb\na\nb", "a\nb"),
             vec![(0, 3, 1), (4, 7, 3)]
         );
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn cropped_text_keeps_the_complete_paints_shaping_boundaries() {
+        let source = format!(
+            "{}e{} tail",
+            "文😀e\u{301} <&> ".repeat(200),
+            "\u{301}".repeat(600)
+        );
+        let full = document().create_element("div").unwrap();
+        full.set_inner_html(&paint_text_range(&source, 0..source.len(), false));
+        // Both endpoints fall inside runs, not at the 512-byte source boundary.
+        // A DOM Range clones the original markup without re-segmenting its text.
+        for selected in [3..517, 517..source.len() - 2, 3..10] {
+            let dom_range = document().create_range().unwrap();
+            let runs = full.query_selector_all(".editor-text-run").unwrap();
+            let mut offset = 0;
+            for index in 0..runs.length() {
+                let node = runs.item(index).unwrap().first_child().unwrap();
+                let text = node.text_content().unwrap();
+                let end = offset + text.len();
+                if (offset..end).contains(&selected.start) {
+                    dom_range
+                        .set_start(
+                            &node,
+                            u32::try_from(text[..selected.start - offset].encode_utf16().count())
+                                .unwrap(),
+                        )
+                        .unwrap();
+                }
+                if selected.end > offset && selected.end <= end {
+                    dom_range
+                        .set_end(
+                            &node,
+                            u32::try_from(text[..selected.end - offset].encode_utf16().count())
+                                .unwrap(),
+                        )
+                        .unwrap();
+                }
+                offset = end;
+            }
+            let expected = document().create_element("div").unwrap();
+            let fragment = dom_range.clone_contents().unwrap();
+            let ancestor = dom_range.common_ancestor_container().unwrap();
+            if ancestor.node_type() == web_sys::Node::TEXT_NODE {
+                // cloneContents omits the common ancestor when both endpoints
+                // are in one text node; retain its original shaping span too.
+                let wrapper = ancestor.parent_node().unwrap().clone_node().unwrap();
+                wrapper.append_child(&fragment).unwrap();
+                expected.append_child(&wrapper).unwrap();
+            } else {
+                expected.append_child(&fragment).unwrap();
+            }
+            let cropped = document().create_element("div").unwrap();
+            cropped.set_inner_html(&paint_text_range(&source, selected.clone(), false));
+            assert_eq!(cropped.inner_html(), expected.inner_html());
+            assert_eq!(cropped.text_content().unwrap(), source[selected]);
+        }
     }
 }

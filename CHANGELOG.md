@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Preserve original grapheme-safe text-run boundaries when painting a cropped editor row, including short crops of long tokens. Stream run boundaries without allocating a complete run vector or segmenting the unused suffix; retain exact geometry validation and full-row fallback.
+
 - Add a reproducible paragraph-mutation probe with fresh Chrome processes, production font/run markup, geometry checks and explicit timeout records. Record why retaining DOM nodes alone does not resolve admitted Unicode paragraph stalls.
 
 - Size the editor gutter from the current document’s source-row index, retaining hidden fold rows and the final empty row. Restore native input directly from the projection’s normalized value without making temporary whole-file newline replacements.

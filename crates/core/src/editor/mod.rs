@@ -24,7 +24,7 @@ pub use visual_index::VisualLineIndex;
 mod visual_neighbors;
 pub use visual_motion::{
     MAX_VISUAL_CARETS, VisualCaret, VisualLayout, visual_caret_offsets, visual_line_offsets,
-    visual_text_runs,
+    visual_text_run_ranges, visual_text_runs,
 };
 pub use visual_neighbors::{
     VisualLineRows, visual_neighbor_rows, visual_probe_rows, visual_row_id,

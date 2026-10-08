@@ -55,6 +55,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Pending worker paint now borrows source rows and retains scoped styled frames.
   Cold horizontal and wrapped paint reuse the height/width probe’s source anchors;
   identical pending/plain rows retain dimensions and glyph anchors after syntax resolves.
+  Cropped plain/token paint retains the complete source's grapheme-safe text-run
+  boundaries, including short crops, with streamed segmentation that stops after
+  the requested window. Prefix segmentation and cold complete-paragraph shaping
+  still remain; this does not complete bounded paragraph preparation.
   Cold probes briefly await the selected font, with bounded fallback and fresh ownership checks.
   The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)
   records why Rust shaping and canvas widths cannot replace current DOM geometry directly.

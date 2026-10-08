@@ -74,18 +74,28 @@ pub fn visual_line_offsets(text: &str) -> Result<Vec<(usize, usize)>, SelectionE
 /// Keep browser shaping/range primitives on short text runs without splitting
 /// grapheme clusters. A single unusually large cluster remains indivisible.
 pub fn visual_text_runs(text: &str) -> Vec<&str> {
-    let mut runs = Vec::new();
+    visual_text_run_ranges(text)
+        .map(|range| &text[range])
+        .collect()
+}
+
+/// Original source boundaries remain stable when adapters paint only part of a
+/// paragraph. Iteration stops with the requested window, without allocating or
+/// segmenting the unused suffix.
+pub fn visual_text_run_ranges(text: &str) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+    let mut clusters = text.grapheme_indices(true);
     let mut start = 0;
-    for (offset, _) in text.grapheme_indices(true) {
-        if offset - start >= 512 {
-            runs.push(&text[start..offset]);
-            start = offset;
+    std::iter::from_fn(move || {
+        if start == text.len() {
+            return None;
         }
-    }
-    if start < text.len() {
-        runs.push(&text[start..]);
-    }
-    runs
+        let end = clusters
+            .find(|(offset, _)| offset - start >= 512)
+            .map_or(text.len(), |(offset, _)| offset);
+        let range = start..end;
+        start = end;
+        Some(range)
+    })
 }
 
 impl VisualLayout {
