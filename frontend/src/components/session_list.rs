@@ -24,12 +24,13 @@ pub fn SessionList(
             <div class="session-filters"><super::ui::SegmentedControl options=vec![super::ui::SegmentOption::new("Active", false), super::ui::SegmentOption::new("Archived", true)] value=Signal::derive(move || state.archived.get()) on_change=Callback::new(move |archived| state.archived.set(archived)) /></div>
             <Show when=move || state.searching.get()><p class="form-hint" role="status">"Searching…"</p></Show>
             <Show when=move || state.search_error.get().is_some()><p class="form-hint" role="alert">{move || state.search_error.get().unwrap_or_default()}</p></Show>
+            <Show when=move || state.rewritten_query.get().is_some()><p class="form-hint">{move || state.rewritten_query.get().map(|query| format!("Related terms: {query}")).unwrap_or_default()}</p></Show>
             <For each=move || state.visible.get() key=|session| (session.id,session.name.clone(),session.pinned,session.archived) children=move |session| {
                 let id=session.id;let pinned=session.pinned;let archived=session.archived;
                 let title=session.name.clone();
                 view! {
                     <div class=move || format!("session{}",if chat.active_session.get()==Some(id){" active"}else{""}) data-session-id=id data-context-menu="">
-                        <button class="btn ghost session-name" title=title on:click=move |_|on_select.run(id)>{pinned.then(|| view! { <crate::components::ui::Icon name=crate::components::ui::IconName::Pin /> })}<span class="session-label">{session.name}</span></button>
+                        <button class="btn ghost session-name" title=title on:click=move |_|on_select.run(id)>{pinned.then(|| view! { <crate::components::ui::Icon name=crate::components::ui::IconName::Pin /> })}<span class="session-search-result"><span class="session-label">{session.name}</span><Show when=move || state.search_explanations.with(|reasons| reasons.contains_key(&id))><small class="form-hint">{move || state.search_explanations.with(|reasons| reasons.get(&id).cloned().unwrap_or_default())}</small></Show></span></button>
                         <super::dropdown::ActionMenu aria_label="Session actions">
                             <h3 class="ui-menu-heading">"Organize"</h3>
                             <button role="menuitem" class="ui-dropdown-item recent-item icon-btn session-pin" title=if pinned {"Unpin"}else{"Pin"} aria-pressed=pinned.to_string() disabled=move || state.busy.with(|busy|busy.contains(&id)) on:click=move |_|actions.preferences.run((id,SessionPreferences{pinned:Some(!pinned),archived:None}))><crate::components::ui::Icon name=crate::components::ui::IconName::Pin /><span>{if pinned { "Unpin" } else { "Pin" }}</span></button>

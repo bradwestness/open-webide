@@ -38,6 +38,7 @@ pub struct SettingsActions {
 pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions {
     let SettingsActionContext { api, settings, ui } = context;
     install_theme_effect(settings);
+    let auth = expect_context::<crate::state::auth::AuthState>();
 
     let on_new_prompt = Callback::new(move |()| {
         settings.show_prompt_form.set(true);
@@ -71,8 +72,12 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
         }
         let content = settings.prompt_content.get();
         let edit_id = settings.prompt_edit_id.get();
+        let account = auth.generation.get_untracked();
         ui.clear_toast();
         spawn_local(async move {
+            if auth.generation.try_get_untracked() != Some(account) {
+                return;
+            }
             let result = match edit_id {
                 Some(id) => {
                     api.with_value(Clone::clone)
@@ -85,6 +90,9 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
                         .await
                 }
             };
+            if auth.generation.try_get_untracked() != Some(account) {
+                return;
+            }
             match result {
                 Ok(prompt) => {
                     settings.system_prompts.update(|prompts| match edit_id {
@@ -103,20 +111,33 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
     });
 
     let on_delete_prompt = Callback::new(move |id: i64| {
+        let account = auth.generation.get_untracked();
         ui.set_confirm(ConfirmRequest {
             title: "Delete system prompt".to_string(),
             message: "Delete this system prompt?".to_string(),
             confirm_label: "Delete".to_string(),
             action: Callback::new(move |()| {
+                if auth.generation.try_get_untracked() != Some(account) {
+                    return;
+                }
                 spawn_local(async move {
-                    if let Err(error) = api.with_value(Clone::clone).delete_system_prompt(id).await
-                    {
+                    if auth.generation.try_get_untracked() != Some(account) {
+                        return;
+                    }
+                    let result = api.with_value(Clone::clone).delete_system_prompt(id).await;
+                    if auth.generation.try_get_untracked() != Some(account) {
+                        return;
+                    }
+                    if let Err(error) = result {
                         ui.notify(error);
                         return;
                     }
                     settings
                         .system_prompts
                         .update(|prompts| prompts.retain(|prompt| prompt.id != id));
+                    if settings.default_prompt.get_untracked() == Some(id) {
+                        settings.default_prompt.set(None);
+                    }
                 });
             }),
         });
@@ -150,7 +171,6 @@ pub fn build_settings_actions(context: SettingsActionContext) -> SettingsActions
     });
 
     let notifications = crate::notifications::RunNotifications::from_context();
-    let auth = expect_context::<crate::state::auth::AuthState>();
     let on_set_notifications = Callback::new(move |enabled: bool| {
         use crate::notifications::NotificationPermission;
         if notifications.configuring.get_untracked() {

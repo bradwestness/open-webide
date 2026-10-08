@@ -7,6 +7,7 @@ use openwebide_core::{
 
 fn queued_from_row(row: &crate::db::QueryRow) -> Result<QueuedPrompt, StorageError> {
     Ok(QueuedPrompt {
+        scheduled_task: row.get_int_opt(6),
         id: row.get_int(0)?,
         session_id: row.get_int(1)?,
         revision: row.get_int(2)?,
@@ -23,7 +24,7 @@ impl<D: Db> Store<D> {
         session: i64,
     ) -> Result<Vec<QueuedPrompt>, StorageError> {
         self.get_session(session, user).await?;
-        let result = self.db.execute("SELECT id, session_id, revision, content, created_at, guidance FROM queued_prompts WHERE session_id = ? ORDER BY guidance DESC, id", &[DbValue::Int(session)]).await?;
+        let result = self.db.execute("SELECT id, session_id, revision, content, created_at, guidance, (SELECT task_id FROM scheduled_runs WHERE queued_id=queued_prompts.id) FROM queued_prompts WHERE session_id = ? ORDER BY guidance DESC, id", &[DbValue::Int(session)]).await?;
         result.rows.iter().map(queued_from_row).collect()
     }
 
@@ -64,7 +65,7 @@ impl<D: Db> Store<D> {
                 return Err(StorageError::Conflict("The queue holds at most 8 prompts and 16 MiB. Remove a prompt before adding another.".into()));
             }
             let result = store.db.execute("INSERT INTO queued_prompts (session_id, content, created_at, guidance) VALUES (?, ?, ?, ?)", &[DbValue::Int(session), DbValue::Text(content.into()), DbValue::Int(created_at), DbValue::Int(i64::from(guidance))]).await?;
-            Ok(QueuedPrompt { id: result.last_insert_rowid, session_id: session, revision: 1, content: content.into(), created_at, guidance })
+            Ok(QueuedPrompt { scheduled_task: None, id: result.last_insert_rowid, session_id: session, revision: 1, content: content.into(), created_at, guidance })
         }).await
     }
 
@@ -80,6 +81,7 @@ impl<D: Db> Store<D> {
             let store = Store::new(tx);
             let queue = store.list_queued_prompts(user, session).await?;
             let prompt = queue.iter().find(|prompt| prompt.key() == key).ok_or_else(|| StorageError::Conflict("Queued prompt changed or was already sent. Refresh the queue.".into()))?;
+            if prompt.scheduled_task.is_some(){return Err(StorageError::InvalidRequest("Edit scheduled prompts in Tasks.".into()));}
             if queue.iter().filter(|entry| entry.id != key.id).map(|entry| entry.content.len()).sum::<usize>().saturating_add(content.len()) > MAX_QUEUE_BYTES {
                 return Err(StorageError::Conflict("The queue is limited to 16 MiB.".into()));
             }
@@ -95,6 +97,7 @@ impl<D: Db> Store<D> {
         key: QueuedPromptKey,
     ) -> Result<(), StorageError> {
         self.get_session(session, user).await?;
+        self.db.execute("UPDATE scheduled_runs SET status='cancelled',detail='Queued prompt removed' WHERE queued_id=? AND queued_id IN (SELECT id FROM queued_prompts WHERE session_id=? AND revision=?) AND status IN ('queued','claimed')", &[DbValue::Int(key.id),DbValue::Int(session),DbValue::Int(key.revision)]).await?;
         let result = self
             .db
             .execute(
@@ -132,7 +135,12 @@ impl<D: Db> Store<D> {
             if prompt.key() != key || prompt.content != content {
                 return Err(StorageError::Conflict("Queued prompt changed. Refresh the queue before sending.".into()));
             }
+            if prompt.scheduled_task.is_some() {
+                let allowed=store.db.execute("SELECT 1 FROM scheduled_runs r JOIN session_run_leases l ON l.session_id=? WHERE r.queued_id=? AND r.status='claimed' AND l.token=('scheduled-' || r.id) AND l.expires_at>?", &[DbValue::Int(session),DbValue::Int(key.id),DbValue::Int(created_at)]).await?;
+                if allowed.rows.is_empty(){return Err(StorageError::Conflict("Scheduled prompts are delivered by their execution host.".into()));}
+            }
             let message = store.insert_interim_message_unlocked(session, Role::User, content, created_at, None, None).await?;
+            store.db.execute("UPDATE scheduled_runs SET status='running',message_id=?,claimed_until=? WHERE queued_id=? AND status IN ('queued','claimed')", &[DbValue::Int(message.id),DbValue::Int(created_at+120),DbValue::Int(key.id)]).await?;
             store.db.execute("DELETE FROM queued_prompts WHERE session_id = ? AND id = ? AND revision = ?", &[DbValue::Int(session), DbValue::Int(key.id), DbValue::Int(key.revision)]).await?;
             Ok(message)
         }).await

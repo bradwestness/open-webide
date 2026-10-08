@@ -16,9 +16,12 @@ reachable from the runtime handling the request; `localhost` inside a container
 refers to that container.
 
 Review detected model settings before applying them, including context capacity
-and output limits. Choose a primary model in **Settings**. You can also choose a
-fast model for automatic approval decisions. Server/model configuration is shared;
-your default model selections are personal preferences.
+and output limits. Choose a primary model in the user dropdown → **Settings**.
+You can also choose an [assistance model](assistance-model.md) for naming, summaries,
+suggestions and automatic approval decisions. Server/model
+configuration is shared; your default model selections and system prompts belong
+to your account.
+Manage prompts from the user dropdown → **System prompts**.
 
 You can rerun setup from Servers to discover models again or revise configuration.
 For small-context models, choose a smaller tool set or Chat only under

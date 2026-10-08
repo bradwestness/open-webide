@@ -63,6 +63,13 @@ impl<F: TaskFactory, C: CancelCheck + Clone + Sync + 'static, S: ModelSource + C
     ) -> impl Future<Output = Result<ChatCompletion, String>> + Send {
         self.source.complete(request)
     }
+    fn complete_with_timeout(
+        &self,
+        request: &ChatRequest,
+        timeout_seconds: u32,
+    ) -> impl Future<Output = Result<ChatCompletion, String>> + Send {
+        self.source.complete_with_timeout(request, timeout_seconds)
+    }
     fn context_limit(&self, request: &ChatRequest) -> impl Future<Output = Option<usize>> + Send {
         self.source.context_limit(request)
     }

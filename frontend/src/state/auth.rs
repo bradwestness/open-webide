@@ -131,6 +131,10 @@ impl AuthState {
         chat.session_telemetry.set(SessionTelemetry::default());
         settings.connections.set(Vec::new());
         settings.system_prompts.set(Vec::new());
+        settings.show_prompt_form.set(false);
+        settings.prompt_edit_id.set(None);
+        settings.prompt_name.set(String::new());
+        settings.prompt_content.set(String::new());
         chat.models.set(Vec::new());
         chat.session_model.set(Default::default());
         chat.selected_model.set(None);
@@ -341,6 +345,10 @@ mod tests {
             }]);
             settings.default_connection.set(Some(3));
             settings.default_prompt.set(Some(4));
+            settings.show_prompt_form.set(true);
+            settings.prompt_edit_id.set(Some(4));
+            settings.prompt_name.set("Private prompt".into());
+            settings.prompt_content.set("Private instructions".into());
             ui.notify("session expired");
 
             let urls = auth.reset_user_state(projects, workspace, git, chat, settings, ui);
@@ -388,6 +396,10 @@ mod tests {
             assert!(chat.active_editor_context.get_untracked().is_none());
             assert!(settings.connections.get_untracked().is_empty());
             assert!(settings.system_prompts.get_untracked().is_empty());
+            assert!(!settings.show_prompt_form.get_untracked());
+            assert!(settings.prompt_edit_id.get_untracked().is_none());
+            assert!(settings.prompt_name.get_untracked().is_empty());
+            assert!(settings.prompt_content.get_untracked().is_empty());
             assert!(settings.default_connection.get_untracked().is_none());
             assert!(settings.default_prompt.get_untracked().is_none());
             assert!(ui.toast.get_untracked().is_none());

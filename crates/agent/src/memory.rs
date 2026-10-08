@@ -85,7 +85,7 @@ impl<E: ToolExecutor + Sync, S: MemoryStore> ToolExecutor for MemoryTools<E, S> 
             };
             command.validate()?;
             match command {
-                MemoryCommand::Create { title, content }
+                MemoryCommand::Create { title, content, .. }
                 | MemoryCommand::Update { title, content, .. } => {
                     Ok(format!("Project memory: {title}\n\n{content}"))
                 }

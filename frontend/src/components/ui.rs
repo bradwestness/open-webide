@@ -69,6 +69,7 @@ pub fn Button(
     #[prop(into, optional)] class: Option<String>,
     #[prop(into, optional)] disabled: Option<Signal<bool>>,
     #[prop(into, optional)] on_click: Option<Callback<web_sys::MouseEvent>>,
+    #[prop(optional)] aria_label: Option<&'static str>,
     #[prop(default = "button")] button_type: &'static str,
     children: Children,
 ) -> impl IntoView {
@@ -77,7 +78,7 @@ pub fn Button(
 
     view! {
         <button
-            type=button_type
+            type=button_type aria-label=aria_label
             class=format!("btn {} {} {}", variant.class_name(), size.class_name(), extra_class)
             disabled=is_disabled
             on:click=move |e| {
@@ -89,6 +90,36 @@ pub fn Button(
             {children()}
         </button>
     }
+}
+
+/// Shared text entry with the same form styling and disabled behavior as selects.
+#[component]
+pub fn TextInput(
+    label: &'static str,
+    #[prop(into)] value: Signal<String>,
+    on_change: Callback<String>,
+    #[prop(default = "")] placeholder: &'static str,
+    #[prop(optional)] maxlength: Option<u32>,
+    #[prop(into, optional)] disabled: Option<Signal<bool>>,
+) -> impl IntoView {
+    view! { <input type="text" class="form-input" aria-label=label placeholder=placeholder maxlength=maxlength
+    prop:value=move ||value.get() disabled=move ||disabled.is_some_and(|value|value.get())
+    on:input=move |event|on_change.run(event_target_value(&event))/> }
+}
+
+/// Shared multiline form entry.
+#[component]
+pub fn TextArea(
+    label: &'static str,
+    #[prop(into)] value: Signal<String>,
+    on_change: Callback<String>,
+    #[prop(default = 4)] rows: u32,
+    #[prop(optional)] maxlength: Option<u32>,
+    #[prop(into, optional)] disabled: Option<Signal<bool>>,
+) -> impl IntoView {
+    view! { <textarea class="form-input" aria-label=label rows=rows maxlength=maxlength
+    prop:value=move ||value.get() disabled=move ||disabled.is_some_and(|value|value.get())
+    on:input=move |event|on_change.run(event_target_value(&event))></textarea> }
 }
 
 /// A segmented button item inside a [`SegmentedControl`].

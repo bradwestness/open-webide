@@ -3,6 +3,8 @@ pub mod chat;
 pub mod git;
 pub mod layout;
 pub mod projects;
+#[cfg(target_arch = "wasm32")]
+pub mod scheduled;
 pub mod sessions;
 pub mod settings;
 pub mod slash;

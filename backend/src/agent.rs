@@ -36,6 +36,8 @@ pub struct CancelFlag {
     session_id: i64,
     started_ms: i64,
     poll_interval: Duration,
+    lease: Option<(openwebide_core::UserId, String)>,
+    touched: Arc<std::sync::atomic::AtomicI64>,
 }
 
 impl CancelFlag {
@@ -45,7 +47,13 @@ impl CancelFlag {
             session_id,
             started_ms,
             poll_interval: Duration::from_millis(250),
+            lease: None,
+            touched: Arc::new(std::sync::atomic::AtomicI64::new(started_ms)),
         }
+    }
+    pub fn with_lease(mut self, user: openwebide_core::UserId, token: String) -> Self {
+        self.lease = Some((user, token));
+        self
     }
 }
 
@@ -74,7 +82,26 @@ impl CancelCheck for CancelFlag {
         let store = self.store.clone();
         let session_id = self.session_id;
         let started_ms = self.started_ms;
+        let lease = self.lease.clone();
+        let touched = self.touched.clone();
         async move {
+            let at = crate::state::now_ms() / 1000;
+            if let Some((user, token)) = lease
+                && at.saturating_mul(1000) - touched.load(std::sync::atomic::Ordering::Relaxed)
+                    > 15000
+            {
+                if store
+                    .session_run_lease(user, session_id, &token, false, at)
+                    .await
+                    .is_err()
+                {
+                    return true;
+                }
+                touched.store(
+                    at.saturating_mul(1000),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
             match store.cancel_requested_since(session_id, started_ms).await {
                 Ok(cancelled) => cancelled,
                 Err(error) => {
@@ -1168,14 +1195,63 @@ impl openwebide_agent::memory::MemoryStore for SpinMemoryPersistence {
         &self,
         command: &openwebide_core::MemoryCommand,
     ) -> Result<openwebide_core::ProjectMemories, String> {
+        let project = self
+            .store
+            .get_session(self.session, self.user)
+            .await
+            .map_err(|error| error.to_string())?
+            .project_id
+            .ok_or("Project memory requires a project")?;
+        let command = crate::api::naming::memory(
+            &self.store,
+            self.user,
+            project,
+            Some(self.session),
+            command.clone(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         self.store
-            .session_memory_command(self.user, self.session, command, now())
+            .session_memory_command(self.user, self.session, &command, now())
             .await
             .map_err(|error| error.to_string())
     }
 }
 
-type SpinTaskExecutor = openwebide_agent::memory::MemoryTools<
+struct SpinScheduledPersistence {
+    store: Arc<Store<AppDb>>,
+    user: openwebide_core::UserId,
+    session: i64,
+}
+impl openwebide_agent::scheduled::TaskStore for SpinScheduledPersistence {
+    async fn execute(
+        &self,
+        command: &openwebide_core::scheduled::TaskCommand,
+    ) -> Result<Vec<openwebide_core::scheduled::ScheduledTask>, String> {
+        let project = self
+            .store
+            .get_session(self.session, self.user)
+            .await
+            .map_err(|error| error.to_string())?
+            .project_id;
+        let mut command = command.clone();
+        if let openwebide_core::scheduled::TaskCommand::Create { draft }
+        | openwebide_core::scheduled::TaskCommand::Update { draft, .. } = &mut command
+            && draft.session_target == openwebide_core::scheduled::SessionTarget::Existing
+            && draft.session_id == 0
+        {
+            draft.session_id = self.session;
+        }
+        let command = crate::api::naming::task(&self.store, self.user, project, command, true)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.store
+            .scheduled_session_command(self.user, self.session, &command, crate::state::now())
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+type SpinMemoryExecutor = openwebide_agent::memory::MemoryTools<
     openwebide_agent::todo::TodoTools<
         openwebide_agent::vfs_executor::SessionToolExecutor<
             VfsToolExecutor<
@@ -1190,6 +1266,8 @@ type SpinTaskExecutor = openwebide_agent::memory::MemoryTools<
     >,
     SpinMemoryPersistence,
 >;
+type SpinTaskExecutor =
+    openwebide_agent::scheduled::ScheduledTools<SpinMemoryExecutor, SpinScheduledPersistence>;
 type SpinTaskGate =
     openwebide_agent::policy::PolicyGate<PermissionPoller, crate::api::approvals::ApprovalAdapter>;
 #[derive(Clone)]
@@ -1223,17 +1301,24 @@ impl SpinTaskFactory {
         .with_host(crate::bridge_client::SpinBridgeClient::for_host(
             self.store.clone(),
         ));
-        openwebide_agent::memory::MemoryTools::new(
-            openwebide_agent::todo::TodoTools::new(
-                executor,
-                TodoPersistence {
+        openwebide_agent::scheduled::ScheduledTools::new(
+            openwebide_agent::memory::MemoryTools::new(
+                openwebide_agent::todo::TodoTools::new(
+                    executor,
+                    TodoPersistence {
+                        store: self.store.clone(),
+                        user: self.user,
+                        session: self.session,
+                        anchor: self.anchor,
+                    },
+                ),
+                SpinMemoryPersistence {
                     store: self.store.clone(),
                     user: self.user,
                     session: self.session,
-                    anchor: self.anchor,
                 },
             ),
-            SpinMemoryPersistence {
+            SpinScheduledPersistence {
                 store: self.store.clone(),
                 user: self.user,
                 session: self.session,

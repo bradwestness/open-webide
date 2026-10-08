@@ -140,7 +140,9 @@ pub fn actions(
             return;
         }
         if let Some(prompt) = chat.queued_prompts.with(|entries| entries.first().cloned()) {
-            untrack(move || send.run(prompt));
+            if prompt.scheduled_task.is_none() {
+                untrack(move || send.run(prompt));
+            }
         } else {
             chat.queue_running.update(|sessions| {
                 sessions.remove(&session);

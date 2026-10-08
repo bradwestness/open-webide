@@ -218,32 +218,19 @@ autocomplete) into the editor while keeping the core diagnostics engine
   pending-edit review; reject stale selections after document or project changes.
 - Offer the same actions through keyboard and touch controls in both modes.
 
-### Scheduled and recurring tasks
 
-- Add a Tasks section in the Sessions pane alongside Memories, scoped to the current
-  project. Each task is a saved prompt with a schedule: when the event fires,
-  automatically inject the prompt as a user message into that project's chat and
-  start the normal agent response. Allow users to add, edit, pause/resume and remove
-  tasks; show the schedule, next run, last result and a link to the chat.
-- Offer agent tools to list, add, update and remove jobs for the current project,
-  using the same validation and ownership checks as the UI. Persist job definitions,
-  schedules and run history in the user-scoped database.
-- Use a host-side scheduler to deliver due prompts through the shared chat submission
-  entry point, even when the browser is closed. Define timezone/DST behavior, missed-run
-  handling after downtime, overlap limits and durable claims to prevent duplicate
-  dispatch across restarts or multiple scheduler instances.
-- Mark injected messages with their originating task. Define which project session
-  receives the prompt and queue delivery when that chat is already running. Use the
-  chat's normal model and tool approval settings; surface failed or blocked responses
-  and retain normal cancellation controls.
-- Share scheduling policy, dispatch and result handling across both modes, with
-  thin host/runtime adapters. Remote projects use the server bridge; local projects
-  need an available paired host with authorized access to the same folder, since a
-  host cannot use a browser directory handle. Show unavailable execution clearly
-  and keep unattended local execution parity as a completion requirement.
-- Verify both adapter contracts, downtime recovery, duplicate/overlapping triggers,
-  job updates/removal during dispatch and stale project/account results before
-  marking this feature complete.
+### Assistance model
+
+The shared generation facade, main-model fallback, owned cache, optional-work
+queue, periodic session names, automatic task/memory names, recaps, suggested
+prompts/context, editable Git drafts and related-term search are implemented and
+under verification. Remaining work:
+
+- Show readable activity, completion and scheduled-task notification summaries
+  grounded in actual tool outcomes, including failures and blockers.
+- Verify the complete behavior in local and remote projects and projectless chat,
+  including manual-name protection, model failure, draft edits, stale suggestions,
+  changed Git inputs, bounded requests and active-chat priority.
 
 ### Phone device verification
 
@@ -309,7 +296,7 @@ terminal pane are done and in the changelog, but:
 Only needed once more than one account can exist (today registration closes
 after the first account):
 
-- **Admin-only writes** for connections and system prompts (they stay
+- **Admin-only writes** for connections and server/model configuration (they stay
   shared, admin-owned), and admin-only `browse` and remote-project paths
   (`require_admin`).
 - **Ownership columns** where rows are per user, and session-data store

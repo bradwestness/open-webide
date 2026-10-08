@@ -27,6 +27,8 @@ use wasm_bindgen_futures::JsFuture;
 #[derive(Clone)]
 pub struct TestState {
     pub auth: AuthState,
+    pub scheduled: openwebide_frontend::state::scheduled::TasksState,
+    pub task_actions: openwebide_frontend::scheduled::TaskActions,
     pub memories: openwebide_frontend::state::memories::MemoriesState,
     pub memory_actions: openwebide_frontend::project_memory::ProjectMemoryActions,
     pub api: Api,
@@ -79,7 +81,14 @@ impl TestState {
             settings,
             expect_context::<AuthState>(),
         ));
+        let scheduled = openwebide_frontend::state::scheduled::TasksState::new();
+        provide_context(scheduled);
+        let task_actions =
+            openwebide_frontend::scheduled::TaskActions::new(api, scheduled, auth, projects, chat);
+        provide_context(task_actions);
         Self {
+            scheduled,
+            task_actions,
             auth,
             memories,
             memory_actions,

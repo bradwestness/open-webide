@@ -81,7 +81,31 @@ pub(crate) async fn notify(
     Ok(json_response(200, &json!({"ok":true})))
 }
 pub(crate) async fn dispatch(state: &AppState) -> Result<JsonResp, ApiError> {
-    let delivered =
-        crate::push::dispatch(&state.store, &crate::push::SpinPushTransport, now()).await?;
+    let delivered = crate::push::dispatch(
+        &state.store,
+        &CompletionPush {
+            store: &state.store,
+        },
+        now(),
+    )
+    .await?;
     Ok(json_response(200, &json!({"processed":delivered})))
+}
+
+/// Transport adapter delegates completion policy to the shared evidence workflow.
+struct CompletionPush<'a> {
+    store: &'a openwebide_storage::Store<crate::state::AppDb>,
+}
+impl crate::push::PushTransport for CompletionPush<'_> {
+    async fn summary(&self, user: UserId, session: i64, message: i64) -> Option<String> {
+        let summary = super::completion::summary(self.store, user, session, Some(message)).await?;
+        let session = self.store.get_session(session, user).await.ok()?;
+        Some(format!(
+            "{} — {summary}",
+            session.name.chars().take(80).collect::<String>()
+        ))
+    }
+    async fn send(&self, request: spin_sdk::http::Request<Vec<u8>>) -> Result<u16, String> {
+        crate::push::PushTransport::send(&crate::push::SpinPushTransport, request).await
+    }
 }

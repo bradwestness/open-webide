@@ -219,8 +219,8 @@ pub fn ModelSetupPanel(
             </Show>
             <Show when=move || defaults_only>
             <ModelChoice label="Default model" value=primary choices=choices.read_only() empty="Use default server’s model" />
-            <ModelChoice label="Fast model" value=fast choices=choices.read_only() empty="Use the primary model" />
-            <p class="form-hint">"Used for Auto approvals and context compaction. If unset, the primary model does that work."</p>
+            <ModelChoice label="Assistance model" value=fast choices=choices.read_only() empty="Use the primary model" />
+            <p class="form-hint">"Used for automatic names, summaries, suggestions, Git drafts, search, Auto approvals, context compaction and delegated tasks. Falls back to the primary model."</p>
 
             </Show>
             <InlineActions><button class="btn" disabled=move || loading.get() on:click=move |_| reload.update(|value| *value += 1)>"Refresh models"</button><Show when=move || defaults_only><button class="btn send" disabled=move || busy.get() on:click=save>"Save model defaults"</button></Show></InlineActions>

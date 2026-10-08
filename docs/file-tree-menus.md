@@ -2,7 +2,8 @@
 
 Right-click a file or folder, hold it for half a second on touch devices, or focus
 it and press Shift+F10/the context-menu key. The inline **…** button opens the same
-menu. Escape or an outside click dismisses it; arrow keys navigate the menu.
+menu. Action rows use the same icons in dropdown and right-click menus. Escape
+or an outside click dismisses it; arrow keys navigate the menu.
 
 The Files **…** menu contains New file/folder, Refresh files, and Include hidden
 files and folders. The hidden-file preference syncs through your account. Tree

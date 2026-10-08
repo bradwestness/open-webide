@@ -110,6 +110,7 @@ pub enum Tool {
     HostInfo,
     TodoWrite(openwebide_core::TodoPlan),
     Memory(openwebide_core::MemoryCommand),
+    Scheduled(openwebide_core::scheduled::TaskCommand),
     GitDiff(GitDiffArgs),
     GitCommit(GitCommitArgs),
     GitBranch(GitBranchArgs),
@@ -134,6 +135,21 @@ impl Tool {
             Tool::RunCommand(args) => format!("run '{}'", args.command),
             Tool::GitStatus => "inspect git status".to_string(),
             Tool::HostInfo => "inspect bridge host hardware".into(),
+            Tool::Scheduled(command) => match command {
+                openwebide_core::scheduled::TaskCommand::List => "list scheduled tasks".into(),
+                openwebide_core::scheduled::TaskCommand::Create { draft } => {
+                    format!("schedule {}", draft.title)
+                }
+                openwebide_core::scheduled::TaskCommand::Update { id, draft, .. } => {
+                    format!("update scheduled task {id}: {}", draft.title)
+                }
+                openwebide_core::scheduled::TaskCommand::Delete { id, .. } => {
+                    format!("delete scheduled task {id}")
+                }
+                openwebide_core::scheduled::TaskCommand::SetEnabled { .. } => {
+                    "toggle scheduled task".into()
+                }
+            },
             Tool::Memory(command) => match command {
                 openwebide_core::MemoryCommand::Create { title, .. } => format!("remember {title}"),
                 openwebide_core::MemoryCommand::Search { query } => {
@@ -179,6 +195,10 @@ pub enum ToolName {
     GitStatus,
     HostInfo,
     TodoWrite,
+    ScheduleList,
+    ScheduleCreate,
+    ScheduleUpdate,
+    ScheduleDelete,
     MemoryCreate,
     MemorySearch,
     MemoryRead,
@@ -216,6 +236,10 @@ impl ToolName {
         ToolName::GitStatus,
         ToolName::HostInfo,
         ToolName::TodoWrite,
+        ToolName::ScheduleList,
+        ToolName::ScheduleCreate,
+        ToolName::ScheduleUpdate,
+        ToolName::ScheduleDelete,
         ToolName::MemoryCreate,
         ToolName::MemorySearch,
         ToolName::MemoryRead,
@@ -240,6 +264,10 @@ impl ToolName {
             ToolName::GitStatus => "git_status",
             ToolName::HostInfo => "host_info",
             ToolName::TodoWrite => "todo_write",
+            ToolName::ScheduleList => "schedule_list",
+            ToolName::ScheduleCreate => "schedule_create",
+            ToolName::ScheduleUpdate => "schedule_update",
+            ToolName::ScheduleDelete => "schedule_delete",
             ToolName::MemoryCreate => "memory_create",
             ToolName::MemorySearch => "memory_search",
             ToolName::MemoryRead => "memory_read",
@@ -255,10 +283,11 @@ impl ToolName {
     /// The tool's JSON-schema definition, as advertised to the model.
     pub fn definition(self) -> ToolDefinition {
         match self {
-            ToolName::MemoryCreate => ToolDefinition { name: self.as_str().into(), description: "Store a durable project fact or convention. Avoid credentials, secrets and transient task state.".into(), parameters: json!({"type":"object","properties":{"title":{"type":"string","maxLength":120},"content":{"type":"string","maxLength":4000}},"required":["title","content"],"additionalProperties":false}) },
+            ToolName::ScheduleList | ToolName::ScheduleCreate | ToolName::ScheduleUpdate | ToolName::ScheduleDelete => crate::scheduled::definition(self.as_str()),
+            ToolName::MemoryCreate => ToolDefinition { name: self.as_str().into(), description: "Store a durable project fact or convention. Omit title for an automatic name unless the user supplied a specific name. Avoid credentials, secrets and transient task state.".into(), parameters: json!({"type":"object","properties":{"auto_title":{"type":"boolean","description":"Generate and refresh the title from content"},"title":{"type":"string","maxLength":120},"content":{"type":"string","maxLength":4000}},"required":["content"],"additionalProperties":false}) },
             ToolName::MemorySearch => ToolDefinition { name: self.as_str().into(), description: "Search project memories by text; empty query lists recent entries. Returns bounded excerpts.".into(), parameters: json!({"type":"object","properties":{"query":{"type":"string","maxLength":256}},"required":["query"],"additionalProperties":false}) },
             ToolName::MemoryRead => ToolDefinition { name: self.as_str().into(), description: "Read a full project memory, including its current revision.".into(), parameters: json!({"type":"object","properties":{"id":{"type":"integer","minimum":1}},"required":["id"],"additionalProperties":false}) },
-            ToolName::MemoryUpdate => ToolDefinition { name: self.as_str().into(), description: "Update a project memory using its current revision; read again after a conflict.".into(), parameters: json!({"type":"object","properties":{"id":{"type":"integer","minimum":1},"revision":{"type":"integer","minimum":1},"title":{"type":"string","maxLength":120},"content":{"type":"string","maxLength":4000}},"required":["id","revision","title","content"],"additionalProperties":false}) },
+            ToolName::MemoryUpdate => ToolDefinition { name: self.as_str().into(), description: "Update a project memory using its current revision; read again after a conflict.".into(), parameters: json!({"type":"object","properties":{"id":{"type":"integer","minimum":1},"revision":{"type":"integer","minimum":1},"auto_title":{"type":"boolean"},"title":{"type":"string","maxLength":120},"content":{"type":"string","maxLength":4000}},"required":["id","revision","content"],"additionalProperties":false}) },
             ToolName::MemoryDelete => ToolDefinition { name: self.as_str().into(), description: "Delete a project memory using its current revision.".into(), parameters: json!({"type":"object","properties":{"id":{"type":"integer","minimum":1},"revision":{"type":"integer","minimum":1}},"required":["id","revision"],"additionalProperties":false}) },
             ToolName::TodoWrite => ToolDefinition {
                 name: "todo_write".into(),
@@ -433,6 +462,7 @@ impl ToolName {
                 | ToolName::GrepSearch
                 | ToolName::HostInfo
                 | ToolName::TodoWrite
+                | ToolName::ScheduleList
                 | ToolName::MemoryRead
                 | ToolName::MemorySearch
                 | ToolName::GitStatus
@@ -480,6 +510,10 @@ impl FromStr for ToolName {
             "git_status" => Ok(ToolName::GitStatus),
             "host_info" => Ok(ToolName::HostInfo),
             "todo_write" => Ok(ToolName::TodoWrite),
+            "schedule_list" => Ok(ToolName::ScheduleList),
+            "schedule_create" => Ok(ToolName::ScheduleCreate),
+            "schedule_update" => Ok(ToolName::ScheduleUpdate),
+            "schedule_delete" => Ok(ToolName::ScheduleDelete),
             "memory_create" => Ok(ToolName::MemoryCreate),
             "memory_search" => Ok(ToolName::MemorySearch),
             "memory_read" => Ok(ToolName::MemoryRead),
@@ -543,6 +577,42 @@ pub fn parse(call: &ToolCall) -> Result<Tool, ToolArgError> {
         };
     }
     match name {
+        ToolName::ScheduleList
+        | ToolName::ScheduleCreate
+        | ToolName::ScheduleUpdate
+        | ToolName::ScheduleDelete => {
+            let parsed = (|| {
+                let mut value: serde_json::Value = serde_json::from_str(raw)?;
+                let object = value
+                    .as_object_mut()
+                    .ok_or_else(|| serde::de::Error::custom("Expected an object"))?;
+                if object.contains_key("action") {
+                    return Err(serde::de::Error::custom("Unexpected action"));
+                }
+                object.insert(
+                    "action".into(),
+                    serde_json::Value::String(name.as_str().trim_start_matches("schedule_").into()),
+                );
+                if let Some(draft) = object
+                    .get_mut("draft")
+                    .and_then(serde_json::Value::as_object_mut)
+                    && !draft.contains_key("auto_title")
+                    && draft
+                        .get("title")
+                        .and_then(serde_json::Value::as_str)
+                        .is_none_or(|title| title.trim().is_empty())
+                {
+                    draft.insert("auto_title".into(), serde_json::Value::Bool(true));
+                }
+                serde_json::from_value::<openwebide_core::scheduled::TaskCommand>(value)
+            })();
+            parsed
+                .map(Tool::Scheduled)
+                .map_err(|error: serde_json::Error| ToolArgError::InvalidArguments {
+                    tool: name.as_str(),
+                    error: error.to_string(),
+                })
+        }
         ToolName::MemoryCreate
         | ToolName::MemorySearch
         | ToolName::MemoryRead
@@ -560,6 +630,15 @@ pub fn parse(call: &ToolCall) -> Result<Tool, ToolArgError> {
                     "action".into(),
                     serde_json::Value::String(name.as_str().trim_start_matches("memory_").into()),
                 );
+                if matches!(name, ToolName::MemoryCreate | ToolName::MemoryUpdate)
+                    && !object.contains_key("auto_title")
+                    && object
+                        .get("title")
+                        .and_then(serde_json::Value::as_str)
+                        .is_none_or(|title| title.trim().is_empty())
+                {
+                    object.insert("auto_title".into(), serde_json::Value::Bool(true));
+                }
                 serde_json::from_value::<openwebide_core::MemoryCommand>(value)
             })();
             parsed
@@ -680,6 +759,13 @@ mod tests {
             Tool::RunCommand(_) => ToolName::RunCommand,
             Tool::GitStatus => ToolName::GitStatus,
             Tool::HostInfo => ToolName::HostInfo,
+            Tool::Scheduled(command) => match command {
+                openwebide_core::scheduled::TaskCommand::List => ToolName::ScheduleList,
+                openwebide_core::scheduled::TaskCommand::Create { .. } => ToolName::ScheduleCreate,
+                openwebide_core::scheduled::TaskCommand::Update { .. } => ToolName::ScheduleUpdate,
+                openwebide_core::scheduled::TaskCommand::Delete { .. } => ToolName::ScheduleDelete,
+                openwebide_core::scheduled::TaskCommand::SetEnabled { .. } => unreachable!(),
+            },
             Tool::Memory(command) => match command {
                 openwebide_core::MemoryCommand::Create { .. } => ToolName::MemoryCreate,
                 openwebide_core::MemoryCommand::Search { .. } => ToolName::MemorySearch,
@@ -790,6 +876,7 @@ mod tests {
     #[test]
     fn tool_name_policy_methods_match_the_lists() {
         let auto: &[ToolName] = &[
+            ToolName::ScheduleList,
             ToolName::ReadFile,
             ToolName::ListDir,
             ToolName::Search,

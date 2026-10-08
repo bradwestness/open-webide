@@ -19,6 +19,7 @@ use openwebide_llm::{LlmProvider, ProviderError, ToolStreamChunk};
 
 type ModelStream = Pin<Box<dyn Stream<Item = Result<ToolStreamChunk, ProviderError>> + Send>>;
 
+pub mod assistance;
 pub mod clients;
 pub mod compaction;
 pub mod context;
@@ -26,6 +27,7 @@ pub mod executor;
 pub mod memory;
 pub mod model;
 pub mod policy;
+pub mod scheduled;
 pub mod session;
 pub mod tasks;
 pub mod title;

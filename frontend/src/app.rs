@@ -153,6 +153,15 @@ pub fn App() -> impl IntoView {
 
     let project_git = crate::project_git::ProjectGit::new(api, projects_state, settings, auth);
     provide_context(project_git);
+    let scheduled = crate::state::scheduled::TasksState::new();
+    provide_context(scheduled);
+    provide_context(crate::scheduled::TaskActions::new(
+        api,
+        scheduled,
+        auth,
+        projects_state,
+        chat_state,
+    ));
     let refresh_git = GitActions::refresh(project_git, projects_state, git_state, auth);
 
     let auth_actions = AuthActions::new(AuthActionContext {

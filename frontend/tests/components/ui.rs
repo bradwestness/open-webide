@@ -1006,3 +1006,110 @@ async fn pointer_tab_focus_and_editor_scroll_do_not_reopen_tooltips() {
         "scroll reopened a keyboard tooltip"
     );
 }
+
+#[wasm_bindgen_test]
+async fn prompt_responses_cannot_update_another_account_in_both_modes() {
+    use openwebide_core::{SystemPrompt, WorkspaceMode};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for operation in ["create", "update", "delete"] {
+            let (save_done, save_wait) = futures::channel::oneshot::channel();
+            let (delete_done, delete_wait) = futures::channel::oneshot::channel();
+            let actions = std::rc::Rc::new(std::cell::Cell::new(None));
+            let slot = actions.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.auth.set_user(User {
+                    id: UserId::new(1),
+                    username: "alice".into(),
+                    role: UserRole::User,
+                    created_at: 0,
+                });
+                state
+                    .fake
+                    .prompt_save_results
+                    .borrow_mut()
+                    .push_back(save_wait);
+                state
+                    .fake
+                    .prompt_delete_results
+                    .borrow_mut()
+                    .push_back(delete_wait);
+                slot.set(Some(build_settings_actions(SettingsActionContext {
+                    api: state.api,
+                    settings: state.settings,
+                    ui: state.ui,
+                })));
+                view! { <div /> }
+            });
+            let actions = actions.get().unwrap();
+            mounted
+                .state
+                .settings
+                .prompt_name
+                .set("Alice's prompt".into());
+            mounted
+                .state
+                .settings
+                .prompt_content
+                .set("Alice's instructions".into());
+            if operation == "delete" {
+                actions.on_delete_prompt.run(1);
+                mounted
+                    .state
+                    .ui
+                    .confirm
+                    .get_untracked()
+                    .unwrap()
+                    .action
+                    .run(());
+            } else {
+                mounted
+                    .state
+                    .settings
+                    .prompt_edit_id
+                    .set((operation == "update").then_some(1));
+                actions.on_save_prompt.run(());
+            }
+            settle().await;
+            mounted.state.auth.set_user(User {
+                id: UserId::new(2),
+                username: "bob".into(),
+                role: UserRole::User,
+                created_at: 0,
+            });
+            let bob = SystemPrompt {
+                id: 1,
+                name: "Bob's prompt".into(),
+                content: "Bob's instructions".into(),
+            };
+            mounted.state.settings.system_prompts.set(vec![bob.clone()]);
+            mounted.state.settings.default_prompt.set(Some(1));
+            mounted.state.settings.show_prompt_form.set(true);
+            if operation == "delete" {
+                delete_done.send(Ok(())).unwrap();
+            } else {
+                save_done
+                    .send(Ok(SystemPrompt {
+                        id: 1,
+                        name: "Alice's prompt".into(),
+                        content: "Alice's instructions".into(),
+                    }))
+                    .unwrap();
+            }
+            settle().await;
+            assert_eq!(
+                mounted.state.settings.system_prompts.get_untracked(),
+                vec![bob]
+            );
+            assert_eq!(
+                mounted.state.settings.default_prompt.get_untracked(),
+                Some(1)
+            );
+            assert!(mounted.state.settings.show_prompt_form.get_untracked());
+        }
+    }
+}

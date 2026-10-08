@@ -8,6 +8,8 @@ pub const MEMORY_CONTEXT_BYTES: usize = 8192;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectMemory {
+    #[serde(default)]
+    pub auto_title: bool,
     pub id: i64,
     pub title: String,
     pub content: String,
@@ -31,6 +33,9 @@ impl Default for ProjectMemories {
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MemoryCommand {
     Create {
+        #[serde(default)]
+        auto_title: bool,
+        #[serde(default)]
         title: String,
         content: String,
     },
@@ -41,8 +46,11 @@ pub enum MemoryCommand {
         id: i64,
     },
     Update {
+        #[serde(default)]
+        auto_title: bool,
         id: i64,
         revision: i64,
+        #[serde(default)]
         title: String,
         content: String,
     },
@@ -57,8 +65,20 @@ pub enum MemoryCommand {
 impl MemoryCommand {
     pub fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Create { title, content } | Self::Update { title, content, .. } => {
-                if title.trim().is_empty() || title.chars().count() > MAX_MEMORY_TITLE {
+            Self::Create {
+                auto_title,
+                title,
+                content,
+            }
+            | Self::Update {
+                auto_title,
+                title,
+                content,
+                ..
+            } => {
+                if (!auto_title && title.trim().is_empty())
+                    || title.chars().count() > MAX_MEMORY_TITLE
+                {
                     return Err(format!(
                         "Memory title must contain 1–{MAX_MEMORY_TITLE} characters"
                     ));
@@ -128,6 +148,7 @@ mod tests {
             enabled: true,
             entries: (1..=100)
                 .map(|id| ProjectMemory {
+                    auto_title: false,
                     id,
                     title: "é\"".repeat(50),
                     content: "🤖\n".repeat(1500),
@@ -148,6 +169,7 @@ mod tests {
         assert!(memory_context(&data).is_none());
         assert!(
             MemoryCommand::Create {
+                auto_title: false,
                 title: " ".into(),
                 content: "valid".into()
             }
@@ -156,6 +178,7 @@ mod tests {
         );
         assert!(
             MemoryCommand::Create {
+                auto_title: false,
                 title: "valid".into(),
                 content: "a".repeat(MAX_MEMORY_CONTENT + 1)
             }
@@ -164,6 +187,7 @@ mod tests {
         );
         assert!(
             MemoryCommand::Update {
+                auto_title: false,
                 id: 1,
                 revision: 0,
                 title: "valid".into(),

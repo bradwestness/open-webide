@@ -581,7 +581,7 @@ async fn servers_open_shared_configuration_while_preferences_keep_model_defaults
         let modal = mounted.element(".modal:has(.model-setup)");
         let text = modal.text_content().unwrap();
         assert!(text.contains("Detect settings") && text.contains("Context tokens"));
-        assert!(!text.contains("Default model") && !text.contains("Fast model"));
+        assert!(!text.contains("Default model") && !text.contains("Assistance model"));
         let context: web_sys::HtmlInputElement = mounted
             .element(".model-settings-editor input[type=number]")
             .unchecked_into();
@@ -608,7 +608,7 @@ async fn servers_open_shared_configuration_while_preferences_keep_model_defaults
             .unwrap();
         assert!(
             text.contains("Default model")
-                && text.contains("Fast model")
+                && text.contains("Assistance model")
                 && text.contains("Default system prompt")
         );
         assert!(

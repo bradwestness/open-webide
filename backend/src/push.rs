@@ -76,6 +76,14 @@ pub fn request(
 }
 
 pub trait PushTransport: Send + Sync {
+    fn summary(
+        &self,
+        _user: openwebide_core::UserId,
+        _session: i64,
+        _message: i64,
+    ) -> impl std::future::Future<Output = Option<String>> + Send {
+        async { None }
+    }
     fn send(
         &self,
         request: spin_sdk::http::Request<Vec<u8>>,
@@ -117,7 +125,23 @@ pub async fn dispatch<D: Db>(
     let key = key_pair(store).await?;
     let contact = contact().await;
     for delivery in &deliveries {
-        let status = match request(&key, &delivery.subscription, &delivery.payload, &contact) {
+        let mut payload = delivery.payload.clone();
+        if let Ok(mut notification) =
+            serde_json::from_str::<openwebide_core::push::PushPayload>(&payload)
+            && let Some(message) = notification
+                .tag
+                .rsplit("done:")
+                .next()
+                .and_then(|id| id.parse::<i64>().ok())
+            && let Some(summary) = transport
+                .summary(delivery.user_id, notification.session_id, message)
+                .await
+            && !summary.is_empty()
+        {
+            notification.body = summary;
+            payload = serde_json::to_string(&notification).unwrap_or(payload);
+        }
+        let status = match request(&key, &delivery.subscription, &payload, &contact) {
             Ok(request) => transport.send(request).await.ok(),
             Err(_) => Some(400),
         };

@@ -13,6 +13,26 @@ use serde_json::{Value, json};
 use crate::runs::http_client::ReqwestHttpClient;
 
 pub trait RunBackend: Send + Sync {
+    fn scheduled_command(
+        &self,
+        _user: i64,
+        _session: i64,
+        _command: &openwebide_core::scheduled::TaskCommand,
+    ) -> impl Future<Output = Result<Vec<openwebide_core::scheduled::ScheduledTask>, String>> + Send
+    {
+        async { Err("Scheduled tasks unavailable".into()) }
+    }
+    fn run_lease(
+        &self,
+        _user: i64,
+        _session: i64,
+        _token: &str,
+        _release: bool,
+        _since: i64,
+        _permission: Option<&str>,
+    ) -> impl Future<Output = Result<openwebide_core::scheduled::RunControl, String>> + Send {
+        async { Ok(Default::default()) }
+    }
     fn notify(
         &self,
         _user: i64,
@@ -69,6 +89,14 @@ pub trait RunBackend: Send + Sync {
         _request: &openwebide_core::ChatRequest,
     ) -> impl Future<Output = Result<openwebide_core::ChatCompletion, String>> + Send {
         async { Err("Model completion unavailable".into()) }
+    }
+    fn model_complete_with_timeout(
+        &self,
+        user: i64,
+        request: &openwebide_core::ChatRequest,
+        _timeout_seconds: u32,
+    ) -> impl Future<Output = Result<openwebide_core::ChatCompletion, String>> + Send {
+        self.model_complete(user, request)
     }
     fn model_context(
         &self,
@@ -190,6 +218,45 @@ impl BackendClient {
         Self { url, secret, http }
     }
 
+    pub async fn due_tasks(
+        &self,
+        host: &openwebide_core::scheduled::ExecutionHost,
+    ) -> Result<Vec<openwebide_core::scheduled::TaskDelivery>, String> {
+        self.service_call("/scheduled-tasks/due", json!(host)).await
+    }
+    pub async fn task_result(
+        &self,
+        host: &str,
+        result: &openwebide_core::scheduled::DispatchResult,
+    ) -> Result<(), String> {
+        let _: Value = self
+            .service_call(
+                "/scheduled-tasks/result",
+                json!({"host_id":host,"result":result}),
+            )
+            .await?;
+        Ok(())
+    }
+    async fn service_call<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: Value,
+    ) -> Result<T, String> {
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("{}{path}", self.url.trim_end_matches('/')))
+            .header("authorization", format!("Bearer {}", self.secret))
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(body.to_string())))
+            .map_err(|error| error.to_string())?;
+        serde_json::from_value(
+            self.http
+                .json(request)
+                .await
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())
+    }
     pub async fn dispatch_push(&self) -> Result<(), String> {
         let request = Request::builder()
             .method("POST")
@@ -263,6 +330,39 @@ pub fn encode_query(s: &str) -> String {
 }
 
 impl RunBackend for BackendClient {
+    async fn scheduled_command(
+        &self,
+        user: i64,
+        session: i64,
+        command: &openwebide_core::scheduled::TaskCommand,
+    ) -> Result<Vec<openwebide_core::scheduled::ScheduledTask>, String> {
+        self.call(
+            user,
+            "POST",
+            &format!("/sessions/{session}/scheduled-tasks"),
+            json!(command),
+        )
+        .await
+    }
+
+    async fn run_lease(
+        &self,
+        user: i64,
+        session: i64,
+        token: &str,
+        release: bool,
+        since: i64,
+        permission: Option<&str>,
+    ) -> Result<openwebide_core::scheduled::RunControl, String> {
+        self.call(
+            user,
+            "POST",
+            &format!("/sessions/{session}/run-lease"),
+            json!({"token":token,"release":release,"since":since,"permission_id":permission}),
+        )
+        .await
+    }
+
     async fn notify(
         &self,
         user: i64,
@@ -340,6 +440,24 @@ impl RunBackend for BackendClient {
             "POST",
             "/models/complete",
             serde_json::to_value(request).map_err(|error| error.to_string())?,
+        )
+        .await
+    }
+    async fn model_complete_with_timeout(
+        &self,
+        user: i64,
+        request: &openwebide_core::ChatRequest,
+        timeout_seconds: u32,
+    ) -> Result<openwebide_core::ChatCompletion, String> {
+        self.call(
+            user,
+            "POST",
+            "/models/background",
+            serde_json::to_value(openwebide_core::BackgroundCompletion {
+                request: request.clone(),
+                timeout_seconds,
+            })
+            .map_err(|error| error.to_string())?,
         )
         .await
     }
@@ -626,6 +744,19 @@ impl<B: RunBackend> openwebide_agent::compaction::CompactionSource for ModelSour
     ) -> Result<openwebide_core::ChatCompletion, String> {
         self.backend.model_complete(self.user, request).await
     }
+    async fn complete_with_timeout(
+        &self,
+        request: &openwebide_core::ChatRequest,
+        timeout_seconds: u32,
+    ) -> Result<openwebide_core::ChatCompletion, String> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(u64::from(timeout_seconds)),
+            self.backend
+                .model_complete_with_timeout(self.user, request, timeout_seconds),
+        )
+        .await
+        .map_err(|_| "Background model deadline exceeded".to_owned())?
+    }
     async fn context_limit(&self, request: &openwebide_core::ChatRequest) -> Option<usize> {
         self.backend.model_context(self.user, request).await
     }
@@ -718,5 +849,110 @@ mod memory_tests {
             assert!(request.contains(r#""revision":2"#));
             assert!(request.contains(r#""action":"delete""#));
         }
+    }
+}
+
+#[cfg(test)]
+mod scheduled_tests {
+    use super::*;
+    #[tokio::test]
+    async fn schedule_adapters_keep_session_identity_and_service_scope_on_success_and_failure() {
+        for status in [200, 409] {
+            let body = if status == 200 {
+                "[]"
+            } else {
+                r#"{"error":"Changed"}"#
+            };
+            for service in [false, true] {
+                let response = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let (url, captured) =
+                    crate::runs::http_client::tests::capture(Box::leak(response.into_boxed_str()))
+                        .await;
+                let client = BackendClient::new(
+                    format!("{url}/api"),
+                    "secret".into(),
+                    ReqwestHttpClient::default(),
+                );
+                let result = if service {
+                    client
+                        .due_tasks(&openwebide_core::scheduled::ExecutionHost {
+                            id: "paired".into(),
+                            name: "Host".into(),
+                            last_seen: 0,
+                        })
+                        .await
+                        .map(|_| ())
+                } else {
+                    client
+                        .scheduled_command(
+                            42,
+                            7,
+                            &openwebide_core::scheduled::TaskCommand::Delete { id: 9, revision: 2 },
+                        )
+                        .await
+                        .map(|_| ())
+                };
+                assert_eq!(result.is_ok(), status == 200);
+                let request = captured.await.unwrap().to_ascii_lowercase();
+                assert!(request.contains("authorization: bearer secret\r\n"));
+                if service {
+                    assert!(request.starts_with("post /api/scheduled-tasks/due http/1.1"));
+                    assert!(!request.contains("x-openwebide-user:"));
+                    assert!(request.contains(r#""id":"paired""#));
+                } else {
+                    assert!(request.starts_with("post /api/sessions/7/scheduled-tasks http/1.1"));
+                    assert!(request.contains("x-openwebide-user: 42\r\n"));
+                    assert!(request.contains(r#""revision":2"#));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod assistance_tests {
+    use super::*;
+    use openwebide_agent::model::ModelSource as _;
+    #[tokio::test]
+    async fn bounded_model_adapter_forwards_deadline_and_user() {
+        let body = serde_json::to_string(&openwebide_core::ChatCompletion {
+            response: openwebide_core::ChatResponse::Text("Summary".into()),
+            reasoning: String::new(),
+            preamble: String::new(),
+            usage: None,
+            stop_reason: Default::default(),
+        })
+        .unwrap();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let (url, captured) =
+            crate::runs::http_client::tests::capture(Box::leak(response.into_boxed_str())).await;
+        let client = BackendClient::new(
+            format!("{url}/api"),
+            "secret".into(),
+            ReqwestHttpClient::default(),
+        );
+        let source = ModelSource {
+            backend: Arc::new(client),
+            user: 42,
+        };
+        let request = openwebide_core::ChatRequest {
+            connection_id: 7,
+            model_settings: Default::default(),
+            system_prompt: None,
+            model: None,
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        source.complete_with_timeout(&request, 5).await.unwrap();
+        let request = captured.await.unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("post /api/models/background http/1.1"));
+        assert!(request.contains("x-openwebide-user: 42\r\n"));
+        assert!(request.contains("\"timeout_seconds\":5"));
     }
 }

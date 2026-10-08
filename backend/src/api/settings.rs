@@ -18,10 +18,25 @@ pub(crate) async fn set_setting(
     state: &AppState,
     user: AuthedUser,
 ) -> Result<JsonResp, ApiError> {
-    let user_id = user.id;
     let body = read_body(req, SETTINGS_BODY_LIMIT).await?;
     let setting: SettingBody = parse_json(body)?;
+    write_setting_body(state, user, setting).await
+}
+
+pub(super) async fn write_setting_body(
+    state: &AppState,
+    user: AuthedUser,
+    setting: SettingBody,
+) -> Result<JsonResp, ApiError> {
+    let user_id = user.id;
     validate_setting_key(&setting.key)?;
+    if setting.key == "default_prompt" && !setting.value.is_empty() {
+        let id = setting
+            .value
+            .parse::<i64>()
+            .map_err(|_| ApiError::bad_request("Invalid system prompt"))?;
+        state.store.get_system_prompt(id, user_id).await?;
+    }
     state
         .store
         .set_user_setting(user_id, &setting.key, &setting.value)

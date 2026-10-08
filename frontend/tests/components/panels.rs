@@ -1158,64 +1158,116 @@ async fn bottom_terminal_spans_workspace_resizes_height_and_requires_project_in_
 #[wasm_bindgen_test]
 async fn app_and_account_menus_group_destinations_and_collapse_to_user_icon() {
     use openwebide_frontend::components::TopBar;
-    let opened = RwSignal::new(0);
-    let logged_out = RwSignal::new(false);
-    let mounted = mount_test(move |state| {
-        state.auth.set_user(user(1));
-        view! {
-            <style>{include_str!("../../styles.css")}</style>
-            <div class="app"><TopBar on_open_settings=Callback::new(move |()| opened.update(|count| *count += 1)) on_logout=Callback::new(move |()| logged_out.set(true)) /></div>
+    use openwebide_frontend::state::{responsive::LayoutMode, settings::ConfigurationSection};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for phone in [false, true] {
+            let opened = RwSignal::new(0);
+            let logged_out = RwSignal::new(false);
+            let mounted = mount_test(move |state| {
+                state.auth.set_user(user(1));
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                expect_context::<LayoutState>().preferences.update(|prefs| {
+                    prefs.mode = if phone {
+                        LayoutMode::Phone
+                    } else {
+                        LayoutMode::Desktop
+                    };
+                });
+                view! {
+                    <style>{include_str!("../../styles.css")}</style>
+                    <div class=if phone { "app phone-layout" } else { "app" }><TopBar on_open_settings=Callback::new(move |()| opened.update(|count| *count += 1)) on_logout=Callback::new(move |()| logged_out.set(true)) /></div>
+                }
+            });
+            settle().await;
+            mounted.click("[aria-label='App menu']");
+            settle().await;
+            let app_menu = mounted.element(".app-menu-items").text_content().unwrap();
+            for destination in [
+                "Open local project",
+                "Open remote project",
+                "Open projects",
+                "Recent projects",
+                "Configuration",
+                "Servers",
+                "Help / Keyboard shortcuts",
+                "About",
+            ] {
+                assert!(app_menu.contains(destination), "{destination}");
+            }
+            for destination in ["Settings", "System prompts", "Log out"] {
+                assert!(!app_menu.contains(destination), "{destination}");
+            }
+            mounted.click("button[aria-label='About']");
+            settle().await;
+            assert!(mounted.state.ui.about_open.get_untracked());
+            mounted.state.ui.about_open.set(false);
+            mounted.click("[aria-label='Account menu']");
+            settle().await;
+            mounted.click("button[aria-label='Settings']");
+            settle().await;
+            assert_eq!(opened.get_untracked(), 1);
+            for (destination, section) in [
+                ("Servers", ConfigurationSection::Servers),
+                ("System prompts", ConfigurationSection::SystemPrompts),
+            ] {
+                mounted.click(if section == ConfigurationSection::Servers {
+                    "[aria-label='App menu']"
+                } else {
+                    "[aria-label='Account menu']"
+                });
+                settle().await;
+                mounted.click_text(destination);
+                settle().await;
+                assert_eq!(
+                    mounted.state.settings.configuration.get_untracked(),
+                    Some(section)
+                );
+                assert!(
+                    mounted
+                        .root
+                        .query_selector(".ui-dropdown-menu")
+                        .unwrap()
+                        .is_none()
+                );
+                mounted.state.settings.configuration.set(None);
+            }
+            mounted.click("[aria-label='Account menu']");
+            settle().await;
+            mounted.click("button[aria-label='Log out']");
+            settle().await;
+            assert!(logged_out.get_untracked());
+            assert!(
+                mounted
+                    .root
+                    .query_selector(".ui-dropdown-menu")
+                    .unwrap()
+                    .is_none()
+            );
+            if phone {
+                assert_eq!(
+                    web_sys::window()
+                        .unwrap()
+                        .get_computed_style(&mounted.element(".topbar-user"))
+                        .unwrap()
+                        .unwrap()
+                        .get_property_value("display")
+                        .unwrap(),
+                    "none"
+                );
+                assert!(
+                    mounted
+                        .element("[aria-label='Account menu'] .ui-dropdown-label .ui-icon-glyph")
+                        .get_bounding_client_rect()
+                        .width()
+                        > 0.0
+                );
+            }
         }
-    });
-    settle().await;
-    mounted.click("[aria-label='App menu']");
-    settle().await;
-    mounted.click("button[aria-label='Settings']");
-    settle().await;
-    assert_eq!(opened.get_untracked(), 1);
-    mounted.click("[aria-label='App menu']");
-    settle().await;
-    mounted.click_text("Servers");
-    settle().await;
-    assert_eq!(
-        mounted.state.settings.configuration.get_untracked(),
-        Some(openwebide_frontend::state::settings::ConfigurationSection::Servers)
-    );
-    mounted.click("[aria-label='Account menu']");
-    settle().await;
-    mounted.click("button[aria-label='Log out']");
-    settle().await;
-    assert!(logged_out.get_untracked());
-    assert!(
-        mounted
-            .root
-            .query_selector(".ui-dropdown-menu")
-            .unwrap()
-            .is_none()
-    );
-    mounted
-        .element(".app")
-        .class_list()
-        .add_1("phone-layout")
-        .unwrap();
-    settle().await;
-    assert_eq!(
-        web_sys::window()
-            .unwrap()
-            .get_computed_style(&mounted.element(".topbar-user"))
-            .unwrap()
-            .unwrap()
-            .get_property_value("display")
-            .unwrap(),
-        "none"
-    );
-    assert!(
-        mounted
-            .element("[aria-label='Account menu'] .ui-dropdown-label .ui-icon-glyph")
-            .get_bounding_client_rect()
-            .width()
-            > 0.0
-    );
+    }
 }
 
 #[wasm_bindgen_test]

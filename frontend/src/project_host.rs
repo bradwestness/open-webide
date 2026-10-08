@@ -54,6 +54,37 @@ impl ProjectHost {
         }
     }
 
+    pub async fn scheduled_binding(
+        self,
+        id: i64,
+        current: impl Fn() -> bool + Clone + 'static,
+    ) -> Result<openwebide_core::scheduled::HostBinding, String> {
+        let host = self
+            .resolve_guarded(Some(id), true, current.clone())
+            .await?;
+        let path = host
+            .cwd()
+            .ok_or("Connect the project folder to its execution host first.")?;
+        let config = BridgeConfig::new(&self.settings.bridge_url.get_untracked());
+        let credential = BridgeCredentials::new(self.api).credential().await?;
+        let response = gloo_net::http::Request::get(&format!("{}/scheduler/host", config.http_url))
+            .header("Authorization", &format!("Bearer {credential}"))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        if !response.ok() {
+            return Err("Update and configure the paired execution host before scheduling.".into());
+        }
+        let host: openwebide_core::scheduled::ExecutionHost =
+            response.json().await.map_err(|error| error.to_string())?;
+        if !current() {
+            return Err("Project access changed".into());
+        }
+        Ok(openwebide_core::scheduled::HostBinding {
+            host_id: host.id,
+            path,
+        })
+    }
     pub async fn discover_servers(self) -> Result<Vec<openwebide_core::ServerDiscovery>, String> {
         let local = self
             .projects

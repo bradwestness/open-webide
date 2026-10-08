@@ -376,15 +376,15 @@ pub fn FileActions(on_new_file: Callback<()>, on_new_dir: Callback<()>) -> impl 
             <crate::components::ui::Icon name=crate::components::ui::IconName::Folder />
         <span>"New folder"</span></button>
         <h3 class="ui-menu-heading">"Tree"</h3>
-        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=move || tree_actions.is_none_or(|actions| actions.expanding.get()) on:click=move |_| { if let Some(actions) = tree_actions { actions.expand_all(); } }>"Expand all"</button>
-        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=tree_actions.is_none() on:click=move |_| { if let Some(actions) = tree_actions { actions.collapse_all(); } }>"Collapse all"</button>
+        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=move || tree_actions.is_none_or(|actions| actions.expanding.get()) on:click=move |_| { if let Some(actions) = tree_actions { actions.expand_all(); } }><crate::components::ui::Icon name=crate::components::ui::IconName::UnfoldVertical /><span>"Expand all"</span></button>
+        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=tree_actions.is_none() on:click=move |_| { if let Some(actions) = tree_actions { actions.collapse_all(); } }><crate::components::ui::Icon name=crate::components::ui::IconName::FoldVertical /><span>"Collapse all"</span></button>
 
         <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=workspace_actions.is_none() on:click=move |_| { if let Some(actions) = workspace_actions { actions.refresh_tree.run(()); } }><crate::components::ui::Icon name=crate::components::ui::IconName::RefreshCw /><span>"Refresh files"</span></button>
         <button role="menuitemcheckbox" type="button" class="ui-dropdown-item recent-item" aria-checked=move || layout.preferences.with(|prefs| prefs.include_hidden).to_string() disabled=layout_actions.is_none() on:click=move |_| { if let Some(actions) = layout_actions { actions.set_tree_preferences.run(!layout.preferences.get_untracked().include_hidden); } }><crate::components::ui::Icon name=crate::components::ui::IconName::Eye /><span>"Include hidden files and folders"</span></button>
         <Show when=move || layout_actions.is_some()>
             <h3 class="ui-menu-heading">"Panel"</h3>
-            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = layout_actions { actions.move_panel.run((crate::state::layout::Panel::Files, false)); } }>"Move panel left"</button>
-            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = layout_actions { actions.move_panel.run((crate::state::layout::Panel::Files, true)); } }>"Move panel right"</button>
+            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = layout_actions { actions.move_panel.run((crate::state::layout::Panel::Files, false)); } }><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowLeft /><span>"Move panel left"</span></button>
+            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = layout_actions { actions.move_panel.run((crate::state::layout::Panel::Files, true)); } }><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowRight /><span>"Move panel right"</span></button>
         </Show>
     </super::dropdown::ActionMenu> }
 }
@@ -656,30 +656,30 @@ pub(super) fn FileEntryMenu(
                         <h3 class="ui-menu-heading">{if is_dir {"Folder"} else {"File"}}</h3>
                         {is_dir.then(|| view! {
                             <button class="recent-item" role="menuitem" disabled=move || disabled.get()
-                                on:click=move |_| actions.create(&entry.get_value().path, VfsEntryKind::File)>"New file"</button>
+                                on:click=move |_| actions.create(&entry.get_value().path, VfsEntryKind::File)><crate::components::ui::Icon name=crate::components::ui::IconName::File /><span>"New file"</span></button>
                             <button class="recent-item" role="menuitem" disabled=move || disabled.get()
-                                on:click=move |_| actions.create(&entry.get_value().path, VfsEntryKind::Directory)>"New folder"</button>
+                                on:click=move |_| actions.create(&entry.get_value().path, VfsEntryKind::Directory)><crate::components::ui::Icon name=crate::components::ui::IconName::Folder /><span>"New folder"</span></button>
                         })}
-                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.move_entry(&entry.get_value(), true)>"Rename"</button>
-                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.move_entry(&entry.get_value(), false)>"Move"</button>
-                        <button class="recent-item" role="menuitem" on:click=move |_| actions.copy_path(&entry.get_value().path)>"Copy path"</button>
-                        {context_only.then(|| view! { <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.reveal(&entry.get_value().path)>"Reveal in Files"</button> })}
-                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.delete(&entry.get_value())>"Delete"</button>
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.move_entry(&entry.get_value(), true)><crate::components::ui::Icon name=crate::components::ui::IconName::Pencil /><span>"Rename"</span></button>
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.move_entry(&entry.get_value(), false)><crate::components::ui::Icon name=crate::components::ui::IconName::FolderInput /><span>"Move"</span></button>
+                        <button class="recent-item" role="menuitem" on:click=move |_| actions.copy_path(&entry.get_value().path)><crate::components::ui::Icon name=crate::components::ui::IconName::Copy /><span>"Copy path"</span></button>
+                        {context_only.then(|| view! { <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.reveal(&entry.get_value().path)><crate::components::ui::Icon name=crate::components::ui::IconName::FolderOpen /><span>"Reveal in Files"</span></button> })}
+                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.delete(&entry.get_value())><crate::components::ui::Icon name=crate::components::ui::IconName::X /><span>"Delete"</span></button>
                         })}
                         <h3 class="ui-menu-heading">"Git"</h3>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !stage.get()
-                            on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Stage)>{move || if untracked.get() {"Add / track"} else {"Stage"}}</button>
+                            on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Stage)><crate::components::ui::Icon name=crate::components::ui::IconName::Plus /><span>{move || if untracked.get() {"Add / track"} else {"Stage"}}</span></button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !unstage.get()
-                            on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Unstage)>"Unstage"</button>
+                            on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Unstage)><crate::components::ui::Icon name=crate::components::ui::IconName::Minus /><span>"Unstage"</span></button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !untracked.get()
-                            on:click=move |_| actions.ignore(&entry.get_value())>"Ignore"</button>
+                            on:click=move |_| actions.ignore(&entry.get_value())><crate::components::ui::Icon name=crate::components::ui::IconName::EyeOff /><span>"Ignore"</span></button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !revert.get()
-                            on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Revert)>"Revert changes"</button>
+                            on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Revert)><crate::components::ui::Icon name=crate::components::ui::IconName::Undo2 /><span>"Revert changes"</span></button>
                         <h3 class="ui-menu-heading">"Chat"</h3>
-                        <button class="recent-item" role="menuitem" title="Explain the purpose, behavior and how the code works" disabled=move || actions.disabled() on:click=move |_| actions.chat(&entry.get_value(), "Explain how this works:", false)>"Explain in chat"</button>
-                        <button class="recent-item" role="menuitem" title="Give a brief overview of the purpose and key contents" disabled=move || actions.disabled() on:click=move |_| actions.chat(&entry.get_value(), "Give a concise overview of", false)>"Summarize in chat"</button>
+                        <button class="recent-item" role="menuitem" title="Explain the purpose, behavior and how the code works" disabled=move || actions.disabled() on:click=move |_| actions.chat(&entry.get_value(), "Explain how this works:", false)><crate::components::ui::Icon name=crate::components::ui::IconName::Info /><span>"Explain in chat"</span></button>
+                        <button class="recent-item" role="menuitem" title="Give a brief overview of the purpose and key contents" disabled=move || actions.disabled() on:click=move |_| actions.chat(&entry.get_value(), "Give a concise overview of", false)><crate::components::ui::Icon name=crate::components::ui::IconName::FileText /><span>"Summarize in chat"</span></button>
                         <button class="recent-item" role="menuitem" disabled=move || actions.disabled() || !review.get()
-                            on:click=move |_| actions.chat(&entry.get_value(), "Review changes for bugs and regressions in", true)>"Review changes in chat"</button>
+                            on:click=move |_| actions.chat(&entry.get_value(), "Review changes for bugs and regressions in", true)><crate::components::ui::Icon name=crate::components::ui::IconName::ClipboardCheck /><span>"Review changes in chat"</span></button>
                     })}</div>
                 </Dropdown>
             })}

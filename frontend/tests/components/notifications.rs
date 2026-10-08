@@ -335,7 +335,7 @@ async fn browser_notification_adapter_requests_shows_clicks_closes_and_reports_f
 }
 
 #[wasm_bindgen_test]
-async fn background_push_avoids_duplicate_remote_alerts_and_retains_local_fallback() {
+async fn background_push_avoids_duplicate_alerts_in_every_workspace() {
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         let host = Host::new(NotificationPermission::Granted);
         let installed = host.clone();
@@ -375,10 +375,7 @@ async fn background_push_avoids_duplicate_remote_alerts_and_retains_local_fallba
             view! { <div /> }
         });
         settle().await;
-        assert_eq!(
-            host.shown.borrow().len(),
-            usize::from(mode == WorkspaceMode::Local)
-        );
+        assert_eq!(host.shown.borrow().len(), 0);
         drop(mounted);
     }
 }

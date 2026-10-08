@@ -15,6 +15,7 @@ use crate::tools::ToolName;
 /// Every other tool (destructive operations, external network calls like
 /// `fetch_web_page`, shell execution, git mutations) requires user approval.
 pub const AUTO_APPROVED: &[&str] = &[
+    "schedule_list",
     "todo_write",
     "memory_search",
     "memory_read",
@@ -194,6 +195,9 @@ mod tests {
     #[test]
     fn every_builtin_tool_is_classified() {
         const GATED: &[&str] = &[
+            "schedule_create",
+            "schedule_update",
+            "schedule_delete",
             "memory_create",
             "memory_update",
             "memory_delete",

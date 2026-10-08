@@ -252,6 +252,7 @@ pub async fn run_server_until(
             let _ = push_backend.dispatch_push().await;
         }
     });
+    let scheduled = tokio::spawn(crate::scheduled::serve(config.clone()));
     let runs = config.runs.clone();
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let accept = tokio::spawn(run_accept_loop(
@@ -265,6 +266,7 @@ pub async fn run_server_until(
 
     reaper.abort();
     push_dispatcher.abort();
+    scheduled.abort();
     let _ = stop.send(());
     let _ = accept.await;
     runs.shutdown().await;

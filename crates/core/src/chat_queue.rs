@@ -14,6 +14,8 @@ pub struct QueuedPromptKey {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueuedPrompt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_task: Option<i64>,
     pub id: i64,
     pub session_id: i64,
     pub revision: i64,

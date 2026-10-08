@@ -82,6 +82,7 @@ pub(super) async fn route(
 
     let is_api_req = path == "/exec"
         || path == "/environment"
+        || path == "/scheduler/host"
         || path == "/host/info"
         || path.starts_with("/git/")
         || path == "/models/discover";
@@ -125,6 +126,11 @@ pub(super) async fn route(
                 serde_json::to_string(&info)
                     .map_err(|error| BridgeError::Execution(error.to_string()))
             }),
+            allowed_origin,
+        )),
+        ("GET", "/scheduler/host") => Ok(respond(
+            StatusCode::OK,
+            serde_json::to_string(&crate::scheduled::host(&config)).expect("host serializes"),
             allowed_origin,
         )),
         ("GET" | "POST", "/environment") => Ok(respond(

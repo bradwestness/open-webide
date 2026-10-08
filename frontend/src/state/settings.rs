@@ -37,7 +37,7 @@ impl Theme {
     }
 }
 
-/// App-level configuration destinations.
+/// Configuration destinations opened from the app and account menus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfigurationSection {
     Servers,

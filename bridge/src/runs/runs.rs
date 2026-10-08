@@ -87,6 +87,20 @@ impl Run {
             self.running.store(false, Ordering::SeqCst);
         }
     }
+    pub fn scheduled_status(&self) -> (Option<RunEvent>, Option<openwebide_core::RunStep>) {
+        let delivery = self.delivery.lock().unwrap();
+        (
+            delivery.snapshot.finished.clone(),
+            delivery.snapshot.items.iter().find_map(|item| match item {
+                openwebide_core::RunItem::Step(step)
+                    if step.awaiting_permission && step.result.is_none() =>
+                {
+                    Some(step.clone())
+                }
+                _ => None,
+            }),
+        )
+    }
     fn snapshot_message(&self, delivery: &Delivery) -> BridgeServerMessage {
         let mut snapshot = delivery.snapshot.clone();
         snapshot.refresh_tool_timings(wall_time_ms());
@@ -162,6 +176,7 @@ pub struct StartRun {
     pub editor_context: Option<EditorContext>,
     pub browser_preferences: Option<openwebide_core::BrowserPreferences>,
     pub queued_prompt: Option<openwebide_core::QueuedPromptKey>,
+    pub host_path: Option<String>,
 }
 
 impl RunRegistry {
@@ -303,6 +318,9 @@ impl RunRegistry {
                 .await
                 .map_err(|e| (RunRejectCode::PlanFailed, e))?;
             plan.environment.browser_preferences = start.browser_preferences.clone();
+            if let Some(path) = &start.host_path {
+                openwebide_agent::scheduled::authorize_host_plan(&mut plan, path);
+            }
             let dir = match &plan.kind {
                 RunKind::Chat | RunKind::WebChat => None,
                 RunKind::Agent { project_path } => Some(
@@ -310,6 +328,17 @@ impl RunRegistry {
                         .map_err(|e| (RunRejectCode::ProjectUnavailable, e))?,
                 ),
             };
+            backend
+                .run_lease(
+                    user_id,
+                    start.session_id,
+                    &start.run_id,
+                    false,
+                    i64::try_from(run.started_at.saturating_mul(1000)).unwrap_or(i64::MAX),
+                    None,
+                )
+                .await
+                .map_err(|error| (RunRejectCode::Busy, error))?;
             let message = if let Some(key) = start.queued_prompt {
                 backend
                     .consume_queued_prompt(user_id, start.session_id, key, &plan.user_content)
@@ -334,6 +363,9 @@ impl RunRegistry {
         let (plan, dir, message) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
+                let _ = backend
+                    .run_lease(user_id, start.session_id, &start.run_id, true, 0, None)
+                    .await;
                 self.runs.lock().unwrap().remove(&start.run_id);
                 return Err(error);
             }
@@ -343,11 +375,62 @@ impl RunRegistry {
             message: message.clone(),
         });
         let body_run = run.clone();
+        let final_run = run.clone();
+        let control_run = run.clone();
+        let control_backend = backend.clone();
+        let control = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                let (_, permission) = control_run.scheduled_status();
+                match control_backend
+                    .run_lease(
+                        control_run.owner,
+                        control_run.session_id,
+                        &control_run.run_id,
+                        false,
+                        i64::try_from(control_run.started_at.saturating_mul(1000))
+                            .unwrap_or(i64::MAX),
+                        permission.as_ref().map(|step| step.id.as_str()),
+                    )
+                    .await
+                {
+                    Ok(control) => {
+                        if control.cancelled {
+                            control_run.cancel.cancel();
+                        }
+                        if let (Some(permission), Some(approved)) = (permission, control.approved) {
+                            let _ = control_run.gate.decide(&permission.id, approved);
+                        }
+                    }
+                    Err(_) => {
+                        control_run.cancel.cancel();
+                        break;
+                    }
+                }
+            }
+        });
         tokio::spawn(async move {
             run_body(
-                body_run, provider, backend, plan, dir, message.id, execution,
+                body_run,
+                provider,
+                backend.clone(),
+                plan,
+                dir,
+                message.id,
+                execution,
             )
             .await;
+            control.abort();
+            let _ = backend
+                .run_lease(
+                    final_run.owner,
+                    final_run.session_id,
+                    &final_run.run_id,
+                    true,
+                    0,
+                    None,
+                )
+                .await;
         });
         Ok(run)
     }
@@ -672,7 +755,22 @@ impl<B: RunBackend> openwebide_agent::memory::MemoryStore for BridgeMemoryPersis
     }
 }
 
-type BridgeTaskExecutor<B> = openwebide_agent::memory::MemoryTools<
+struct BridgeScheduledPersistence<B> {
+    backend: Arc<B>,
+    user: i64,
+    session: i64,
+}
+impl<B: RunBackend> openwebide_agent::scheduled::TaskStore for BridgeScheduledPersistence<B> {
+    async fn execute(
+        &self,
+        command: &openwebide_core::scheduled::TaskCommand,
+    ) -> Result<Vec<openwebide_core::scheduled::ScheduledTask>, String> {
+        self.backend
+            .scheduled_command(self.user, self.session, command)
+            .await
+    }
+}
+type BridgeMemoryExecutor<B> = openwebide_agent::memory::MemoryTools<
     openwebide_agent::todo::TodoTools<
         openwebide_agent::vfs_executor::SessionToolExecutor<
             VfsToolExecutor<NativeFsVfs, BackendWebClient<B>, InProcessBridgeClient>,
@@ -682,6 +780,10 @@ type BridgeTaskExecutor<B> = openwebide_agent::memory::MemoryTools<
         TodoPersistence<B>,
     >,
     BridgeMemoryPersistence<B>,
+>;
+type BridgeTaskExecutor<B> = openwebide_agent::scheduled::ScheduledTools<
+    BridgeMemoryExecutor<B>,
+    BridgeScheduledPersistence<B>,
 >;
 type BridgeTaskGate<B> =
     openwebide_agent::policy::PolicyGate<BridgeGate, super::backend_client::ApprovalAdapter<B>>;
@@ -735,17 +837,24 @@ impl<B: RunBackend> BridgeTaskFactory<B> {
         .with_host(crate::runs::agent_host::HostInfoClient(
             self.execution.clone(),
         ));
-        openwebide_agent::memory::MemoryTools::new(
-            openwebide_agent::todo::TodoTools::new(
-                executor,
-                TodoPersistence {
+        openwebide_agent::scheduled::ScheduledTools::new(
+            openwebide_agent::memory::MemoryTools::new(
+                openwebide_agent::todo::TodoTools::new(
+                    executor,
+                    TodoPersistence {
+                        backend: self.backend.clone(),
+                        user: self.run.owner,
+                        session: self.run.session_id,
+                        anchor: self.anchor,
+                    },
+                ),
+                BridgeMemoryPersistence {
                     backend: self.backend.clone(),
                     user: self.run.owner,
                     session: self.run.session_id,
-                    anchor: self.anchor,
                 },
             ),
-            BridgeMemoryPersistence {
+            BridgeScheduledPersistence {
                 backend: self.backend.clone(),
                 user: self.run.owner,
                 session: self.run.session_id,

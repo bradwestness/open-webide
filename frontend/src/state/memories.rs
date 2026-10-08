@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use openwebide_core::ProjectMemories;
 #[derive(Clone, Copy)]
 pub struct MemoriesState {
+    pub auto_title: RwSignal<bool>,
     pub data: RwSignal<Option<ProjectMemories>>,
     pub loading: RwSignal<bool>,
     pub busy: RwSignal<bool>,
@@ -14,6 +15,7 @@ pub struct MemoriesState {
 impl MemoriesState {
     pub fn new() -> Self {
         Self {
+            auto_title: RwSignal::new(true),
             data: RwSignal::new(None),
             loading: RwSignal::new(false),
             busy: RwSignal::new(false),

@@ -56,6 +56,12 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub assistance_requests: RefCell<Vec<openwebide_core::AssistanceRequest>>,
+    pub assistance_results: RefCell<VecDeque<Deferred<Option<String>>>>,
+    pub scheduled: RefCell<Vec<openwebide_core::scheduled::ScheduledTask>>,
+    pub scheduled_load_results:
+        RefCell<VecDeque<Deferred<Vec<openwebide_core::scheduled::ScheduledTask>>>>,
+    pub scheduled_commands: RefCell<Vec<(Option<i64>, openwebide_core::scheduled::TaskCommand)>>,
     pub memories: RefCell<BTreeMap<i64, openwebide_core::ProjectMemories>>,
     pub memory_load_results: RefCell<VecDeque<Deferred<openwebide_core::ProjectMemories>>>,
     pub memory_command_results: RefCell<VecDeque<Deferred<openwebide_core::ProjectMemories>>>,
@@ -152,6 +158,8 @@ pub struct FakeBackend {
     pub models: RefCell<Vec<ModelInfo>>,
     pub connections: RefCell<Vec<Connection>>,
     pub system_prompts: RefCell<Vec<SystemPrompt>>,
+    pub prompt_save_results: RefCell<VecDeque<Deferred<SystemPrompt>>>,
+    pub prompt_delete_results: RefCell<VecDeque<Deferred<()>>>,
     pub panel_save_results:
         RefCell<VecDeque<futures::channel::oneshot::Receiver<Result<(), String>>>>,
     pub settings: RefCell<BTreeMap<String, String>>,
@@ -754,6 +762,12 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "create_system_prompt",
             });
+            let pending = self.prompt_save_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .unwrap_or_else(|_| Err("prompt response cancelled".into()));
+            }
             let prompt = SystemPrompt {
                 id: self
                     .system_prompts
@@ -780,6 +794,12 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "update_system_prompt",
             });
+            let pending = self.prompt_save_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .unwrap_or_else(|_| Err("prompt response cancelled".into()));
+            }
             let mut prompts = self.system_prompts.borrow_mut();
             let prompt = prompts
                 .iter_mut()
@@ -795,6 +815,12 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "delete_system_prompt",
             });
+            let pending = self.prompt_delete_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .unwrap_or_else(|_| Err("prompt response cancelled".into()));
+            }
             self.system_prompts
                 .borrow_mut()
                 .retain(|item| item.id != id);
@@ -1727,6 +1753,22 @@ impl Backend for FakeBackend {
             })
         })
     }
+    fn assistance<'a>(
+        &'a self,
+        request: &'a openwebide_core::AssistanceRequest,
+    ) -> LocalBoxFuture<'a, Result<Option<String>, String>> {
+        Box::pin(async move {
+            self.assistance_requests.borrow_mut().push(request.clone());
+            let pending = self.assistance_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                pending
+                    .await
+                    .map_err(|_| "Assistance cancelled".to_owned())?
+            } else {
+                Ok(None)
+            }
+        })
+    }
     fn model_complete<'a>(
         &'a self,
         request: &'a ChatRequest,
@@ -1823,6 +1865,103 @@ impl Backend for FakeBackend {
             .await
         })
     }
+    fn scheduled_tasks(
+        &self,
+        project: Option<i64>,
+    ) -> LocalBoxFuture<'_, Result<Vec<openwebide_core::scheduled::ScheduledTask>, String>> {
+        Box::pin(async move {
+            let pending = self.scheduled_load_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|error| error.to_string())?;
+            }
+            Ok(self
+                .scheduled
+                .borrow()
+                .iter()
+                .filter(|task| task.project_id == project)
+                .cloned()
+                .collect())
+        })
+    }
+    fn scheduled_command<'a>(
+        &'a self,
+        project: Option<i64>,
+        command: &'a openwebide_core::scheduled::TaskCommand,
+        _binding: Option<&'a openwebide_core::scheduled::HostBinding>,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::scheduled::ScheduledTask>, String>> {
+        Box::pin(async move {
+            use openwebide_core::scheduled::{ScheduledTask, TaskCommand};
+            self.scheduled_commands
+                .borrow_mut()
+                .push((project, command.clone()));
+            {
+                let mut entries = self.scheduled.borrow_mut();
+                match command {
+                    TaskCommand::List => {}
+                    TaskCommand::Create { draft } => {
+                        draft.validate(openwebide_core::now_seconds(js_sys::Date::now()))?;
+                        let id = entries.iter().map(|task| task.id).max().unwrap_or(0) + 1;
+                        entries.push(ScheduledTask {
+                            id,
+                            revision: 1,
+                            project_id: project,
+                            draft: draft.clone(),
+                            next_run: draft
+                                .schedule
+                                .next_after(openwebide_core::now_seconds(js_sys::Date::now()))?,
+                            host_id: "server".into(),
+                            host_available: true,
+                            last_run: None,
+                        });
+                    }
+                    TaskCommand::Update {
+                        id,
+                        revision,
+                        draft,
+                    } => {
+                        let task = entries
+                            .iter_mut()
+                            .find(|task| {
+                                task.id == *id
+                                    && task.revision == *revision
+                                    && task.project_id == project
+                            })
+                            .ok_or("Task changed")?;
+                        task.draft = draft.clone();
+                        task.revision += 1;
+                    }
+                    TaskCommand::SetEnabled {
+                        id,
+                        revision,
+                        enabled,
+                    } => {
+                        let task = entries
+                            .iter_mut()
+                            .find(|task| {
+                                task.id == *id
+                                    && task.revision == *revision
+                                    && task.project_id == project
+                            })
+                            .ok_or("Task changed")?;
+                        task.draft.enabled = *enabled;
+                        task.revision += 1;
+                    }
+                    TaskCommand::Delete { id, revision } => {
+                        let pos = entries
+                            .iter()
+                            .position(|task| {
+                                task.id == *id
+                                    && task.revision == *revision
+                                    && task.project_id == project
+                            })
+                            .ok_or("Task changed")?;
+                        entries.remove(pos);
+                    }
+                }
+            }
+            self.scheduled_tasks(project).await
+        })
+    }
     fn project_memories(
         &self,
         project: i64,
@@ -1892,11 +2031,16 @@ impl Backend for FakeBackend {
                 return Err("Project memory disabled".into());
             }
             match command {
-                MemoryCommand::Create { title, content } => {
+                MemoryCommand::Create {
+                    auto_title,
+                    title,
+                    content,
+                } => {
                     let id = data.entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
                     data.entries.insert(
                         0,
                         ProjectMemory {
+                            auto_title: *auto_title,
                             id,
                             title: title.clone(),
                             content: content.clone(),
@@ -1906,6 +2050,7 @@ impl Backend for FakeBackend {
                     );
                 }
                 MemoryCommand::Update {
+                    auto_title,
                     id,
                     revision,
                     title,
@@ -1916,6 +2061,7 @@ impl Backend for FakeBackend {
                         .iter_mut()
                         .find(|entry| entry.id == *id && entry.revision == *revision)
                         .ok_or("Memory changed. Refresh before editing.")?;
+                    entry.auto_title = *auto_title;
                     entry.title = title.clone();
                     entry.content = content.clone();
                     entry.revision += 1;
@@ -2165,6 +2311,7 @@ impl Backend for FakeBackend {
             let id = self.queue_next_id.get() + 1;
             self.queue_next_id.set(id);
             let prompt = openwebide_core::QueuedPrompt {
+                scheduled_task: None,
                 id,
                 session_id: session,
                 revision: 1,

@@ -94,7 +94,7 @@ impl ProjectMemoryActions {
                         }
                     }
                     Err(error) => {
-                        // Restore a native checkbox after a failed persistence request.
+                        // Keep the selected state after a failed persistence request.
                         state.data.update(|_| ());
                         state.error.set(Some(error));
                     }
@@ -102,6 +102,9 @@ impl ProjectMemoryActions {
             });
         });
         let edit = Callback::new(move |entry: Option<ProjectMemory>| {
+            state
+                .auto_title
+                .set(entry.as_ref().is_none_or(|entry| entry.auto_title));
             state
                 .edit_id
                 .set(entry.as_ref().map(|entry| (entry.id, entry.revision)));
@@ -121,12 +124,17 @@ impl ProjectMemoryActions {
             let content = state.content.get_untracked();
             command.run(match state.edit_id.get_untracked() {
                 Some((id, revision)) => MemoryCommand::Update {
+                    auto_title: state.auto_title.get_untracked(),
                     id,
                     revision,
                     title,
                     content,
                 },
-                None => MemoryCommand::Create { title, content },
+                None => MemoryCommand::Create {
+                    auto_title: state.auto_title.get_untracked(),
+                    title,
+                    content,
+                },
             });
         });
         Effect::new(move |_| {
@@ -150,6 +158,16 @@ impl ProjectMemoryActions {
             was_streaming.set_value(streaming);
             if previous && !streaming {
                 refresh.run(());
+            }
+        });
+        let timer = leptos::leptos_dom::helpers::set_interval_with_handle(
+            move || refresh.run(()),
+            std::time::Duration::from_secs(10),
+        )
+        .ok();
+        on_cleanup(move || {
+            if let Some(timer) = timer {
+                timer.clear();
             }
         });
         Self {

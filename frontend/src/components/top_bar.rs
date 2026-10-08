@@ -23,6 +23,7 @@ pub fn TopBar(
     let layout = expect_context::<LayoutState>();
     let ui = expect_context::<UiState>();
     let projects = expect_context::<ProjectsState>();
+    let settings = expect_context::<SettingsState>();
     let menu_open = RwSignal::new(false);
     let account_open = RwSignal::new(false);
     let close = Callback::new(move |()| menu_open.set(false));
@@ -44,7 +45,7 @@ pub fn TopBar(
         <header class="topbar app-navigation">
             <Show when=move || layout.phone.get() fallback=move || view! {
                 <super::dropdown::Dropdown aria_label="App menu" class="app-menu" trigger_class="btn ghost logo" open=menu_open label=|| view! { <super::ui::LogoMark /><span class="brand-name">"Open WebIDE"</span> }>
-                    <AppMenuItems on_close=close on_open_settings=on_open_settings on_open_local=on_open_local on_open_remote=on_open_remote on_open_project=on_open_project on_delete_project=on_delete_project />
+                    <AppMenuItems on_close=close on_open_local=on_open_local on_open_remote=on_open_remote on_open_project=on_open_project on_delete_project=on_delete_project />
                 </super::dropdown::Dropdown>
             }>
                 <button type="button" class="btn ghost logo app-drawer-trigger" aria-label="App menu" aria-controls="app-drawer" aria-expanded=move || menu_open.get().to_string() on:click=move |_| menu_open.set(true)><super::ui::LogoMark /><span class="brand-name">"Open WebIDE"</span><super::ui::Icon name=super::ui::IconName::ChevronDown /></button>
@@ -54,6 +55,8 @@ pub fn TopBar(
             <button class="btn ghost chat-tab" title="Chat without a project" aria-label="Chat without a project" aria-pressed={move || projects.active_project.get().is_none().to_string()} on:click=move |_| on_select_chat.run(())><super::ui::Icon name=super::ui::IconName::MessageCircle /></button>
             <Show when=move || auth.username.get().is_some()>
                 <super::dropdown::Dropdown aria_label="Account menu" class="topbar-account" open=account_open label=move || view! { <super::ui::Icon name=super::ui::IconName::User /><span class="topbar-user">{move || auth.username.get().unwrap_or_default()}</span> }>
+                    <button type="button" role="menuitem" class="ui-dropdown-item recent-item" aria-label="Settings" on:click=move |_| { account_open.set(false); on_open_settings.run(()); }><super::ui::Icon name=super::ui::IconName::Settings /><span>"Settings"</span></button>
+                    <button type="button" role="menuitem" class="ui-dropdown-item recent-item" on:click=move |_| { account_open.set(false); settings.configuration.set(Some(ConfigurationSection::SystemPrompts)); }><super::ui::Icon name=super::ui::IconName::MessageCircle /><span>"System prompts"</span></button>
                     <button role="menuitem" class="ui-dropdown-item recent-item" aria-label="Log out" on:click=move |_| { account_open.set(false); on_logout.run(()); }><super::ui::Icon name=super::ui::IconName::LogOut /><span>"Log out"</span></button>
                 </super::dropdown::Dropdown>
             </Show>
@@ -61,8 +64,8 @@ pub fn TopBar(
         <Show when=move || layout.phone.get() && menu_open.get()>
             <super::modal::Modal title=Signal::derive(|| "Open WebIDE".to_string()) class="modal app-drawer" on_close=close describedby="app-drawer-help">
                 <super::ui::DialogBody>
-                    <p class="form-hint" id="app-drawer-help">"Projects and app configuration"</p>
-                    <nav id="app-drawer" aria-label="App navigation"><AppMenuItems drawer=true on_close=close on_open_settings=on_open_settings on_open_local=on_open_local on_open_remote=on_open_remote on_open_project=on_open_project on_delete_project=on_delete_project /></nav>
+                    <p class="form-hint" id="app-drawer-help">"Projects, configuration and help"</p>
+                    <nav id="app-drawer" aria-label="App navigation"><AppMenuItems drawer=true on_close=close on_open_local=on_open_local on_open_remote=on_open_remote on_open_project=on_open_project on_delete_project=on_delete_project /></nav>
                 </super::ui::DialogBody>
             </super::modal::Modal>
         </Show>
@@ -73,7 +76,6 @@ pub fn TopBar(
 #[component]
 fn AppMenuItems(
     on_close: Callback<()>,
-    on_open_settings: Callback<()>,
     on_open_local: Callback<()>,
     on_open_remote: Callback<()>,
     on_open_project: Callback<i64>,
@@ -100,9 +102,8 @@ fn AppMenuItems(
             } />
             <Show when=move || projects.recent_projects.with(Vec::is_empty)><p class="form-hint">"No other saved projects."</p></Show>
             <h3 class="app-menu-heading">"Configuration"</h3>
-            <button type="button" role=(!drawer).then_some("menuitem") class="ui-dropdown-item recent-item" aria-label="Settings" on:click=move |_| { on_close.run(()); on_open_settings.run(()); }><super::ui::Icon name=super::ui::IconName::Settings /><span>"Settings"</span></button>
             <button type="button" role=(!drawer).then_some("menuitem") class="ui-dropdown-item recent-item" on:click=move |_| { on_close.run(()); settings.configuration.set(Some(ConfigurationSection::Servers)); }><super::ui::Icon name=super::ui::IconName::SlidersHorizontal /><span>"Servers"</span></button>
-            <button type="button" role=(!drawer).then_some("menuitem") class="ui-dropdown-item recent-item" on:click=move |_| { on_close.run(()); settings.configuration.set(Some(ConfigurationSection::SystemPrompts)); }><super::ui::Icon name=super::ui::IconName::MessageCircle /><span>"System prompts"</span></button>
+            <h3 class="app-menu-heading">"Help"</h3>
             <button type="button" role=(!drawer).then_some("menuitem") class="ui-dropdown-item recent-item" on:click=move |_| { on_close.run(()); ui.shortcuts_open.set(true); }><super::ui::Icon name=super::ui::IconName::Info /><span>"Help / Keyboard shortcuts"</span></button>
             <button type="button" role=(!drawer).then_some("menuitem") class="ui-dropdown-item recent-item" aria-label="About" on:click=move |_| { on_close.run(()); ui.about_open.set(true); }><super::ui::Icon name=super::ui::IconName::Info /><span>"About"</span></button>
         </div>

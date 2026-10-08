@@ -2,7 +2,7 @@ use crate::state::settings::{ConfigurationSection, SettingsState};
 use leptos::prelude::*;
 use web_sys::wasm_bindgen::JsCast;
 
-/// App-level server and prompt management using the existing shared settings actions.
+/// Separate server and personal prompt screens using the existing settings actions.
 #[component]
 pub fn Configuration(
     on_new_connection: Callback<()>,
@@ -49,9 +49,8 @@ pub fn Configuration(
     });
     view! {
         <Show when=move || settings.configuration.get().is_some()>
-            <super::modal::Modal title=Signal::derive(|| "Configuration".to_string()) on_close=Callback::new(move |()| settings.configuration.set(None)) size=super::ui::DialogSize::Wide>
+            <super::modal::Modal title=Signal::derive(move || match settings.configuration.get() { Some(ConfigurationSection::SystemPrompts) => "System prompts", _ => "Servers" }.to_string()) on_close=Callback::new(move |()| settings.configuration.set(None)) size=super::ui::DialogSize::Wide>
                 <super::ui::DialogBody class="app-configuration">
-                    <super::ui::SegmentedControl options=vec![super::ui::SegmentOption::new("Servers", ConfigurationSection::Servers),super::ui::SegmentOption::new("System prompts", ConfigurationSection::SystemPrompts)] value=Signal::derive(move || settings.configuration.get().unwrap_or(ConfigurationSection::Servers)) on_change=Callback::new(move |section| settings.configuration.set(Some(section))) />
             // -- connections --------------------------------------------------
             <div class="sidebar-section" hidden=move || settings.configuration.get() != Some(crate::state::settings::ConfigurationSection::Servers)>
                 <div class="section-header">

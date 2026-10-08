@@ -28,6 +28,7 @@ pub fn GitPane(
     });
     view! { <div class="git-pane" class:compact-tree=move || !layout.phone.get()>
             <super::ui::PanelToolbar class="file-tree-header"><super::BranchPicker on_load=on_load_branches on_select=on_select_branch on_new=on_new_branch /></super::ui::PanelToolbar>
+            <super::git_assistance::GitDrafts />
             <div class="git-files" role="tree" aria-label="Changed files">
                 <For each=move || {
                     let mut files = git.status.get().map(|status| status.files.into_iter().collect::<Vec<_>>()).unwrap_or_default();
@@ -39,8 +40,8 @@ pub fn GitPane(
             </div>
             <div class="git-diff-actions" data-context-menu="">
                 <span class="git-diff-path">{move || workspace.open_file.get().unwrap_or_else(|| "Select a changed file".into())}</span>
-    <super::dropdown::ActionMenu aria_label="Diff actions">            <button role="menuitem" class="ui-dropdown-item recent-item btn" disabled=move || workspace.open_file.get().is_none() || git.status.get().is_none() on:click=move |_| on_load_git_diff.run(())>"Refresh diff"</button>
-                <button role="menuitem" class="ui-dropdown-item recent-item btn" disabled=move || !git.can_revert(workspace.active_project.get(), workspace.open_file.get().as_deref()) on:click=move |_| on_discard_git_diff.run(())>"Revert file"</button></super::dropdown::ActionMenu>
+    <super::dropdown::ActionMenu aria_label="Diff actions">            <button role="menuitem" class="ui-dropdown-item recent-item btn" disabled=move || workspace.open_file.get().is_none() || git.status.get().is_none() on:click=move |_| on_load_git_diff.run(())><super::ui::Icon name=super::ui::IconName::RefreshCw /><span>"Refresh diff"</span></button>
+                <button role="menuitem" class="ui-dropdown-item recent-item btn" disabled=move || !git.can_revert(workspace.active_project.get(), workspace.open_file.get().as_deref()) on:click=move |_| on_discard_git_diff.run(())><super::ui::Icon name=super::ui::IconName::Undo2 /><span>"Revert file"</span></button></super::dropdown::ActionMenu>
             </div>
             {move || git.head_diff(workspace.active_project.get(), workspace.open_file.get(), workspace.content.get().into()).map(super::editor::render_inline_diff)}
         </div> }

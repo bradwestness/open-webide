@@ -8,6 +8,9 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = "0.10"
+croner = "4.0"
 base64 = { workspace = true }
 ec4rs = { version = "1.2", features = ["allow-empty-values"] }
 html5ever = "0.40"

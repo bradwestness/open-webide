@@ -6,6 +6,8 @@ use std::collections::{BTreeSet, HashSet};
 
 #[derive(Clone, Copy)]
 pub struct SessionsState {
+    pub search_explanations: RwSignal<std::collections::BTreeMap<i64, String>>,
+    pub rewritten_query: RwSignal<Option<String>>,
     pub query: RwSignal<String>,
     pub archived: RwSignal<bool>,
     pub matches: RwSignal<Option<BTreeSet<i64>>>,
@@ -48,6 +50,8 @@ impl SessionsState {
             sessions
         });
         Self {
+            search_explanations: RwSignal::new(Default::default()),
+            rewritten_query: RwSignal::new(None),
             query,
             archived,
             matches,

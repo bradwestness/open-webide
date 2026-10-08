@@ -7,10 +7,10 @@ have no memory tools or automatic project-memory context.
 
 Open **Sessions → Memories** to add an entry, expand it to read its contents,
 edit it or delete it. Give each entry a short title and focused content, such as
-how to build the project, a design decision or a convention. Refresh reloads entries
-changed by another device; entries also refresh when a run finishes.
+how to build the project, a design decision or a convention. The `+` button adds a
+memory. Entries refresh automatically, including after a run finishes.
 
-The **Enabled** toggle in the section header starts on and is saved per project.
+The **Enabled/Disabled** control matches the Sessions filter and starts enabled and is saved per project.
 Turning it off keeps existing entries available for viewing, editing and deletion,
 but new runs receive neither automatic memory context nor memory tools. Already
 sent model requests and past conversation messages are unchanged. Memory tool

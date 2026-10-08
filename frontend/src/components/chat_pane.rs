@@ -711,6 +711,14 @@ pub fn ChatPane(
     let chat = expect_context::<ChatState>();
     let layout = expect_context::<LayoutState>();
     let projects = expect_context::<ProjectsState>();
+    let assistance = crate::state_actions::assistance::ChatAssistance::new(
+        expect_context::<crate::backend::Api>(),
+        expect_context::<crate::state::auth::AuthState>(),
+        chat,
+        projects,
+    );
+    let context_assistance =
+        crate::state_actions::context_assistance::ContextAssistance::from_context();
     let messages = chat.messages;
     let streaming = chat.streaming.read_only();
     let draft = chat.draft.read_only();
@@ -850,6 +858,9 @@ pub fn ChatPane(
             >
                 <div class="messages tui-stream" node_ref=scroll_ref>
                     <div class="tui-stream-spacer"></div>
+                    <Show when=move || assistance.recap.get().is_some() && !streaming.get()>
+                        <details class="chat-recap"><summary>"Where you left off"</summary><p class="form-hint">{move || assistance.recap.get().unwrap_or_default()}</p></details>
+                    </Show>
                     <For
                         each=move || conversation_blocks(messages)
                         key=|handle| (handle.key, handle.item.with(crate::conversation::is_activity))
@@ -907,6 +918,12 @@ pub fn ChatPane(
                             }
                         }
                     />
+                    <Show when=move || assistance.completion.get().is_some() && !streaming.get()>
+                        <p class="form-hint chat-completion" role="status">{move || assistance.completion.get().unwrap_or_default()}</p>
+                    </Show>
+                    <Show when=move || assistance.activity.get().is_some() && streaming.get()>
+                        <p class="form-hint chat-activity" role="status">{move || assistance.activity.get().unwrap_or_default()}</p>
+                    </Show>
                     <Show when=move || chat.interrupted_run.get().is_some() && !streaming.get()>
                         <div class="tui-stopped-marker">
                             "This run was interrupted. Resume continues from saved history without replaying unfinished tools. "
@@ -945,6 +962,15 @@ pub fn ChatPane(
             <Show when=move || chat.compacting.get()><p class="form-hint" role="status">"Compacting conversation…" <button class="btn stop" on:click=move |_| on_stop.run(())>"Stop"</button></p></Show>
             <super::goal::GoalNotice />
             <super::todo_plan::TodoPlanPanel />
+            <Show when=move || !context_assistance.suggestions.with(Vec::is_empty)>
+                <div class="chat-next-actions" aria-label="Suggested context">
+                    {move || context_assistance.suggestions.get().into_iter().map(|candidate| {
+                        let label = candidate.label();
+                        view! { <button class="btn ghost" title="Attach this context" on:click=move |_| context_assistance.attach.run(candidate.clone())><super::ui::Icon name=super::ui::IconName::Paperclip/>{label}</button> }
+                    }).collect::<Vec<_>>()}
+                </div>
+            </Show>
+            <Show when=move || context_assistance.error.get().is_some()><p class="form-hint" role="alert">{move || context_assistance.error.get().unwrap_or_default()}</p></Show>
             <crate::prompt::PromptControls composer=prompt_composer />
             <Show when=move || chat.prompt_edit.get().is_some()>
                 <div class="tui-prompt-edit"><span>"Editing an earlier prompt. Send starts a new branch."</span>
@@ -963,6 +989,16 @@ pub fn ChatPane(
                 </div>
             </Show>
             <Show when=move || slash_hint.get().is_some()><p class="form-hint slash-hint">{move || slash_hint.get().map(|info| format!("{} {} · {}", info.command, info.arguments, info.description))}</p></Show>
+            <Show when=move || !assistance.next_actions.with(Vec::is_empty) && !streaming.get() && draft.get().is_empty()>
+                <div class="chat-next-actions" aria-label="Suggested next actions">
+                    {move || assistance.next_actions.get().into_iter().map(|prompt| {
+                        let label = prompt.clone();
+                        view! { <button class="btn" type="button" on:click=move |_| {
+                            if chat.draft.get_untracked().is_empty() { chat.draft.set(prompt.clone()); }
+                        }>{label}</button> }
+                    }).collect::<Vec<_>>()}
+                </div>
+            </Show>
             <div class="composer tui-composer" class:is-streaming=move || streaming.get()>
                 <span class="tui-prompt-glyph">"❯"</span>
                 <textarea
@@ -1180,8 +1216,8 @@ fn PromptQueueControls(
                     let text = extract_editor_context_prelude(&content.text).1.chars().take(200).collect::<String>();
                     let label = if text.trim().is_empty() { format!("{} image(s)", content.images.len()) } else if content.images.is_empty() { text } else { format!("{text} · {} image(s)", content.images.len()) };
                     view! { <div class="tui-queued-prompt" data-queue-id=prompt.id>
-                        <span class="tui-queue-kind">{if prompt.guidance { "Guidance" } else { "Next" }}</span><span class="tui-queue-label">{label}</span>
-                        <button class="btn ghost" disabled=move || chat.queue_busy.get() || chat.queue_delivering.get().is_some_and(|(_, delivering)| delivering == key) on:click=move |_| actions.edit.run(key)>"Edit"</button>
+                        <span class="tui-queue-kind">{if prompt.scheduled_task.is_some() {"Scheduled"} else if prompt.guidance { "Guidance" } else { "Next" }}</span><span class="tui-queue-label">{label}</span>
+                        <button class="btn ghost" disabled=move || prompt.scheduled_task.is_some() || chat.queue_busy.get() || chat.queue_delivering.get().is_some_and(|(_, delivering)| delivering == key) on:click=move |_| actions.edit.run(key)>"Edit"</button>
                         <button class="btn ghost" disabled=move || chat.queue_busy.get() || chat.queue_delivering.get().is_some_and(|(_, delivering)| delivering == key) on:click=move |_| actions.remove.run(key)>"Remove"</button>
                     </div> }
                 } />

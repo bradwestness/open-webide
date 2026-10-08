@@ -40,6 +40,24 @@ pub(crate) async fn command(
         },
     )?;
     let command: MemoryCommand = parse_json(read_body(req, 32 * 1024).await?)?;
+    let project = if session {
+        state
+            .store
+            .get_session(id, user.id)
+            .await?
+            .project_id
+            .ok_or_else(|| ApiError::bad_request("Project memory requires a project"))?
+    } else {
+        id
+    };
+    let command = super::naming::memory(
+        &state.store,
+        user.id,
+        project,
+        session.then_some(id),
+        command,
+    )
+    .await?;
     let result = if session {
         state
             .store

@@ -9,7 +9,9 @@
     - Overview: docs/using.md
     - Editor: docs/editor.md
     - Chat commands and goals: docs/chat-controls.md
+    - Assistance model: docs/assistance-model.md
     - Project memory: docs/project-memory.md
+    - Scheduled tasks: docs/scheduled-tasks.md
     - Browser notifications: docs/web-push.md
     - Files and context menus: docs/file-tree-menus.md
     - About and notices: docs/about.md

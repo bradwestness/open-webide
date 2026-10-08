@@ -1,8 +1,11 @@
+pub mod assistance;
 pub mod auth;
 pub mod chat;
 pub mod commands;
+pub mod context_assistance;
 pub mod conversation;
 pub mod git;
+pub mod git_assistance;
 pub mod lifecycle;
 pub mod projects;
 pub mod prompt_queue;

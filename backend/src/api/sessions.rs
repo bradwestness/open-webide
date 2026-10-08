@@ -64,12 +64,37 @@ pub(crate) async fn session_title(
         return Ok(json_response(200, &Some(session)));
     }
     let messages = state.store.list_messages(id).await?;
-    let Some(exchange) = openwebide_agent::title::initial_exchange(&messages) else {
+    let turns = i64::try_from(
+        messages
+            .iter()
+            .filter(|message| message.role == Role::User)
+            .count(),
+    )
+    .unwrap_or(i64::MAX);
+    if !state
+        .store
+        .session_title_due(user.id, id, turns, now())
+        .await?
+    {
+        return Ok(json_response(200, &Some(session)));
+    }
+    let Some(_) = openwebide_agent::title::initial_exchange(&messages) else {
         return Ok(json_response(
             200,
             &Option::<openwebide_core::ChatSession>::None,
         ));
     };
+    let exchange = openwebide_agent::assistance::recent_activity(&messages);
+    if exchange
+        .last()
+        .is_none_or(|message| message.role != Role::Assistant)
+    {
+        return Ok(json_response(
+            200,
+            &Option::<openwebide_core::ChatSession>::None,
+        ));
+    }
+    let last_message = messages.iter().map(|message| message.id).max().unwrap_or(0);
     let setup = state.store.model_setup(user.id).await?;
     let connection = session.connection_id.or_else(|| {
         setup
@@ -100,7 +125,14 @@ pub(crate) async fn session_title(
         Ok(title) => {
             state
                 .store
-                .apply_session_title(user.id, id, session.title_revision, &title)
+                .refresh_session_title(
+                    user.id,
+                    id,
+                    session.title_revision,
+                    &title,
+                    last_message,
+                    now(),
+                )
                 .await?
         }
         Err(_) => None,
@@ -369,10 +401,24 @@ pub(super) async fn build_run_plan(
     let connection_id = session
         .connection_id
         .ok_or_else(|| ApiError::bad_request("session has no connection; pick one first"))?;
-    let runtime =
-        super::model_setup::runtime(state, user_id, connection_id, send.model.as_deref()).await?;
+    let saved = state
+        .store
+        .get_user_setting(user_id, &format!("session_model_{session_id}"))
+        .await?
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok());
+    let saved_model = saved
+        .as_ref()
+        .filter(|value| value["connection_id"].as_i64() == Some(connection_id))
+        .and_then(|value| value["model"].as_str());
+    let runtime = super::model_setup::runtime(
+        state,
+        user_id,
+        connection_id,
+        send.model.as_deref().or(saved_model),
+    )
+    .await?;
     let system_prompt = match session.system_prompt_id {
-        Some(id) => Some(state.store.get_system_prompt(id).await?.content),
+        Some(id) => Some(state.store.get_system_prompt(id, user_id).await?.content),
         None => None,
     };
     let system_prompt = Some(with_temporal_context(system_prompt, now()));
@@ -418,6 +464,7 @@ pub(super) async fn build_run_plan(
         &memories,
         runtime.settings.context_limit,
     );
+    openwebide_agent::scheduled::configure(&mut input.tools);
     let plan = openwebide_agent::session::plan(&runtime, input);
     plan.validate_prompt().map_err(ApiError::bad_request)?;
     Ok(plan)
@@ -458,16 +505,31 @@ pub(crate) async fn send_session_message(
     let send: SendMessageBody = parse_json(body)?;
     let queued_prompt = send.queued_prompt;
     let plan = build_run_plan(&state, user_id, session_id, send).await?;
+    let lease = format!("spin-{session_id}-{started_ms}-{}", rand::random::<u128>());
+    state
+        .store
+        .session_run_lease(user_id, session_id, &lease, false, now())
+        .await?;
     let user_message = if let Some(key) = queued_prompt {
         state
             .store
             .consume_queued_prompt(user_id, session_id, key, &plan.user_content, now())
-            .await?
+            .await
     } else {
         state
             .store
             .insert_message(session_id, Role::User, &plan.user_content, now())
-            .await?
+            .await
+    };
+    let user_message = match user_message {
+        Ok(message) => message,
+        Err(error) => {
+            let _ = state
+                .store
+                .session_run_lease(user_id, session_id, &lease, true, now())
+                .await;
+            return Err(error.into());
+        }
     };
     let mut request = plan.request;
     request.messages.push(user_message.clone());
@@ -481,7 +543,8 @@ pub(crate) async fn send_session_message(
         memo.clone(),
     );
     let store = Arc::new(state.store);
-    let cancel = CancelFlag::new(store.clone(), session_id, started_ms);
+    let cancel =
+        CancelFlag::new(store.clone(), session_id, started_ms).with_lease(user_id, lease.clone());
     let gate = PermissionPoller::new(store.clone(), session_id, started_ms);
     let memo_store = store.clone();
     let base = match &plan.kind {
@@ -569,7 +632,18 @@ pub(crate) async fn send_session_message(
                 let store = memo_store.clone();
                 let memo = memo.clone();
                 let model = memo_model.clone();
+                let lease = lease.clone();
                 async move {
+                    if matches!(
+                        event,
+                        openwebide_core::RunEvent::Done { .. }
+                            | openwebide_core::RunEvent::Cancelled
+                            | openwebide_core::RunEvent::Error { .. }
+                    ) {
+                        let _ = store
+                            .session_run_lease(user_id, session_id, &lease, true, now())
+                            .await;
+                    }
                     if memo.take_unrecorded()
                         && let Err(error) = store
                             .set_model_tool_stream_unsupported(

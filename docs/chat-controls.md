@@ -40,7 +40,7 @@ request breakdown after sending. No tools are silently removed to meet a percent
 On a small-context model, keep the tools your task needs. `task` enables child-agent
 delegation and has its own schema cost. An empty selection or Chat only sends no
 tools and uses ordinary chat. Tool selection works in local, remote and projectless
-sessions. Children inherit the parent's available tools; a fast model's server
+sessions. Children inherit the parent's available tools; an assistance model's server
 selection can narrow them further. Existing approval rules apply, and a model call
 to an unadvertised tool is rejected before execution. These controls govern model
 tool calls; manual commands and terminal use keep their existing behavior.

@@ -4,6 +4,7 @@ mod error;
 pub mod exec;
 pub mod paths;
 pub mod runs;
+pub mod scheduled;
 pub mod secret;
 pub mod server;
 pub mod terminals;

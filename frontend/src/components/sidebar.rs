@@ -13,5 +13,6 @@ pub fn Sidebar(
     view! { <aside class="sidebar" style=move || format!("width: {}px; flex: none;", layout.sidebar_width.get())>
         <super::session_list::SessionList on_select=on_select_session on_new=on_new_session on_rename=on_rename_session on_delete=on_delete_session />
         <super::memories::Memories />
+        <super::scheduled::ScheduledTasks on_select=on_select_session />
     </aside> }
 }

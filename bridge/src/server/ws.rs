@@ -431,6 +431,7 @@ impl Connection {
         let sender = cmd_tx.clone();
         let forwarders = forwarders.clone();
         let start = crate::runs::StartRun {
+            host_path: None,
             run_id: run_id.clone(),
             session_id,
             content,

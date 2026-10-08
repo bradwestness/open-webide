@@ -1,12 +1,13 @@
 # Web Push
 
 Enable **Browser notifications** in Settings and allow the browser permission.
-The app registers that browser with the server automatically. Remote projects and
+The app registers that browser with the server automatically. Local and remote projects and
 projectless chats can then notify you when a run finishes or needs approval,
 including approvals from child agents, even after the app window closes. The
-notification names the project and session; clicking opens its chat. A focused,
-visible chat suppresses its notification. Local projects keep the existing
-app-open notification behavior because their runs live in the browser.
+notification names the project and session and summarizes the actual result;
+clicking opens its chat. A focused, visible chat suppresses its notification.
+Local runs can continue with the app closed when a paired execution host is
+running the task; browser-only execution still needs the app open.
 
 Use HTTPS (or localhost for development), keep Spin and the execution bridge
 running, and stay signed in. Push support depends on the browser; iOS/iPadOS
@@ -28,5 +29,6 @@ Delivery is best effort: finished-run alerts expire after one hour, approval
 alerts after five minutes or when resolved, and temporary failures retry up to
 six attempts. Invalid/expired subscriptions are removed. The service worker
 checks the signed-in account and saved preference before displaying or opening
-an alert; without that verification it displays nothing. Model output and tool
-arguments are excluded from notification content.
+an alert; without that verification it displays nothing. Completion alerts may include a short summary or excerpt of the final response.
+Hidden reasoning and tool arguments are excluded. The assistance model can
+summarize the response and tool outcomes; failures retain a bounded excerpt.

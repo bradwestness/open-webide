@@ -83,8 +83,10 @@ impl SessionActions {
         ui: UiState,
         download: Rc<dyn SessionDownload>,
     ) -> Self {
+        let assistance_queue =
+            StoredValue::new_local(super::assistance::AssistanceQueue::from_context());
         let revision = StoredValue::new(0u64);
-        let title_attempts = StoredValue::new(HashSet::<(u64, i64, i64, usize)>::new());
+        let title_attempts = StoredValue::new(HashSet::<(u64, i64, usize)>::new());
         let title_busy = RwSignal::new(false);
         Effect::new(move |_| {
             auth.generation.track();
@@ -94,6 +96,8 @@ impl SessionActions {
             state.query.set(String::new());
             state.archived.set(false);
             state.matches.set(None);
+            state.search_explanations.set(Default::default());
+            state.rewritten_query.set(None);
             state.search_error.set(None);
             state.searching.set(false);
             state.busy.update(HashSet::clear);
@@ -107,6 +111,8 @@ impl SessionActions {
             chat.sessions.track();
             revision.update_value(|revision| *revision += 1);
             let request = revision.get_value();
+            state.search_explanations.set(Default::default());
+            state.rewritten_query.set(None);
             state.search_error.set(None);
             state.matches.set(None);
             state.searching.set(false);
@@ -138,7 +144,35 @@ impl SessionActions {
                     Ok(sessions) => state
                         .matches
                         .set(Some(sessions.iter().map(|session| session.id).collect())),
-                    Err(error) => state.search_error.set(Some(error)),
+                    Err(error) => {
+                        state.search_error.set(Some(error));
+                        return;
+                    }
+                }
+                let Some(queue) = assistance_queue.try_with_value(Clone::clone) else {
+                    return;
+                };
+                let _permit = queue.permit().await;
+                if !current() || chat.streaming.get_untracked() {
+                    return;
+                }
+                if let Ok(suggestions) = api
+                    .with_value(Clone::clone)
+                    .session_search_suggestions(&search)
+                    .await
+                {
+                    if !current() || chat.streaming.get_untracked() {
+                        return;
+                    }
+                    state.matches.set(Some(
+                        suggestions
+                            .sessions
+                            .iter()
+                            .map(|session| session.id)
+                            .collect(),
+                    ));
+                    state.search_explanations.set(suggestions.explanations);
+                    state.rewritten_query.set(suggestions.rewritten_query);
                 }
             });
         });
@@ -153,7 +187,7 @@ impl SessionActions {
             }
             for pending in sessions.into_iter().filter(|session| session.auto_title) {
                 let history = if active == Some(pending.id) { count } else { 0 };
-                let key = (epoch, pending.id, pending.title_revision, history);
+                let key = (epoch, pending.id, history);
                 if title_attempts.with_value(|attempts| attempts.contains(&key)) {
                     continue;
                 }
@@ -162,6 +196,20 @@ impl SessionActions {
                 });
                 title_busy.set(true);
                 spawn_local(async move {
+                    let Some(queue) = assistance_queue.try_with_value(Clone::clone) else {
+                        return;
+                    };
+                    let _permit = queue.permit().await;
+                    if auth.generation.try_get_untracked() != Some(epoch) {
+                        return;
+                    }
+                    if chat.streaming.try_get_untracked() != Some(false) {
+                        title_busy.set(false);
+                        title_attempts.update_value(|attempts| {
+                            attempts.remove(&key);
+                        });
+                        return;
+                    }
                     let result = api.with_value(Clone::clone).session_title(pending.id).await;
                     if auth.generation.try_get_untracked() != Some(epoch) {
                         return;

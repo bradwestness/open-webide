@@ -310,6 +310,7 @@ impl LlmProvider for FakeProvider {
 
 fn start(id: &str) -> StartRun {
     StartRun {
+        host_path: None,
         run_id: id.into(),
         session_id: 1,
         content: "go".into(),
@@ -369,6 +370,7 @@ async fn buffered_start_cancel_survives_delayed_start_task() {
                 queued_prompt,
             } => {
                 let start = StartRun {
+                    host_path: None,
                     run_id,
                     session_id,
                     content,

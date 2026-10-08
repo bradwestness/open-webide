@@ -14,12 +14,13 @@ impl<D: Db> Store<D> {
             .await?
             .as_deref()
             != Some("false");
-        let rows = self.db.execute("SELECT id, title, content, revision, updated_at FROM project_memories WHERE user_id = ? AND project_id = ? ORDER BY updated_at DESC, id DESC", &[DbValue::Int(user.get()), DbValue::Int(project)]).await?;
+        let rows = self.db.execute("SELECT id, title, content, revision, updated_at, auto_title FROM project_memories WHERE user_id = ? AND project_id = ? ORDER BY updated_at DESC, id DESC", &[DbValue::Int(user.get()), DbValue::Int(project)]).await?;
         let entries = rows
             .rows
             .iter()
             .map(|row| {
                 Ok(ProjectMemory {
+                    auto_title: row.get_int(5)? != 0,
                     id: row.get_int(0)?,
                     title: row.get_text(1)?.into(),
                     content: row.get_text(2)?.into(),
@@ -62,12 +63,12 @@ impl<D: Db> Store<D> {
                 if agent && (!current.enabled || matches!(command, MemoryCommand::SetEnabled { .. })) { return Err(StorageError::InvalidRequest("Project memory is disabled or this operation is unavailable to agents".into())); }
                 let scope = [DbValue::Int(user.get()), DbValue::Int(project)];
                 match command {
-                    MemoryCommand::Create { title, content } => {
+                    MemoryCommand::Create { auto_title, title, content } => {
                         if current.entries.len() >= openwebide_core::memory::MAX_MEMORIES { return Err(StorageError::InvalidRequest("This project already has 100 memories".into())); }
-                        store.db.execute("INSERT INTO project_memories (user_id, project_id, title, content, updated_at) VALUES (?, ?, ?, ?, ?)", &[scope[0].clone(), scope[1].clone(), DbValue::Text(title.trim().into()), DbValue::Text(content.trim().into()), DbValue::Int(now)]).await?;
+                        store.db.execute("INSERT INTO project_memories (user_id, project_id, title, content, updated_at, auto_title) VALUES (?, ?, ?, ?, ?, ?)", &[scope[0].clone(), scope[1].clone(), DbValue::Text(if title.trim().is_empty() { openwebide_core::assistance::fallback_name(content) } else { title.trim().into() }), DbValue::Text(content.trim().into()), DbValue::Int(now), DbValue::Int(i64::from(*auto_title))]).await?;
                     }
-                    MemoryCommand::Update { id, revision, title, content } => {
-                        let changed = store.db.execute("UPDATE project_memories SET title = ?, content = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND user_id = ? AND project_id = ? AND revision = ?", &[DbValue::Text(title.trim().into()), DbValue::Text(content.trim().into()), DbValue::Int(now), DbValue::Int(*id), scope[0].clone(), scope[1].clone(), DbValue::Int(*revision)]).await?;
+                    MemoryCommand::Update { id, revision, auto_title, title, content } => {
+                        let changed = store.db.execute("UPDATE project_memories SET title = ?, content = ?, auto_title = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND user_id = ? AND project_id = ? AND revision = ?", &[DbValue::Text(if title.trim().is_empty() { openwebide_core::assistance::fallback_name(content) } else { title.trim().into() }), DbValue::Text(content.trim().into()), DbValue::Int(i64::from(*auto_title)), DbValue::Int(now), DbValue::Int(*id), scope[0].clone(), scope[1].clone(), DbValue::Int(*revision)]).await?;
                         if changed.changes != 1 { return Err(StorageError::Conflict("Memory changed or was removed. Refresh before editing.".into())); }
                     }
                     MemoryCommand::Delete { id, revision } => {
@@ -169,6 +170,7 @@ mod tests {
                     ProjectMemories::default()
                 );
                 let create = MemoryCommand::Create {
+                    auto_title: false,
                     title: "Build".into(),
                     content: "Use cargo test 🦀".into(),
                 };
@@ -198,6 +200,7 @@ mod tests {
                         user,
                         project,
                         &MemoryCommand::Update {
+                            auto_title: false,
                             id: entry.id,
                             revision: entry.revision,
                             title: "Build".into(),
@@ -300,6 +303,7 @@ mod tests {
                             user,
                             project,
                             &MemoryCommand::Create {
+                                auto_title: false,
                                 title: String::new(),
                                 content: "invalid".into()
                             },

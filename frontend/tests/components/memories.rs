@@ -44,11 +44,12 @@ async fn project_memory_ui_edits_toggles_preserves_conflicts_and_follows_project
         settle().await;
         assert!(
             mounted
-                .element("input[type=checkbox]")
-                .unchecked_into::<web_sys::HtmlInputElement>()
-                .checked()
+                .element(".project-memories .ui-seg-btn")
+                .get_attribute("aria-pressed")
+                .as_deref()
+                == Some("true")
         );
-        mounted.click_text("Add memory");
+        mounted.click("[aria-label='New memory']");
         settle().await;
         input(&mounted, "[aria-label='Memory title']", "Build");
         input(
@@ -99,7 +100,9 @@ async fn project_memory_ui_edits_toggles_preserves_conflicts_and_follows_project
             "Run cargo test --offline"
         );
         mounted.click_text("Cancel");
-        mounted.click_text("Refresh");
+        mounted.state.chat.streaming.set(true);
+        settle().await;
+        mounted.state.chat.streaming.set(false);
         settle().await;
         let (sender, receiver) = futures::channel::oneshot::channel();
         sender.send(Err("Database unavailable".into())).unwrap();
@@ -109,16 +112,17 @@ async fn project_memory_ui_edits_toggles_preserves_conflicts_and_follows_project
             .memory_command_results
             .borrow_mut()
             .push_back(receiver);
-        mounted.click("input[type=checkbox]");
+        mounted.click_text("Disabled");
         settle().await;
         assert!(
             mounted
-                .element("input[type=checkbox]")
-                .unchecked_into::<web_sys::HtmlInputElement>()
-                .checked()
+                .element(".project-memories .ui-seg-btn")
+                .get_attribute("aria-pressed")
+                .as_deref()
+                == Some("true")
         );
         assert!(mounted.state.fake.memories.borrow()[&1].enabled);
-        mounted.click("input[type=checkbox]");
+        mounted.click_text("Disabled");
         settle().await;
         assert!(!mounted.state.fake.memories.borrow()[&1].enabled);
         assert_eq!(mounted.state.fake.memories.borrow()[&1].entries.len(), 1);
@@ -159,6 +163,7 @@ async fn project_memory_stale_project_and_account_responses_do_not_restore_old_e
             .send(Ok(ProjectMemories {
                 enabled: true,
                 entries: vec![ProjectMemory {
+                    auto_title: false,
                     id: 1,
                     title: "Old project".into(),
                     content: "old".into(),
@@ -193,6 +198,7 @@ async fn project_memory_stale_project_and_account_responses_do_not_restore_old_e
             .send(Ok(ProjectMemories {
                 enabled: true,
                 entries: vec![ProjectMemory {
+                    auto_title: false,
                     id: 1,
                     title: "Stale account".into(),
                     content: "old".into(),
@@ -294,7 +300,7 @@ async fn browser_memory_tools_persist_and_toggle_removes_context_and_tools_from_
             .unwrap()
             .contains("Run cargo test")
     );
-    mounted.click(".project-memories input[type=checkbox]");
+    mounted.click_text("Disabled");
     settle().await;
     mounted
         .state

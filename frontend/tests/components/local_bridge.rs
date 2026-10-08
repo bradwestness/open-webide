@@ -1927,6 +1927,7 @@ async fn queued_local_prompt_is_consumed_once_with_its_captured_images_and_refer
             state.fake.queued_prompts.borrow_mut().insert(
                 1,
                 vec![openwebide_core::QueuedPrompt {
+                    scheduled_task: None,
                     id: 1,
                     session_id: 1,
                     revision: 1,

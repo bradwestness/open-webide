@@ -9,8 +9,14 @@ for what's still ahead.
 
 ## [Unreleased]
 
-- Use ordered embedded-scope lookup when assembling syntax fallback contexts,
-  preserving empty/touching range behavior without scanning every body per range.
+- Guide custom cron editing with five labeled fields, range hints, an expression preview, and full-expression paste.
+
+- Use shared form controls and Repeating/One time/Cron tabs in scheduled tasks; keep Cancel available and support existing, new-per-run, or latest active session targets. Resolve automatic targets when due using user defaults, and retain generated sessions and run links.
+- Rename the optional Fast model setting to Assistance model. Add shared bounded
+  generation with primary fallback and a user-owned database cache; refresh
+  automatic session names after six more turns and five minutes, preserving manual
+  names. Show idle chat recaps and suggested next prompts in every workspace mode.
+
 
 - Match retained embedded syntax trees across worker batches, allowing yields and
   cancellation between bodies while preserving unchanged-tree reuse.
@@ -23,6 +29,9 @@ for what's still ahead.
   analysis. Share request validation, queue limits, reply shaping and cancellation
   with the synchronous Rust service; publish only complete source-bound results.
 
+- Schedule project or projectless prompts with weekday/time controls, custom cron or a one-time timestamp. Host-side dispatch uses durable UTC run claims, normal chat approvals, and verified paired-host execution for local folders. Tasks can be edited, paused, resumed or removed from Sessions, with run results and chat links.
+- Match Memories to the Sessions controls with Enabled/Disabled tabs and a `+` button; refresh entries automatically.
+
 - Reuse unchanged embedded syntax trees across paragraph insertion, removal and
   shifted Unicode/CRLF positions. Reparse only affected bodies; retain provider,
   range, cancellation and fresh-output validation.
@@ -32,6 +41,16 @@ for what's still ahead.
   retaining source/node/record limits, cancellation and fresh/incremental parity.
 
 - Added project memories shared across sessions in both local and remote projects: editable entries and an enabled-by-default toggle in Sessions, bounded automatic run context, revision-safe agent memory tools, and database-backed opt-out.
+
+- Show icons consistently for action rows in Files, Git, editor and tab menus,
+  including their right-click menus. Keep project listings and pickers unchanged.
+
+- Put Settings and System prompts in the user dropdown on desktop and phones;
+  retain Servers, project actions, Help and About in the app menu. Keep server
+  configuration and personal prompt management in separate screens.
+- Scope system prompts to their owner, including chat references and defaults.
+  Preserve existing prompt libraries and session selections during migration;
+  allow different accounts to use the same prompt names.
 
 - Show a compact syntax-preparation spinner in a reserved slot before Output,
   keeping the existing controls stable. Hide it when grammar colors or terminal

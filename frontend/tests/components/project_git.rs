@@ -30,7 +30,7 @@ export function gitHttp() {
         if (path === '/git/status') return json({branch:mock.currentBranch,commit_hash:'abc',commit_message:null,upstream:null,ahead:0,behind:0,is_clean:mock.clean,line_stats:{insertions:0,deletions:0},files:mock.clean?{}:{'main.rs':'modified'}});
         if (path === '/git/path-status' || path === '/git/path') return mock.pathError && path === '/git/path' ? json({error:'path action failed'}, 400) : json({has_head:true,staged:['a.txt'],unstaged:['a.txt'],untracked:[],renamed_from:{}});
         if (path === '/git/show') return json({content:'committed'});
-        if (path === '/git/diff') return json({diff:'local diff'});
+        if (path === '/git/diff') return json({diff:mock.diff || 'local diff'});
         if (path === '/git/branches') return mock.branchesError ? json({error:'cannot list branches'}, 400) : json(mock.branches);
         if (path === '/git/checkout') { if (mock.checkoutError) return json({error:'uncommitted changes'}, 400); const previous = mock.currentBranch; mock.currentBranch = body.branch; return json({branch:body.branch,previous_branch:previous,switched:true}); }
         if (path === '/git/commit') return json({commit_hash:'abc',summary:'saved',is_signed:false});
@@ -40,6 +40,7 @@ export function gitHttp() {
     mock.restore = () => { window.fetch = original; };
     return mock;
 }
+export function gitDiff(mock, diff) { mock.diff = diff; }
 export function gitBranches(mock, branches) { mock.branches = JSON.parse(branches); mock.currentBranch = "main"; }
 export function gitCalls(mock) { return JSON.stringify(mock.calls); }
 export function gitChange(mock, field, value) { mock[field] = value; }
@@ -47,6 +48,7 @@ export function gitRestore(mock) { mock.restore(); }
 "#)]
 extern "C" {
     pub(super) fn gitHttp() -> JsValue;
+    pub(super) fn gitDiff(mock: &JsValue, diff: &str);
     fn gitBranches(mock: &JsValue, branches: &str);
     pub(super) fn gitCalls(mock: &JsValue) -> String;
     pub(super) fn gitChange(mock: &JsValue, field: &str, value: bool);

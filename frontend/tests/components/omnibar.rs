@@ -242,6 +242,12 @@ async fn phone_drawer_and_desktop_menu_share_configuration_and_project_actions()
         let layout_slot = std::rc::Rc::new(std::cell::Cell::new(None));
         let slot = layout_slot.clone();
         let mounted = mount_test(move |state| {
+            state.auth.set_user(openwebide_core::User {
+                id: openwebide_core::UserId::new(1),
+                username: "user".into(),
+                role: openwebide_core::UserRole::User,
+                created_at: 0,
+            });
             state.seed_project();
             state.seed_session();
             state.seed_connection();
@@ -337,6 +343,12 @@ async fn phone_drawer_and_desktop_menu_share_configuration_and_project_actions()
                 .unwrap();
             assert!(target.get_bounding_client_rect().height() >= 44.0);
         }
+        mounted.click_text("Help / Keyboard shortcuts");
+        settle().await;
+        mounted.state.ui.shortcuts_open.set(false);
+        settle().await;
+        mounted.click("[aria-label='Account menu']");
+        settle().await;
         mounted.click_text("System prompts");
         settle().await;
         assert_eq!(

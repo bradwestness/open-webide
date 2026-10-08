@@ -36,6 +36,8 @@ pub mod project_memory;
 #[cfg(target_arch = "wasm32")]
 pub mod project_runs;
 pub mod project_setup;
+#[cfg(target_arch = "wasm32")]
+pub mod scheduled;
 pub mod sse;
 pub mod state;
 #[cfg(target_arch = "wasm32")]

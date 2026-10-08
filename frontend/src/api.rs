@@ -769,11 +769,37 @@ impl BackendApi {
         }
     }
 
+    pub async fn session_search_suggestions(
+        &self,
+        search: &openwebide_core::SessionSearch,
+    ) -> Result<openwebide_core::SessionSearchResults, String> {
+        self.post("/sessions/search-suggestions", search).await
+    }
+    pub async fn assistance(
+        &self,
+        request: &openwebide_core::AssistanceRequest,
+    ) -> Result<Option<String>, String> {
+        self.post("/assistance", request).await
+    }
     pub async fn model_complete(
         &self,
         request: &openwebide_core::ChatRequest,
     ) -> Result<openwebide_core::ChatCompletion, String> {
         self.post("/models/complete", request).await
+    }
+    pub async fn model_complete_with_timeout(
+        &self,
+        request: &openwebide_core::ChatRequest,
+        timeout_seconds: u32,
+    ) -> Result<openwebide_core::ChatCompletion, String> {
+        self.post(
+            "/models/background",
+            &openwebide_core::BackgroundCompletion {
+                request: request.clone(),
+                timeout_seconds,
+            },
+        )
+        .await
     }
     pub async fn model_tokens(
         &self,
@@ -942,6 +968,45 @@ impl BackendApi {
             &json!({"model":model}),
         )
         .await
+    }
+    pub async fn scheduled_tasks(
+        &self,
+        project: Option<i64>,
+    ) -> Result<Vec<openwebide_core::scheduled::ScheduledTask>, String> {
+        self.get(&format!(
+            "/scheduled-tasks{}",
+            project.map_or_else(String::new, |id| format!("?project_id={id}"))
+        ))
+        .await
+    }
+    pub async fn scheduled_command(
+        &self,
+        project: Option<i64>,
+        command: &openwebide_core::scheduled::TaskCommand,
+        binding: Option<&openwebide_core::scheduled::HostBinding>,
+    ) -> Result<Vec<openwebide_core::scheduled::ScheduledTask>, String> {
+        self.post(
+            "/scheduled-tasks",
+            &json!({"project_id":project,"command":command,"binding":binding}),
+        )
+        .await
+    }
+    pub async fn scheduled_session_command(
+        &self,
+        session: i64,
+        command: &openwebide_core::scheduled::TaskCommand,
+    ) -> Result<Vec<openwebide_core::scheduled::ScheduledTask>, String> {
+        self.post(&format!("/sessions/{session}/scheduled-tasks"), command)
+            .await
+    }
+    pub async fn run_lease(&self, session: i64, token: &str, release: bool) -> Result<(), String> {
+        let _: openwebide_core::scheduled::RunControl = self
+            .post(
+                &format!("/sessions/{session}/run-lease"),
+                &json!({"token":token,"release":release}),
+            )
+            .await?;
+        Ok(())
     }
     pub async fn memories(
         &self,

@@ -376,11 +376,35 @@ pub trait Backend {
         session: i64,
         message: i64,
     ) -> LocalBoxFuture<'_, Result<Vec<ConversationEntry>, String>>;
+    fn session_search_suggestions<'a>(
+        &'a self,
+        search: &'a openwebide_core::SessionSearch,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::SessionSearchResults, String>> {
+        Box::pin(async move {
+            Ok(openwebide_core::SessionSearchResults {
+                sessions: self.search_sessions(search).await?,
+                ..Default::default()
+            })
+        })
+    }
+    fn assistance<'a>(
+        &'a self,
+        _request: &'a openwebide_core::AssistanceRequest,
+    ) -> LocalBoxFuture<'a, Result<Option<String>, String>> {
+        Box::pin(async { Ok(None) })
+    }
     fn model_complete<'a>(
         &'a self,
         request: &'a ChatRequest,
     ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>> {
         self.chat_tools(request)
+    }
+    fn model_complete_with_timeout<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+        _timeout_seconds: u32,
+    ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>> {
+        self.model_complete(request)
     }
     fn model_tokens<'a>(
         &'a self,
@@ -412,6 +436,35 @@ pub trait Backend {
         session: i64,
         model: Option<&'a str>,
     ) -> LocalBoxFuture<'a, Result<ChatMessage, String>>;
+    fn scheduled_tasks(
+        &self,
+        _project: Option<i64>,
+    ) -> LocalBoxFuture<'_, Result<Vec<openwebide_core::scheduled::ScheduledTask>, String>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    fn scheduled_command<'a>(
+        &'a self,
+        _project: Option<i64>,
+        _command: &'a openwebide_core::scheduled::TaskCommand,
+        _binding: Option<&'a openwebide_core::scheduled::HostBinding>,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::scheduled::ScheduledTask>, String>> {
+        Box::pin(async { Err("Scheduled tasks unavailable".into()) })
+    }
+    fn scheduled_session_command<'a>(
+        &'a self,
+        _session: i64,
+        _command: &'a openwebide_core::scheduled::TaskCommand,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::scheduled::ScheduledTask>, String>> {
+        Box::pin(async { Err("Scheduled tasks unavailable".into()) })
+    }
+    fn run_lease<'a>(
+        &'a self,
+        _session: i64,
+        _token: &'a str,
+        _release: bool,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
     fn project_memories(
         &self,
         _project: i64,
@@ -1032,11 +1085,34 @@ impl Backend for BackendApi {
     ) -> LocalBoxFuture<'a, Result<Vec<ConversationEntry>, String>> {
         Box::pin(BackendApi::list_messages(self, session_id))
     }
+    fn session_search_suggestions<'a>(
+        &'a self,
+        search: &'a openwebide_core::SessionSearch,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::SessionSearchResults, String>> {
+        Box::pin(BackendApi::session_search_suggestions(self, search))
+    }
+    fn assistance<'a>(
+        &'a self,
+        request: &'a openwebide_core::AssistanceRequest,
+    ) -> LocalBoxFuture<'a, Result<Option<String>, String>> {
+        Box::pin(BackendApi::assistance(self, request))
+    }
     fn model_complete<'a>(
         &'a self,
         request: &'a ChatRequest,
     ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>> {
         Box::pin(BackendApi::model_complete(self, request))
+    }
+    fn model_complete_with_timeout<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+        timeout_seconds: u32,
+    ) -> LocalBoxFuture<'a, Result<ChatCompletion, String>> {
+        Box::pin(BackendApi::model_complete_with_timeout(
+            self,
+            request,
+            timeout_seconds,
+        ))
     }
     fn model_tokens<'a>(
         &'a self,
@@ -1118,6 +1194,39 @@ impl Backend for BackendApi {
         model: Option<&'a str>,
     ) -> LocalBoxFuture<'a, Result<ChatMessage, String>> {
         Box::pin(BackendApi::compact_session(self, session, model))
+    }
+    fn scheduled_tasks(
+        &self,
+        project: Option<i64>,
+    ) -> LocalBoxFuture<'_, Result<Vec<openwebide_core::scheduled::ScheduledTask>, String>> {
+        Box::pin(BackendApi::scheduled_tasks(self, project))
+    }
+    fn scheduled_command<'a>(
+        &'a self,
+        project: Option<i64>,
+        command: &'a openwebide_core::scheduled::TaskCommand,
+        binding: Option<&'a openwebide_core::scheduled::HostBinding>,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::scheduled::ScheduledTask>, String>> {
+        Box::pin(BackendApi::scheduled_command(
+            self, project, command, binding,
+        ))
+    }
+    fn scheduled_session_command<'a>(
+        &'a self,
+        session: i64,
+        command: &'a openwebide_core::scheduled::TaskCommand,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::scheduled::ScheduledTask>, String>> {
+        Box::pin(BackendApi::scheduled_session_command(
+            self, session, command,
+        ))
+    }
+    fn run_lease<'a>(
+        &'a self,
+        session: i64,
+        token: &'a str,
+        release: bool,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::run_lease(self, session, token, release))
     }
     fn project_memories(
         &self,

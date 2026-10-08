@@ -822,10 +822,12 @@ pub fn events<'a, P: RunPersistence + 'a>(
 
 /// Read-only host information and web tools available without opening a workspace.
 pub fn projectless_tools() -> Vec<ToolDefinition> {
-    crate::vfs_tools()
+    let mut tools = crate::vfs_tools()
         .into_iter()
         .filter(|tool| is_projectless_tool(&tool.name))
-        .collect()
+        .collect();
+    crate::scheduled::configure(&mut tools);
+    tools
 }
 
 pub fn is_projectless_tool(name: &str) -> bool {

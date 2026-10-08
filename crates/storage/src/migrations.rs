@@ -22,7 +22,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 33;
+pub const SCHEMA_VERSION: i64 = 38;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -358,6 +358,83 @@ async fn apply_step<D: Db>(
             db.execute("CREATE INDEX IF NOT EXISTS idx_project_memories ON project_memories(user_id, project_id)", &[]).await?;
             Ok(())
         }
+        34 => scope_system_prompts(db).await,
+        35 => {
+            for sql in [
+                "CREATE TABLE IF NOT EXISTS scheduled_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, revision INTEGER NOT NULL DEFAULT 1, draft TEXT NOT NULL, enabled INTEGER NOT NULL, next_run INTEGER, host_id TEXT NOT NULL, path TEXT)",
+                "CREATE INDEX IF NOT EXISTS idx_scheduled_due ON scheduled_tasks(host_id, enabled, next_run)",
+                "CREATE TABLE IF NOT EXISTS scheduled_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES scheduled_tasks(id) ON DELETE CASCADE, due_at INTEGER NOT NULL, status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', permission_id TEXT, queued_id INTEGER REFERENCES queued_prompts(id) ON DELETE SET NULL, message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL, claimed_until INTEGER NOT NULL DEFAULT 0, UNIQUE(task_id, due_at))",
+                "CREATE TABLE IF NOT EXISTS execution_hosts (id TEXT PRIMARY KEY, name TEXT NOT NULL, last_seen INTEGER NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS session_run_leases (session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, token TEXT NOT NULL, expires_at INTEGER NOT NULL)",
+            ] {
+                db.execute(sql, &[]).await?;
+            }
+            Ok(())
+        }
+        36 => {
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS session_title_activity (
+                session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                user_turns INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+                &[],
+            )
+            .await?;
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS assistance_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                request TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL,
+                UNIQUE(user_id, request))",
+                &[],
+            )
+            .await?;
+            Ok(())
+        }
+        37 => {
+            let columns = db
+                .execute(
+                    "SELECT 1 FROM pragma_table_info('project_memories') WHERE name = 'auto_title'",
+                    &[],
+                )
+                .await?;
+            if columns.rows.is_empty() {
+                db.execute(
+                    "ALTER TABLE project_memories ADD COLUMN auto_title INTEGER NOT NULL DEFAULT 0",
+                    &[],
+                )
+                .await?;
+            }
+            Ok(())
+        }
+        38 => {
+            if !db
+                .execute(
+                    "SELECT 1 FROM pragma_table_info('scheduled_runs') WHERE name='session_id'",
+                    &[],
+                )
+                .await?
+                .rows
+                .is_empty()
+            {
+                return Ok(());
+            }
+            // Rebuild together so sessionless task definitions retain run history.
+            // Runs point to their actual session, independently of target policy.
+            for sql in [
+                "CREATE TABLE IF NOT EXISTS scheduled_tasks_next (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE, revision INTEGER NOT NULL DEFAULT 1, draft TEXT NOT NULL, enabled INTEGER NOT NULL, next_run INTEGER, host_id TEXT NOT NULL, path TEXT)",
+                "INSERT INTO scheduled_tasks_next SELECT * FROM scheduled_tasks",
+                "CREATE TABLE IF NOT EXISTS scheduled_runs_next (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES scheduled_tasks_next(id) ON DELETE CASCADE, due_at INTEGER NOT NULL, status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', permission_id TEXT, queued_id INTEGER REFERENCES queued_prompts(id) ON DELETE SET NULL, message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL, claimed_until INTEGER NOT NULL DEFAULT 0, session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL, UNIQUE(task_id, due_at))",
+                "INSERT INTO scheduled_runs_next SELECT r.*, t.session_id FROM scheduled_runs r JOIN scheduled_tasks t ON t.id=r.task_id",
+                "DROP TABLE scheduled_runs",
+                "DROP TABLE scheduled_tasks",
+                "ALTER TABLE scheduled_tasks_next RENAME TO scheduled_tasks",
+                "ALTER TABLE scheduled_runs_next RENAME TO scheduled_runs",
+                "CREATE INDEX IF NOT EXISTS idx_scheduled_due ON scheduled_tasks(host_id, enabled, next_run)",
+            ] {
+                db.execute(sql, &[]).await?;
+            }
+            Ok(())
+        }
         other => Err(StorageError::Db(format!("unknown migration step {other}"))),
     }
 }
@@ -371,6 +448,58 @@ async fn read_user_version<D: Db>(db: &D) -> Result<i64, StorageError> {
         .map(|row| row.get_int(0))
         .transpose()?
         .unwrap_or(0))
+}
+
+// Rebuild the global name constraint as (user_id, name). Preserve the first
+// account's IDs, copy the previously shared library to other existing accounts,
+// and restore session references after DROP TABLE applies ON DELETE SET NULL.
+async fn scope_system_prompts<D: Db>(db: &D) -> Result<(), StorageError> {
+    if !db
+        .execute(
+            "SELECT 1 FROM pragma_table_info('system_prompts') WHERE name = 'user_id'",
+            &[],
+        )
+        .await?
+        .rows
+        .is_empty()
+    {
+        return Ok(());
+    }
+    for sql in [
+        "CREATE TABLE system_prompts_owned (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL, content TEXT NOT NULL,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE(user_id, name))",
+        "INSERT INTO system_prompts_owned (id, name, content, user_id)
+            SELECT id, name, content, (SELECT MIN(id) FROM users) FROM system_prompts",
+        "INSERT INTO system_prompts_owned (name, content, user_id)
+            SELECT p.name, p.content, u.id FROM system_prompts p CROSS JOIN users u
+            WHERE u.id != (SELECT MIN(id) FROM users)",
+        "CREATE TABLE system_prompt_session_refs AS
+            SELECT id AS session_id, system_prompt_id AS prompt_id FROM sessions
+            WHERE system_prompt_id IS NOT NULL",
+        "DROP TABLE system_prompts",
+        "ALTER TABLE system_prompts_owned RENAME TO system_prompts",
+        "UPDATE sessions SET system_prompt_id = (
+            SELECT owned.id FROM system_prompt_session_refs r
+            JOIN system_prompts original ON original.id = r.prompt_id
+            JOIN system_prompts owned ON owned.name = original.name
+                AND owned.user_id IS COALESCE(sessions.user_id, (SELECT MIN(id) FROM users))
+            WHERE r.session_id = sessions.id)
+            WHERE id IN (SELECT session_id FROM system_prompt_session_refs)",
+        "UPDATE user_settings SET value = CAST((
+            SELECT owned.id FROM system_prompts original
+            JOIN system_prompts owned ON owned.name = original.name
+                AND owned.user_id = user_settings.user_id
+            WHERE original.id = CAST(user_settings.value AS INTEGER)) AS TEXT)
+            WHERE key = 'default_prompt' AND value != ''
+                AND EXISTS (SELECT 1 FROM system_prompts WHERE id = CAST(user_settings.value AS INTEGER))",
+        "DROP TABLE system_prompt_session_refs",
+    ] {
+        db.execute(sql, &[]).await?;
+    }
+    Ok(())
 }
 
 /// Apply all pending migration steps up to [`SCHEMA_VERSION`].

@@ -734,6 +734,26 @@ impl openwebide_agent::compaction::CompactionSource for BrowserModelSource {
                 .await
         })
     }
+    fn complete_with_timeout(
+        &self,
+        request: &ChatRequest,
+        timeout_seconds: u32,
+    ) -> impl Future<Output = Result<ChatCompletion, String>> + Send {
+        SendWrapper::new(async move {
+            let api = self.api.with_value(Clone::clone);
+            let completion = api.model_complete_with_timeout(request, timeout_seconds);
+            let timeout_ms =
+                i32::try_from(timeout_seconds.saturating_mul(1000)).unwrap_or(i32::MAX);
+            let deadline = crate::util::sleep_ms(timeout_ms);
+            futures::pin_mut!(completion, deadline);
+            match futures::future::select(completion, deadline).await {
+                futures::future::Either::Left((result, _)) => result,
+                futures::future::Either::Right(_) => {
+                    Err("Background model deadline exceeded".into())
+                }
+            }
+        })
+    }
     fn context_limit(&self, request: &ChatRequest) -> impl Future<Output = Option<usize>> + Send {
         SendWrapper::new(async move {
             self.api
@@ -843,131 +863,168 @@ pub async fn run_local_agent(
         &memories,
         runtime.settings.context_limit,
     );
+    openwebide_agent::scheduled::configure(&mut input.tools);
     let plan = openwebide_agent::session::plan(&runtime, input);
     if !current() {
         return Err("Project access changed".into());
     }
     plan.validate_prompt()?;
-    let mut request = plan.request;
-    let (anchor_id, first_turn) = if let Some(resume) = resume {
-        (resume.anchor_id, resume.first_turn)
-    } else {
-        let user_message = if let Some(key) = queued_prompt {
-            api.with_value(Clone::clone)
-                .consume_queued_prompt(session_id, key, &plan.user_content)
-                .await?
+    let lease = format!(
+        "browser-{session_id}-{}-{}",
+        js_sys::Date::now(),
+        js_sys::Math::random()
+    );
+    let backend = api.with_value(Clone::clone);
+    backend.run_lease(session_id, &lease, false).await?;
+    let (abort, registration) = futures::future::AbortHandle::new_pair();
+    let renewal_backend = backend.clone();
+    let renewal_lease = lease.clone();
+    let renewal_cancel = cancel_flag.clone();
+    leptos::task::spawn_local(async move {
+        let _ = futures::future::Abortable::new(
+            async move {
+                loop {
+                    crate::util::sleep_ms(15000).await;
+                    if renewal_backend
+                        .run_lease(session_id, &renewal_lease, false)
+                        .await
+                        .is_err()
+                    {
+                        renewal_cancel.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                }
+            },
+            registration,
+        )
+        .await;
+    });
+    let result = async {
+        let mut request = plan.request;
+        let (anchor_id, first_turn) = if let Some(resume) = resume {
+            (resume.anchor_id, resume.first_turn)
         } else {
-            api.with_value(Clone::clone)
-                .persist_message(session_id, Role::User, &plan.user_content, None, None)
-                .await?
+            let user_message = if let Some(key) = queued_prompt {
+                api.with_value(Clone::clone)
+                    .consume_queued_prompt(session_id, key, &plan.user_content)
+                    .await?
+            } else {
+                api.with_value(Clone::clone)
+                    .persist_message(session_id, Role::User, &plan.user_content, None, None)
+                    .await?
+            };
+            let anchor_id = user_message.id;
+            on_event(RunEvent::Message {
+                message: user_message.clone(),
+            });
+            request.messages.push(user_message);
+            (anchor_id, 1)
         };
-        let anchor_id = user_message.id;
-        on_event(RunEvent::Message {
-            message: user_message.clone(),
-        });
-        request.messages.push(user_message);
-        (anchor_id, 1)
-    };
 
-    let provider = BrowserLlmProvider::new(api, runtime.connection.kind, bridge_connection);
-    let cancel = LocalCancelCheck {
-        flag: cancel_flag.clone(),
-    };
-    if matches!(plan.kind, openwebide_core::RunKind::Chat) {
-        let content = openwebide_agent::session::chat_context(&mut request, &environment);
-        let message = api
-            .with_value(Clone::clone)
-            .persist_message(session_id, Role::System, &content, None, None)
-            .await?;
-        if !current() {
-            return Err("Project access changed".into());
+        let provider = BrowserLlmProvider::new(api, runtime.connection.kind, bridge_connection);
+        let cancel = LocalCancelCheck {
+            flag: cancel_flag.clone(),
+        };
+        if matches!(plan.kind, openwebide_core::RunKind::Chat) {
+            let content = openwebide_agent::session::chat_context(&mut request, &environment);
+            let message = api
+                .with_value(Clone::clone)
+                .persist_message(session_id, Role::System, &content, None, None)
+                .await?;
+            if !current() {
+                return Err("Project access changed".into());
+            }
+            on_event(RunEvent::Message { message });
+            let prepared = openwebide_agent::session::compact_request(
+                &provider,
+                &BrowserModelSource {
+                    api: SendWrapper::new(api),
+                },
+                &mut request,
+                &cancel,
+                SessionPersistence {
+                    api: SendWrapper::new(api),
+                    session: session_id,
+                },
+                session_id,
+                anchor_id,
+            )
+            .await;
+            for event in prepared.events {
+                on_event(event);
+            }
+            if prepared.terminal {
+                return Ok(());
+            }
+            let mut events = Box::pin(openwebide_agent::session::chat_events(
+                SessionPersistence {
+                    api: SendWrapper::new(api),
+                    session: session_id,
+                },
+                provider.chat_stream(&request),
+                cancel,
+                &request,
+            ));
+            while let Some(event) = events.next().await {
+                on_event(event);
+            }
+            return Ok(());
         }
-        on_event(RunEvent::Message { message });
-        let prepared = openwebide_agent::session::compact_request(
-            &provider,
-            &BrowserModelSource {
+        let config = AgentConfig {
+            first_turn,
+            ..AgentConfig::default()
+        };
+        let bridge = host.and_then(|host| match host {
+            crate::project_host::ProjectExecution::Local(bridge) => Some(bridge),
+            crate::project_host::ProjectExecution::Remote { .. } => None,
+        });
+        let factory = BrowserTaskFactory {
+            api: SendWrapper::new(api),
+            vfs,
+            bridge,
+            environment,
+            session: session_id,
+            anchor: anchor_id,
+            manual: LocalPermissionGate {
+                decisions: local_decisions,
+                cancel: cancel_flag,
+            },
+            connection: provider.bridge.clone(),
+        };
+        let executor = factory.executor();
+        let gate = factory.gate(&request);
+        let stream = openwebide_agent::tasks::host::run_tree(
+            factory,
+            BrowserModelSource {
                 api: SendWrapper::new(api),
             },
-            &mut request,
-            &cancel,
+            cancel,
+            provider,
+            executor,
+            gate,
+            request,
+            config,
+            anchor_id,
+        );
+
+        let mut stream = Box::pin(openwebide_agent::session::events(
             SessionPersistence {
                 api: SendWrapper::new(api),
                 session: session_id,
             },
             session_id,
             anchor_id,
-        )
-        .await;
-        for event in prepared.events {
-            on_event(event);
-        }
-        if prepared.terminal {
-            return Ok(());
-        }
-        let mut events = Box::pin(openwebide_agent::session::chat_events(
-            SessionPersistence {
-                api: SendWrapper::new(api),
-                session: session_id,
-            },
-            provider.chat_stream(&request),
-            cancel,
-            &request,
+            stream,
         ));
-        while let Some(event) = events.next().await {
+        while let Some(event) = stream.next().await {
             on_event(event);
         }
-        return Ok(());
+        Ok(())
     }
-    let config = AgentConfig {
-        first_turn,
-        ..AgentConfig::default()
-    };
-    let bridge = host.and_then(|host| match host {
-        crate::project_host::ProjectExecution::Local(bridge) => Some(bridge),
-        crate::project_host::ProjectExecution::Remote { .. } => None,
-    });
-    let factory = BrowserTaskFactory {
-        api: SendWrapper::new(api),
-        vfs,
-        bridge,
-        environment,
-        session: session_id,
-        anchor: anchor_id,
-        manual: LocalPermissionGate {
-            decisions: local_decisions,
-            cancel: cancel_flag,
-        },
-        connection: provider.bridge.clone(),
-    };
-    let executor = factory.executor();
-    let gate = factory.gate(&request);
-    let stream = openwebide_agent::tasks::host::run_tree(
-        factory,
-        BrowserModelSource {
-            api: SendWrapper::new(api),
-        },
-        cancel,
-        provider,
-        executor,
-        gate,
-        request,
-        config,
-        anchor_id,
-    );
-
-    let mut stream = Box::pin(openwebide_agent::session::events(
-        SessionPersistence {
-            api: SendWrapper::new(api),
-            session: session_id,
-        },
-        session_id,
-        anchor_id,
-        stream,
-    ));
-    while let Some(event) = stream.next().await {
-        on_event(event);
-    }
-    Ok(())
+    .await;
+    abort.abort();
+    let _ = backend.run_lease(session_id, &lease, true).await;
+    result
 }
 
 struct SessionPersistence {
@@ -1116,13 +1173,33 @@ impl openwebide_agent::memory::MemoryStore for BrowserMemoryPersistence {
     }
 }
 
-type BrowserTaskExecutor = openwebide_agent::memory::MemoryTools<
+struct BrowserScheduledPersistence {
+    api: SendWrapper<Api>,
+    session: i64,
+}
+impl openwebide_agent::scheduled::TaskStore for BrowserScheduledPersistence {
+    fn execute(
+        &self,
+        command: &openwebide_core::scheduled::TaskCommand,
+    ) -> impl Future<Output = Result<Vec<openwebide_core::scheduled::ScheduledTask>, String>> + Send
+    {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .scheduled_session_command(self.session, command)
+                .await
+        })
+    }
+}
+type BrowserMemoryExecutor = openwebide_agent::memory::MemoryTools<
     openwebide_agent::todo::TodoTools<
         VfsToolExecutor<BrowserFsaVfs, BrowserWebClient, Option<BrowserBridgeClient>>,
         TodoPersistence,
     >,
     BrowserMemoryPersistence,
 >;
+type BrowserTaskExecutor =
+    openwebide_agent::scheduled::ScheduledTools<BrowserMemoryExecutor, BrowserScheduledPersistence>;
 type BrowserTaskGate = openwebide_agent::policy::PolicyGate<LocalPermissionGate, ApprovalAdapter>;
 #[derive(Clone)]
 struct BrowserTaskFactory {
@@ -1137,21 +1214,27 @@ struct BrowserTaskFactory {
 }
 impl BrowserTaskFactory {
     fn executor(&self) -> BrowserTaskExecutor {
-        openwebide_agent::memory::MemoryTools::new(
-            openwebide_agent::todo::TodoTools::new(
-                VfsToolExecutor::with_web_and_bridge(
-                    self.vfs.clone(),
-                    BrowserWebClient::new(*self.api),
-                    self.bridge.clone(),
-                )
-                .with_context(self.environment.clone()),
-                TodoPersistence {
+        openwebide_agent::scheduled::ScheduledTools::new(
+            openwebide_agent::memory::MemoryTools::new(
+                openwebide_agent::todo::TodoTools::new(
+                    VfsToolExecutor::with_web_and_bridge(
+                        self.vfs.clone(),
+                        BrowserWebClient::new(*self.api),
+                        self.bridge.clone(),
+                    )
+                    .with_context(self.environment.clone()),
+                    TodoPersistence {
+                        api: self.api.clone(),
+                        session: self.session,
+                        anchor: self.anchor,
+                    },
+                ),
+                BrowserMemoryPersistence {
                     api: self.api.clone(),
                     session: self.session,
-                    anchor: self.anchor,
                 },
             ),
-            BrowserMemoryPersistence {
+            BrowserScheduledPersistence {
                 api: self.api.clone(),
                 session: self.session,
             },

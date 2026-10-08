@@ -713,18 +713,38 @@ impl ChatActions {
             chat.queue_steering.set(None);
             stop.run(());
         });
+        let auth = expect_context::<crate::state::auth::AuthState>();
         let select_model = Callback::new(move |model: Option<String>| {
             chat.selected_model.set(model.clone());
             if let Some(session_id) = chat.active_session.get() {
                 chat.session_model.update(|models| {
-                    let _ = models.insert(session_id, model);
+                    let _ = models.insert(session_id, model.clone());
+                });
+                let connection = chat.sessions.with_untracked(|sessions| {
+                    sessions
+                        .iter()
+                        .find(|entry| entry.id == session_id)
+                        .and_then(|entry| entry.connection_id)
+                });
+                let account = auth.generation.get_untracked();
+                spawn_local(async move {
+                    if auth.generation.try_get_untracked() == Some(account) {
+                        let _ = api
+                            .with_value(Clone::clone)
+                            .set_setting(
+                                &format!("session_model_{session_id}"),
+                                &serde_json::json!({"connection_id":connection,"model":model})
+                                    .to_string(),
+                            )
+                            .await;
+                    }
                 });
             }
         });
 
         let auth = expect_context::<crate::state::auth::AuthState>();
-        let select_connection_model =
-            Callback::new(move |(connection_id, model): (i64, String)| {
+        let select_connection_model = Callback::new(
+            move |(connection_id, model): (i64, String)| {
                 if chat.streaming.get_untracked()
                     || chat.connection_changing.get_untracked()
                     || !settings.connections.with_untracked(|connections| {
@@ -772,13 +792,18 @@ impl ChatActions {
                                 }
                             });
                             if chat.active_session.get_untracked() == Some(session_id) {
-                                chat.selected_model.set(Some(model));
+                                chat.selected_model.set(Some(model.clone()));
                             }
+                            let _ = api.with_value(Clone::clone).set_setting(
+                                &format!("session_model_{session_id}"),
+                                &serde_json::json!({"connection_id":connection_id,"model":model}).to_string(),
+                            ).await;
                         }
                         Err(error) => chat.error.set(Some(error)),
                     }
                 });
-            });
+            },
+        );
 
         let send = Callback::new(move |()| start.run((None, None, None, None)));
         let send_prompt =

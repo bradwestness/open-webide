@@ -220,7 +220,7 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
             .await
             .unwrap();
         let prompt = store
-            .insert_system_prompt("coder", "Be helpful")
+            .insert_system_prompt(user.id, "coder", "Be helpful")
             .await
             .unwrap();
         let project = store
@@ -324,11 +324,13 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
                         .unwrap()
                         .definition()
                 }));
+                openwebide_agent::scheduled::configure(&mut tools);
                 tools.push(openwebide_agent::tasks::executor::definition());
                 assert_eq!(plan.request.tools, tools);
             } else {
                 assert_eq!(plan.kind, RunKind::WebChat);
                 let mut tools = openwebide_agent::session::projectless_tools();
+                openwebide_agent::scheduled::configure(&mut tools);
                 tools.push(openwebide_agent::tasks::executor::definition());
                 assert_eq!(plan.request.tools, tools);
             }
@@ -1279,6 +1281,85 @@ fn editor_recovery_routes_validate_owned_revisioned_snapshots_in_both_modes() {
 }
 
 #[test]
+fn prompt_api_and_default_selection_are_user_scoped() {
+    futures::executor::block_on(async {
+        let state = AppState::new().await.unwrap();
+        let alice = state
+            .store
+            .insert_user("alice", "hash", openwebide_core::UserRole::Admin, 1)
+            .await
+            .unwrap();
+        let bob = state
+            .store
+            .insert_user("bob", "hash", openwebide_core::UserRole::User, 1)
+            .await
+            .unwrap();
+        let user = AuthedUser {
+            id: bob.id,
+            role: bob.role,
+        };
+        let prompt = state
+            .store
+            .insert_system_prompt(alice.id, "private", "Private instructions")
+            .await
+            .unwrap();
+        let setting = |id: i64| {
+            serde_json::from_value::<super::settings::SettingBody>(
+                json!({"key": "default_prompt", "value": id.to_string()}),
+            )
+            .unwrap()
+        };
+        let response = super::prompts::list_system_prompts(&state, user)
+            .await
+            .unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            serde_json::from_slice::<Vec<SystemPrompt>>(&body).unwrap(),
+            Vec::new()
+        );
+        let path = format!("/api/system-prompts/{}", prompt.id);
+        let error = super::prompts::delete_system_prompt(&state, &path, user)
+            .await
+            .unwrap_err();
+        assert_eq!(error.into_response().status().as_u16(), 404);
+        let error = super::settings::write_setting_body(&state, user, setting(prompt.id))
+            .await
+            .unwrap_err();
+        assert_eq!(error.into_response().status().as_u16(), 404);
+        assert_eq!(
+            state
+                .store
+                .get_user_setting(bob.id, "default_prompt")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            state
+                .store
+                .get_system_prompt(prompt.id, alice.id)
+                .await
+                .unwrap()
+                .content,
+            "Private instructions"
+        );
+        let own = state
+            .store
+            .insert_system_prompt(bob.id, "private", "Bob's instructions")
+            .await
+            .unwrap();
+        assert_eq!(
+            super::settings::write_setting_body(&state, user, setting(own.id))
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            200
+        );
+    });
+}
+
+#[test]
 fn project_memory_run_planning_includes_enabled_context_and_tools_and_omits_projectless_data() {
     futures::executor::block_on(async {
         let store = openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
@@ -1327,6 +1408,7 @@ fn project_memory_run_planning_includes_enabled_context_and_tools_and_omits_proj
                 user.id,
                 project,
                 &openwebide_core::MemoryCommand::Create {
+                    auto_title: false,
                     title: "Build".into(),
                     content: "Run cargo test".into(),
                 },

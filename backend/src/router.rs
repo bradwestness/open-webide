@@ -35,6 +35,12 @@ enum Route {
     PushUnsubscribe,
     PushNotify,
     PushDispatch,
+    ScheduledList,
+    ScheduledCommand,
+    ScheduledSessionCommand,
+    ScheduledDue,
+    ScheduledResult,
+    SessionRunLease,
     GetSettings,
     SetSetting,
     ListSystemPrompts,
@@ -58,6 +64,7 @@ enum Route {
     Browse,
     ListSessions,
     SearchSessions,
+    SearchSessionSuggestions,
     SessionPreferences,
     ExportSession,
     SessionTitle,
@@ -93,7 +100,9 @@ enum Route {
     ModelContext,
     Chat,
     ChatTools,
+    Assistance,
     ModelComplete,
+    ModelBackground,
     ModelTokens,
     PreviewServer,
     PreviewModel,
@@ -126,6 +135,8 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
     match (method, segments) {
         ("GET", ["theme.js"]) => Some(Route::ThemeScript),
         ("GET", ["health"]) => Some(Route::Health),
+        ("POST", ["sessions", "search-suggestions"]) => Some(Route::SearchSessionSuggestions),
+        ("POST", ["assistance"]) => Some(Route::Assistance),
         ("POST", ["auth", "register"]) => Some(Route::Register),
         ("POST", ["auth", "login"]) => Some(Route::Login),
         ("GET", ["auth", "me"]) => Some(Route::Me),
@@ -156,6 +167,14 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("DELETE", ["push", "subscriptions"]) => Some(Route::PushUnsubscribe),
         ("POST", ["push", "dispatch"]) => Some(Route::PushDispatch),
         ("POST", ["sessions", id, "notifications"]) if numeric_id(id) => Some(Route::PushNotify),
+        ("GET", ["scheduled-tasks"]) => Some(Route::ScheduledList),
+        ("POST", ["scheduled-tasks"]) => Some(Route::ScheduledCommand),
+        ("POST", ["scheduled-tasks", "due"]) => Some(Route::ScheduledDue),
+        ("POST", ["scheduled-tasks", "result"]) => Some(Route::ScheduledResult),
+        ("POST", ["sessions", id, "scheduled-tasks"]) if numeric_id(id) => {
+            Some(Route::ScheduledSessionCommand)
+        }
+        ("POST", ["sessions", id, "run-lease"]) if numeric_id(id) => Some(Route::SessionRunLease),
         ("GET", ["settings"]) => Some(Route::GetSettings),
         ("PUT", ["settings"]) => Some(Route::SetSetting),
         ("GET", ["system-prompts"]) => Some(Route::ListSystemPrompts),
@@ -226,6 +245,7 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("GET", ["models", "context"]) => Some(Route::ModelContext),
         ("POST", ["chat"]) => Some(Route::Chat),
         ("POST", ["models", "complete"]) => Some(Route::ModelComplete),
+        ("POST", ["models", "background"]) => Some(Route::ModelBackground),
         ("POST", ["models", "tokens"]) => Some(Route::ModelTokens),
         ("POST", ["model-setup", "save"]) => Some(Route::SaveModelSetup),
         ("POST", ["models", "preview"]) => Some(Route::PreviewServer),
@@ -303,9 +323,16 @@ pub async fn route(req: Request) -> JsonResp {
             return with_cors(error.into_response(), origin);
         }
     };
-    if route == Some(Route::PushDispatch) {
+    if matches!(
+        route,
+        Some(Route::PushDispatch | Route::ScheduledDue | Route::ScheduledResult)
+    ) {
         let result = match crate::auth::require_bridge_service(&state, req.headers()).await {
-            Ok(()) => api::push::dispatch(&state).await,
+            Ok(()) => match route {
+                Some(Route::ScheduledDue) => api::scheduled::due(req, &state).await,
+                Some(Route::ScheduledResult) => api::scheduled::result(req, &state).await,
+                _ => api::push::dispatch(&state).await,
+            },
             Err(error) => Err(error),
         };
         return match result {
@@ -401,6 +428,18 @@ pub async fn route(req: Request) -> JsonResp {
             api::push::subscription(req, &state, user, true).await
         }
         (Some(Route::PushNotify), Some(user)) => api::push::notify(req, &state, &path, user).await,
+        (Some(Route::ScheduledList), Some(user)) => {
+            api::scheduled::list(&state, req.uri().query(), user).await
+        }
+        (Some(Route::ScheduledCommand), Some(user)) => {
+            api::scheduled::command(req, &state, user).await
+        }
+        (Some(Route::ScheduledSessionCommand), Some(user)) => {
+            api::scheduled::session_command(req, &state, &path, user).await
+        }
+        (Some(Route::SessionRunLease), Some(user)) => {
+            api::scheduled::lease(req, &state, &path, user).await
+        }
         (Some(Route::GetSettings), Some(user)) => api::settings::get_settings(&state, user).await,
         (Some(Route::SetSetting), Some(user)) => {
             api::settings::set_setting(req, &state, user).await
@@ -439,12 +478,16 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::Browse), Some(user)) => api::projects::browse(req, &state, user).await,
         (Some(Route::ListSessions), Some(user)) => api::sessions::list_sessions(&state, user).await,
+        (Some(Route::SearchSessionSuggestions), Some(user)) => {
+            api::session_search::search(req, &state, user).await
+        }
         (Some(Route::SearchSessions), Some(user)) => {
             api::sessions::search_sessions(req, &state, user).await
         }
         (Some(Route::SessionPreferences), Some(user)) => {
             api::sessions::session_preferences(req, &state, &path, user).await
         }
+        (Some(Route::Assistance), Some(user)) => api::assistance::generate(req, &state, user).await,
         (Some(Route::SessionTitle), Some(user)) => {
             api::sessions::session_title(&state, &path, user).await
         }
@@ -554,6 +597,9 @@ pub async fn route(req: Request) -> JsonResp {
         (Some(Route::PreviewModel), Some(_)) => api::model_setup::preview(req, &state, true).await,
         (Some(Route::ModelComplete), Some(user)) => {
             api::model_operations::route(req, &state, user, false).await
+        }
+        (Some(Route::ModelBackground), Some(user)) => {
+            api::model_operations::background(req, &state, user).await
         }
         (Some(Route::ModelTokens), Some(user)) => {
             api::model_operations::route(req, &state, user, true).await
@@ -939,6 +985,7 @@ mod tests {
             ("GET", "models", Route::ListModels),
             ("GET", "models/context", Route::ModelContext),
             ("POST", "models/complete", Route::ModelComplete),
+            ("POST", "models/background", Route::ModelBackground),
             ("POST", "models/tokens", Route::ModelTokens),
             ("POST", "chat", Route::Chat),
             ("POST", "chat-tools", Route::ChatTools),

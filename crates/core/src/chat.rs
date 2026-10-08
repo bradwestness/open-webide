@@ -80,7 +80,7 @@ pub struct ChatSession {
     pub pinned: bool,
     #[serde(default)]
     pub archived: bool,
-    /// Automatic titles may replace the initial name until the user renames it.
+    /// Automatic titles track recent activity until the user renames the session.
     #[serde(default)]
     pub auto_title: bool,
     #[serde(default)]
@@ -133,6 +133,13 @@ pub struct SessionSearch {
     pub query: String,
     #[serde(default)]
     pub archived: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionSearchResults {
+    pub sessions: Vec<ChatSession>,
+    pub explanations: std::collections::BTreeMap<i64, String>,
+    pub rewritten_query: Option<String>,
 }
 impl SessionSearch {
     pub fn validate(&self) -> Result<(), String> {

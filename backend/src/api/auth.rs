@@ -45,6 +45,10 @@ pub(crate) async fn register(req: Request, state: &AppState) -> Result<JsonResp,
     // up first, so nothing created before accounts existed is lost to scoping.
     state.store.reassign_orphaned_projects(user.id).await?;
     state.store.reassign_orphaned_sessions(user.id).await?;
+    state
+        .store
+        .reassign_orphaned_system_prompts(user.id)
+        .await?;
     let token = crate::auth::issue_token(state, &user).await?;
     let cookie = crate::auth::set_cookie(&token, is_https);
     let mut resp = json_response(201, &json!({ "user": user.public() }));

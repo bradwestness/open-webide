@@ -218,6 +218,7 @@ async fn restored_queue_waits_for_run_queue_and_can_be_edited_or_removed() {
         state.fake.queued_prompts.borrow_mut().insert(
             1,
             vec![openwebide_core::QueuedPrompt {
+                scheduled_task: None,
                 id: 1,
                 session_id: 1,
                 revision: 1,
@@ -270,6 +271,7 @@ async fn failed_delivery_keeps_the_queued_prompt_pauses_the_queue_and_preserves_
         state.fake.queued_prompts.borrow_mut().insert(
             1,
             vec![openwebide_core::QueuedPrompt {
+                scheduled_task: None,
                 id: 1,
                 session_id: 1,
                 revision: 1,
@@ -372,6 +374,7 @@ async fn stale_queue_load_cannot_update_a_new_session_or_account() {
         mounted.state.chat.draft.set("new draft".into());
         sender
             .send(Ok(vec![openwebide_core::QueuedPrompt {
+                scheduled_task: None,
                 id: 1,
                 session_id: 1,
                 revision: 1,

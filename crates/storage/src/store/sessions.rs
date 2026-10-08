@@ -60,8 +60,69 @@ impl<D: Db> Store<D> {
             store.get_session(session, user).await
         }).await
     }
+    /// Refresh after six additional user turns and five minutes, never on each reply.
+    pub async fn session_title_due(
+        &self,
+        user: UserId,
+        session: i64,
+        turns: i64,
+        now: i64,
+    ) -> Result<bool, StorageError> {
+        if !self.get_session(session, user).await?.auto_title {
+            return Ok(false);
+        }
+        let rows = self
+            .db
+            .execute(
+                "SELECT user_turns, updated_at FROM session_title_activity WHERE session_id = ?",
+                &[DbValue::Int(session)],
+            )
+            .await?;
+        Ok(rows.rows.first().is_none_or(|row| {
+            turns >= row.get_int_opt(0).unwrap_or(i64::MAX) + 6
+                && now >= row.get_int_opt(1).unwrap_or(i64::MAX) + 300
+        }))
+    }
+
+    pub async fn refresh_session_title(
+        &self,
+        user: UserId,
+        session: i64,
+        revision: i64,
+        name: &str,
+        last_message: i64,
+        now: i64,
+    ) -> Result<Option<ChatSession>, StorageError> {
+        self.db.transaction(|tx| async move {
+            let store = Store::new(tx);
+            store.get_session(session, user).await?;
+            let rows = store.db.execute("SELECT coalesce(max(id), 0) FROM messages WHERE session_id = ?", &[DbValue::Int(session)]).await?;
+            if rows.rows.first().is_none_or(|row| row.get_int_opt(0).unwrap_or(i64::MAX) != last_message) { return Ok(None); }
+            let saved = store.apply_session_title_in_transaction(user, session, revision, name).await?;
+            if saved.is_some() {
+                store.db.execute("INSERT INTO session_title_activity(session_id, user_turns, updated_at) VALUES (?, (SELECT count(*) FROM messages WHERE session_id = ? AND role = 'user'), ?) ON CONFLICT(session_id) DO UPDATE SET user_turns = excluded.user_turns, updated_at = excluded.updated_at", &[DbValue::Int(session), DbValue::Int(session), DbValue::Int(now)]).await?;
+            }
+            Ok(saved)
+        }).await
+    }
+
     /// A user rename, completed title or newer title request wins over stale model output.
     pub async fn apply_session_title(
+        &self,
+        user: UserId,
+        session: i64,
+        revision: i64,
+        name: &str,
+    ) -> Result<Option<ChatSession>, StorageError> {
+        self.db
+            .transaction(|tx| async move {
+                Store::new(tx)
+                    .apply_session_title_in_transaction(user, session, revision, name)
+                    .await
+            })
+            .await
+    }
+    async fn apply_session_title_in_transaction(
         &self,
         user: UserId,
         session: i64,
@@ -74,14 +135,15 @@ impl<D: Db> Store<D> {
                 "Automatic titles must contain 1–80 characters on one line".into(),
             ));
         }
-        self.db.transaction(|tx| async move {
-            let store = Store::new(tx);
-            store.get_session(session, user).await?;
-            let result = store.db.execute("UPDATE sessions SET name = ?, auto_title = 0, title_revision = title_revision + 1 WHERE id = ? AND user_id = ? AND auto_title = 1 AND title_revision = ?", &[
-                DbValue::Text(name.into()), DbValue::Int(session), DbValue::Int(user.get()), DbValue::Int(revision),
-            ]).await?;
-            if result.changes == 0 { Ok(None) } else { store.get_session(session, user).await.map(Some) }
-        }).await
+        self.get_session(session, user).await?;
+        let result = self.db.execute("UPDATE sessions SET name = ?, title_revision = title_revision + 1 WHERE id = ? AND user_id = ? AND auto_title = 1 AND title_revision = ?", &[
+            DbValue::Text(name.into()), DbValue::Int(session), DbValue::Int(user.get()), DbValue::Int(revision),
+        ]).await?;
+        if result.changes == 0 {
+            Ok(None)
+        } else {
+            self.get_session(session, user).await.map(Some)
+        }
     }
 }
 
@@ -238,11 +300,65 @@ mod tests {
                     .unwrap()
                     .unwrap();
                 assert_eq!(titled.name, "Update NuGet dependencies");
-                assert!(!titled.auto_title);
+                assert!(titled.auto_title);
                 assert!(titled.pinned && titled.archived);
                 let exported = store.export_session(user, first.id).await.unwrap();
                 assert!(exported.markdown.contains("Unique NuGet package issue"));
                 assert_eq!(exported.filename, "Update-NuGet-dependencies.md");
+                let last = store
+                    .list_messages(first.id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|message| message.id)
+                    .max()
+                    .unwrap();
+                assert!(
+                    store
+                        .refresh_session_title(
+                            user,
+                            first.id,
+                            titled.title_revision,
+                            "Updated dependencies",
+                            last + 1,
+                            1000
+                        )
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+                let refreshed = store
+                    .refresh_session_title(
+                        user,
+                        first.id,
+                        titled.title_revision,
+                        "Updated dependencies",
+                        last,
+                        1000,
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(refreshed.auto_title);
+                assert!(
+                    !store
+                        .session_title_due(user, first.id, 6, 2000)
+                        .await
+                        .unwrap()
+                );
+                assert!(
+                    !store
+                        .session_title_due(user, first.id, 7, 1299)
+                        .await
+                        .unwrap()
+                );
+                assert!(
+                    store
+                        .session_title_due(user, first.id, 7, 1300)
+                        .await
+                        .unwrap()
+                );
+
                 assert!(matches!(
                     store.export_session(other, first.id).await,
                     Err(StorageError::NotFound(_))

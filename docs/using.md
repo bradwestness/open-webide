@@ -4,8 +4,9 @@ Open a project, select a session and work between Files, Editor and Chat.
 Project tabs let you switch repositories; sessions keep separate conversations.
 
 The logo and chevron open the app menu: local/remote folders, open and recent
-projects, Settings, Servers, System prompts, Keyboard shortcuts and About. On
-phones the same menu opens a side drawer. Sessions contains conversations.
+projects, Servers, Help / Keyboard shortcuts and About. On phones the same menu
+opens a side drawer. The user dropdown contains Settings, System prompts and Log out.
+Sessions contains conversations.
 
 Use **Search…** or Ctrl/Cmd+Shift+P to find commands, filenames, projects and
 sessions. Prefix a query with `>` for commands, `/` for files, `#` for projects or
@@ -25,6 +26,7 @@ configuration source. Layout and tree preferences sync through your account.
 
 - [First session](first-session.md): connect a model and review agent changes.
 - [Local and remote projects](workspaces.md): file access and execution capabilities.
+- [Scheduled tasks](scheduled-tasks.md): repeating or one-time prompts and execution hosts.
 - [Chat commands and goals](chat-controls.md): command discovery, activity,
   manual compaction and saved objectives.
 - [Editor](editor.md): editing, navigation, diffs and previews.

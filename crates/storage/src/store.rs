@@ -1,5 +1,6 @@
 //! Typed repositories over a [`Db`].
 
+mod assistance;
 mod branches;
 mod chat_queue;
 mod editor_recovery;
@@ -11,6 +12,7 @@ mod reviews;
 mod rewind;
 mod rows;
 pub use push::PushDelivery;
+mod scheduled;
 mod sessions;
 mod tasks;
 mod todos;
@@ -466,12 +468,15 @@ impl<D: Db> Store<D> {
 
     // -- system prompts ------------------------------------------------------
 
-    pub async fn list_system_prompts(&self) -> Result<Vec<SystemPrompt>, StorageError> {
+    pub async fn list_system_prompts(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<SystemPrompt>, StorageError> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, content FROM system_prompts ORDER BY id",
-                &[],
+                "SELECT id, name, content FROM system_prompts WHERE user_id = ? ORDER BY id",
+                &[DbValue::Int(user_id.get())],
             )
             .await?;
         res.rows.iter().map(prompt_from_row).collect()
@@ -479,40 +484,34 @@ impl<D: Db> Store<D> {
 
     pub async fn insert_system_prompt(
         &self,
+        user_id: UserId,
         name: &str,
         content: &str,
     ) -> Result<SystemPrompt, StorageError> {
         let res = self
             .db
             .execute(
-                "INSERT INTO system_prompts (name, content) VALUES (?, ?)",
-                &[DbValue::Text(name.into()), DbValue::Text(content.into())],
+                "INSERT INTO system_prompts (name, content, user_id) VALUES (?, ?, ?)",
+                &[
+                    DbValue::Text(name.into()),
+                    DbValue::Text(content.into()),
+                    DbValue::Int(user_id.get()),
+                ],
             )
             .await?;
-        let row = res.rows.into_iter().next();
-        let id = res.last_insert_rowid;
-        let _ = row;
-        self.db
-            .execute(
-                "SELECT id, name, content FROM system_prompts WHERE id = ?",
-                &[DbValue::Int(id)],
-            )
-            .await
-            .and_then(|res| {
-                res.rows
-                    .first()
-                    .map(prompt_from_row)
-                    .transpose()?
-                    .ok_or_else(|| StorageError::NotFound(format!("system prompt {id}")))
-            })
+        self.get_system_prompt(res.last_insert_rowid, user_id).await
     }
 
-    pub async fn get_system_prompt(&self, id: i64) -> Result<SystemPrompt, StorageError> {
+    pub async fn get_system_prompt(
+        &self,
+        id: i64,
+        user_id: UserId,
+    ) -> Result<SystemPrompt, StorageError> {
         let res = self
             .db
             .execute(
-                "SELECT id, name, content FROM system_prompts WHERE id = ?",
-                &[DbValue::Int(id)],
+                "SELECT id, name, content FROM system_prompts WHERE id = ? AND user_id = ?",
+                &[DbValue::Int(id), DbValue::Int(user_id.get())],
             )
             .await?;
         res.rows
@@ -525,37 +524,49 @@ impl<D: Db> Store<D> {
     pub async fn update_system_prompt(
         &self,
         id: i64,
+        user_id: UserId,
         name: &str,
         content: &str,
     ) -> Result<SystemPrompt, StorageError> {
         let res = self
             .db
             .execute(
-                "UPDATE system_prompts SET name = ?, content = ? WHERE id = ?",
+                "UPDATE system_prompts SET name = ?, content = ? WHERE id = ? AND user_id = ?",
                 &[
                     DbValue::Text(name.into()),
                     DbValue::Text(content.into()),
                     DbValue::Int(id),
+                    DbValue::Int(user_id.get()),
                 ],
             )
             .await?;
         if res.changes == 0 {
             return Err(StorageError::NotFound(format!("system prompt {id}")));
         }
-        self.get_system_prompt(id).await
+        self.get_system_prompt(id, user_id).await
     }
 
-    pub async fn delete_system_prompt(&self, id: i64) -> Result<(), StorageError> {
-        let res = self
-            .db
+    pub async fn delete_system_prompt(&self, id: i64, user_id: UserId) -> Result<(), StorageError> {
+        self.db.transaction(|tx| async move {
+            let res = tx.execute("DELETE FROM system_prompts WHERE id = ? AND user_id = ?", &[DbValue::Int(id), DbValue::Int(user_id.get())]).await?;
+            if res.changes == 0 {
+                return Err(StorageError::NotFound(format!("system prompt {id}")));
+            }
+            tx.execute("DELETE FROM user_settings WHERE user_id = ? AND key = 'default_prompt' AND value = ?", &[DbValue::Int(user_id.get()), DbValue::Text(id.to_string())]).await?;
+            Ok(())
+        }).await
+    }
+
+    pub async fn reassign_orphaned_system_prompts(
+        &self,
+        user_id: UserId,
+    ) -> Result<(), StorageError> {
+        self.db
             .execute(
-                "DELETE FROM system_prompts WHERE id = ?",
-                &[DbValue::Int(id)],
+                "UPDATE system_prompts SET user_id = ? WHERE user_id IS NULL",
+                &[DbValue::Int(user_id.get())],
             )
             .await?;
-        if res.changes == 0 {
-            return Err(StorageError::NotFound(format!("system prompt {id}")));
-        }
         Ok(())
     }
 
@@ -838,6 +849,9 @@ impl<D: Db> Store<D> {
     ) -> Result<ChatSession, StorageError> {
         if let Some(project) = project_id {
             self.get_project(project, user_id).await?;
+        }
+        if let Some(prompt) = system_prompt_id {
+            self.get_system_prompt(prompt, user_id).await?;
         }
         let res = self.db.execute(
                 "INSERT INTO sessions (name, connection_id, system_prompt_id, project_id, user_id, created_at)
@@ -2647,30 +2661,210 @@ mod tests {
     }
 
     #[test]
+    fn system_prompts_are_owned_and_session_references_cannot_cross_accounts() {
+        let store = test_store();
+        let alice = test_user(&store, "alice", UserRole::Admin);
+        let bob = test_user(&store, "bob", UserRole::User);
+        block_on(async {
+            let a = store
+                .insert_system_prompt(alice, "coder", "Alice's instructions")
+                .await
+                .unwrap();
+            let b = store
+                .insert_system_prompt(bob, "coder", "Bob's instructions")
+                .await
+                .unwrap();
+            assert_ne!(a.id, b.id);
+            assert_eq!(
+                store.list_system_prompts(alice).await.unwrap(),
+                vec![a.clone()]
+            );
+            assert_eq!(
+                store.list_system_prompts(bob).await.unwrap(),
+                vec![b.clone()]
+            );
+            assert!(matches!(
+                store.get_system_prompt(a.id, bob).await,
+                Err(StorageError::NotFound(_))
+            ));
+            assert!(matches!(
+                store
+                    .update_system_prompt(a.id, bob, "changed", "wrong")
+                    .await,
+                Err(StorageError::NotFound(_))
+            ));
+            assert!(matches!(
+                store.delete_system_prompt(a.id, bob).await,
+                Err(StorageError::NotFound(_))
+            ));
+            assert!(matches!(
+                store
+                    .create_session("wrong", None, Some(a.id), None, bob, 1)
+                    .await,
+                Err(StorageError::NotFound(_))
+            ));
+            for owner in [alice, bob] {
+                let prompt = if owner == alice { &a } else { &b };
+                let session = store
+                    .create_session("chat", None, Some(prompt.id), None, owner, 1)
+                    .await
+                    .unwrap();
+                store
+                    .set_user_setting(owner, "default_prompt", &prompt.id.to_string())
+                    .await
+                    .unwrap();
+                if owner == alice {
+                    store.delete_system_prompt(a.id, alice).await.unwrap();
+                    assert_eq!(
+                        store
+                            .get_session(session.id, alice)
+                            .await
+                            .unwrap()
+                            .system_prompt_id,
+                        None
+                    );
+                    assert_eq!(
+                        store
+                            .get_user_setting(alice, "default_prompt")
+                            .await
+                            .unwrap(),
+                        None
+                    );
+                }
+            }
+            assert_eq!(
+                store.get_system_prompt(b.id, bob).await.unwrap().content,
+                "Bob's instructions"
+            );
+        });
+    }
+
+    #[test]
+    fn system_prompt_migration_preserves_libraries_sessions_defaults_and_replays() {
+        block_on(async {
+            let db = RusqliteDb::open_in_memory().unwrap();
+            migrations::apply_through(&db, 32).await.unwrap();
+            let store = Store::new(db);
+            let alice = store
+                .insert_user("alice", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap()
+                .id;
+            let bob = store
+                .insert_user("bob", "hash", UserRole::User, 1)
+                .await
+                .unwrap()
+                .id;
+            let prompt = store.db.execute("INSERT INTO system_prompts (name, content) VALUES ('coder', 'Legacy instructions')", &[]).await.unwrap().last_insert_rowid;
+            for owner in [alice, bob] {
+                store.db.execute("INSERT INTO sessions (name, user_id, system_prompt_id, created_at) VALUES ('chat', ?, ?, 1)", &[DbValue::Int(owner.get()), DbValue::Int(prompt)]).await.unwrap();
+                store
+                    .set_user_setting(owner, "default_prompt", &prompt.to_string())
+                    .await
+                    .unwrap();
+            }
+            store.migrate().await.unwrap();
+            for owner in [alice, bob] {
+                let prompts = store.list_system_prompts(owner).await.unwrap();
+                assert_eq!(prompts.len(), 1);
+                assert_eq!(prompts[0].content, "Legacy instructions");
+                let id = prompts[0].id;
+                if owner == alice {
+                    assert_eq!(id, prompt);
+                }
+                assert_eq!(
+                    store.list_sessions(owner).await.unwrap()[0].system_prompt_id,
+                    Some(id)
+                );
+                assert_eq!(
+                    store
+                        .get_user_setting(owner, "default_prompt")
+                        .await
+                        .unwrap(),
+                    Some(id.to_string())
+                );
+            }
+            let before = store.list_system_prompts(bob).await.unwrap();
+            migrations::apply_through(&store.db, 33).await.unwrap();
+            assert_eq!(store.list_system_prompts(bob).await.unwrap(), before);
+            assert!(
+                store
+                    .db
+                    .execute("PRAGMA foreign_key_check", &[])
+                    .await
+                    .unwrap()
+                    .rows
+                    .is_empty()
+            );
+        });
+    }
+
+    #[test]
+    fn first_account_inherits_pre_auth_system_prompts_and_chat_references() {
+        block_on(async {
+            let db = RusqliteDb::open_in_memory().unwrap();
+            migrations::apply_through(&db, 32).await.unwrap();
+            db.execute(
+                "INSERT INTO system_prompts (id, name, content) VALUES (42, 'legacy', 'Keep me')",
+                &[],
+            )
+            .await
+            .unwrap();
+            db.execute("INSERT INTO sessions (id, name, system_prompt_id, created_at) VALUES (5, 'legacy chat', 42, 1)", &[]).await.unwrap();
+            let store = Store::new(db);
+            store.migrate().await.unwrap();
+            let user = store
+                .insert_user("first", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap()
+                .id;
+            store.reassign_orphaned_system_prompts(user).await.unwrap();
+            store.reassign_orphaned_sessions(user).await.unwrap();
+            assert_eq!(
+                store.get_system_prompt(42, user).await.unwrap().content,
+                "Keep me"
+            );
+            assert_eq!(
+                store.get_session(5, user).await.unwrap().system_prompt_id,
+                Some(42)
+            );
+        });
+    }
+
+    #[test]
     fn system_prompt_crud() {
         let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
         block_on(async {
             let prompt = store
-                .insert_system_prompt("coder", "You are a coding agent.")
+                .insert_system_prompt(user_id, "coder", "You are a coding agent.")
                 .await
                 .unwrap();
             assert!(prompt.id > 0);
             assert_eq!(prompt.name, "coder");
 
-            assert_eq!(store.list_system_prompts().await.unwrap().len(), 1);
+            assert_eq!(store.list_system_prompts(user_id).await.unwrap().len(), 1);
 
             let updated = store
-                .update_system_prompt(prompt.id, "helper", "You are a helpful agent.")
+                .update_system_prompt(prompt.id, user_id, "helper", "You are a helpful agent.")
                 .await
                 .unwrap();
             assert_eq!(updated.id, prompt.id);
             assert_eq!(updated.name, "helper");
             assert_eq!(updated.content, "You are a helpful agent.");
 
-            assert!(store.update_system_prompt(9999, "x", "y").await.is_err());
+            assert!(
+                store
+                    .update_system_prompt(9999, user_id, "x", "y")
+                    .await
+                    .is_err()
+            );
 
-            store.delete_system_prompt(prompt.id).await.unwrap();
-            assert!(store.list_system_prompts().await.unwrap().is_empty());
+            store
+                .delete_system_prompt(prompt.id, user_id)
+                .await
+                .unwrap();
+            assert!(store.list_system_prompts(user_id).await.unwrap().is_empty());
         });
     }
 
@@ -3143,7 +3337,7 @@ mod tests {
         let user_id = test_user(&store, "alice", UserRole::Admin);
         block_on(async {
             let prompt = store
-                .insert_system_prompt("coder", "You are a coding agent.")
+                .insert_system_prompt(user_id, "coder", "You are a coding agent.")
                 .await
                 .unwrap();
             let session = store
@@ -3152,7 +3346,10 @@ mod tests {
                 .unwrap();
             assert_eq!(session.system_prompt_id, Some(prompt.id));
 
-            store.delete_system_prompt(prompt.id).await.unwrap();
+            store
+                .delete_system_prompt(prompt.id, user_id)
+                .await
+                .unwrap();
             let reloaded = store.get_session(session.id, user_id).await.unwrap();
             assert_eq!(reloaded.system_prompt_id, None);
         });
@@ -4160,11 +4357,15 @@ mod tests {
     #[test]
     fn duplicate_system_prompt_is_conflict() {
         let store = test_store();
+        let user_id = test_user(&store, "alice", UserRole::Admin);
 
         block_on(async {
-            store.insert_system_prompt("prompt1", "sys").await.unwrap();
+            store
+                .insert_system_prompt(user_id, "prompt1", "sys")
+                .await
+                .unwrap();
             let err = store
-                .insert_system_prompt("prompt1", "sys2")
+                .insert_system_prompt(user_id, "prompt1", "sys2")
                 .await
                 .unwrap_err();
             match err {

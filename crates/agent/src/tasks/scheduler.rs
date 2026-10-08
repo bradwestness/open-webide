@@ -122,6 +122,36 @@ fn child<H: TaskHost>(
                 }
                 if !state.started {
                     state.started = true;
+                    if state.host.available()
+                        && let Some(model) = &state.parent.model
+                    {
+                        let selection = openwebide_core::ModelSelection {
+                            server_id: state.parent.connection_id,
+                            model: model.clone(),
+                        };
+                        let naming = async {
+                            let _permit = state.budget.models.acquire().await;
+                            let mut runtime = state.host.runtime(&selection).await?;
+                            runtime.settings.fast = state.parent.model_settings.fast.clone();
+                            crate::assistance::generate_text(
+                                &state.host,
+                                runtime,
+                                openwebide_core::AssistanceKind::TaskName,
+                                &state.task.prompt,
+                            )
+                            .await
+                        };
+                        if let futures::future::Either::Left((Ok(title), _)) =
+                            futures::future::select(
+                                Box::pin(naming),
+                                Box::pin(state.host.cancelled()),
+                            )
+                            .await
+                        {
+                            state.task.description = title.clone();
+                            state.run.snapshot.task.description = title;
+                        }
+                    }
                     let update = state.run.started(&state.task, state.host.now_ms());
                     return Some((update, state));
                 }
@@ -236,7 +266,7 @@ fn child<H: TaskHost>(
 }
 fn fallback_note(run: &mut TaskRun, error: &str, now_ms: u64) -> TaskUpdate {
     let content = format!(
-        "Fast model failed before tool execution; retrying with the primary model. {}",
+        "Assistance model failed before tool execution; retrying with the primary model. {}",
         error.chars().take(1024).collect::<String>()
     );
     run.emit(TaskEvent::Run {

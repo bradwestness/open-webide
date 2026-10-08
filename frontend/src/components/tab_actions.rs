@@ -1,3 +1,4 @@
+use super::ui::{Icon, IconName};
 use crate::tabs::TabAction;
 use leptos::prelude::*;
 
@@ -24,13 +25,13 @@ pub(super) fn TabActionItems(
     view! {
             <h3 class="ui-menu-heading">"Tab actions"</h3>
             {[
-                (TabAction::Close, "Close"),
-                (TabAction::CloseOthers, "Close others"),
-                (TabAction::CloseLeft, "Close all to left"),
-                (TabAction::CloseRight, "Close all to right"),
-                (TabAction::MoveLeft, "Move left"),
-                (TabAction::MoveRight, "Move right"),
-            ].into_iter().map(move |(action, label)| view! {
+                (TabAction::Close, "Close", IconName::X),
+                (TabAction::CloseOthers, "Close others", IconName::ListX),
+                (TabAction::CloseLeft, "Close all to left", IconName::ArrowLeftToLine),
+                (TabAction::CloseRight, "Close all to right", IconName::ArrowRightToLine),
+                (TabAction::MoveLeft, "Move left", IconName::ArrowLeft),
+                (TabAction::MoveRight, "Move right", IconName::ArrowRight),
+            ].into_iter().map(move |(action, label, icon)| view! {
                 <button type="button" class="ui-dropdown-item recent-item" role="menuitem"
                     disabled=move || position.get().is_none_or(|(index, count)| match action {
                         TabAction::Close => false,
@@ -41,7 +42,7 @@ pub(super) fn TabActionItems(
                         use wasm_bindgen::JsCast;
                         if auth.and_then(|auth| auth.generation.try_get_untracked()) != account { return; }
                         if event.current_target().and_then(|target| target.dyn_into::<web_sys::Element>().ok()).is_some_and(|target| target.is_connected()) { on_action.run(action); }
-                    }>{label}</button>
+                    }><Icon name=icon /><span>{label}</span></button>
             }).collect_view()}
     }
 }

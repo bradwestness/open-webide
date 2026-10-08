@@ -101,22 +101,35 @@ impl<D: Db> Store<D> {
             let event_key = event.key();
             let event_json = serde_json::to_string(event)
                 .map_err(|error| StorageError::InvalidValue(error.to_string()))?;
-            let payload = serde_json::to_string(&event.payload(
+            let mut payload = event.payload(
                 user,
                 session,
                 project.as_ref().map(|project| project.name.as_str()),
                 &entry.name,
-            ))
-            .map_err(|error| StorageError::InvalidValue(error.to_string()))?;
+            );
+            if let RunNotification::Finished { message_id } = event {
+                let messages = self.list_messages(session).await?;
+                if let Some(message) = messages.iter().find(|message| message.id == *message_id) {
+                    let summary = openwebide_core::assistance::completion_excerpt(&message.content);
+                    if !summary.is_empty() {
+                        payload.body = format!(
+                            "{} — {summary}",
+                            entry.name.chars().take(80).collect::<String>()
+                        );
+                    }
+                }
+            }
+            let payload = serde_json::to_string(&payload)
+                .map_err(|error| StorageError::InvalidValue(error.to_string()))?;
             let ttl = if matches!(event, RunNotification::Approval { .. }) {
                 300
             } else {
                 3600
             };
             self.db.transaction(move |tx| async move {
-            // Local projects keep the existing app-open notification path.
+            // Host-backed runs in every workspace share durable delivery.
             let enabled = tx.execute("SELECT 1 FROM sessions s LEFT JOIN projects p ON p.id = s.project_id
-                WHERE s.id = ? AND s.user_id = ? AND (p.mode IS NULL OR p.mode != 'local')
+                WHERE s.id = ? AND s.user_id = ?
                 AND EXISTS (SELECT 1 FROM user_settings WHERE user_id = ? AND key = 'browser_notifications' AND value = 'true')", &[DbValue::Int(session), DbValue::Int(user.get()), DbValue::Int(user.get())]).await?;
             if enabled.rows.is_empty() { return Ok(()); }
             tx.execute("DELETE FROM push_notifications WHERE created_at < ?", &[DbValue::Int(now - 7 * 86400)]).await?;
@@ -266,12 +279,12 @@ mod tests {
                     .await
                     .unwrap();
                 let deliveries = store.claim_push_deliveries(3).await.unwrap();
-                assert_eq!(deliveries.len(), usize::from(mode == WorkspaceMode::Remote));
-                if mode == WorkspaceMode::Remote {
+                assert_eq!(deliveries.len(), 1);
+                {
                     let payload: openwebide_core::push::PushPayload =
                         serde_json::from_str(&deliveries[0].payload).unwrap();
                     assert_eq!(payload.title, "Run finished · Project");
-                    assert_eq!(payload.body, "Session");
+                    assert_eq!(payload.body, "Session — done");
                     assert!(store.claim_push_deliveries(4).await.unwrap().is_empty());
                     store
                         .finish_push_delivery(&deliveries[0], Some(503), 3)

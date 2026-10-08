@@ -157,22 +157,8 @@ impl RunNotifications {
         if !fresh || !settings.browser_notifications.get_untracked() {
             return;
         }
-        // Browser capability boundary: local runs only exist while this app is open.
         if self.push_ready.get_untracked() {
-            let projects = self.projects;
-            let local = chat
-                .sessions
-                .with_untracked(|sessions| {
-                    sessions
-                        .iter()
-                        .find(|item| item.id == session)
-                        .and_then(|item| item.project_id)
-                })
-                .and_then(|id| projects.and_then(|projects| projects.project(id)))
-                .is_some_and(|project| project.mode == openwebide_core::WorkspaceMode::Local);
-            if !local {
-                return;
-            }
+            return;
         }
         self.refresh_permission();
         if self.permission.get_untracked() != NotificationPermission::Granted {
@@ -210,7 +196,18 @@ impl RunNotifications {
         if let Err(error) = self.host.with_value(|host| {
             host.show(
                 &title,
-                &format!("{name} {action}."),
+                &match event {
+                    RunEvent::Done { message } => {
+                        let summary =
+                            openwebide_core::assistance::completion_excerpt(&message.content);
+                        if summary.is_empty() {
+                            format!("{name} {action}.")
+                        } else {
+                            format!("{} — {summary}", name.chars().take(80).collect::<String>())
+                        }
+                    }
+                    _ => format!("{name} {action}."),
+                },
                 &format!("openwebide-{session}-{key}"),
                 open,
             )

@@ -138,3 +138,28 @@ pub(crate) async fn route(
         ))
     }
 }
+
+pub(crate) async fn background(
+    req: Request,
+    state: &AppState,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let operation: openwebide_core::BackgroundCompletion =
+        parse_json(read_body(req, CHAT_BODY_LIMIT).await?)?;
+    if !(1..=30).contains(&operation.timeout_seconds) {
+        return Err(ApiError::bad_request(
+            "Background deadline must be 1–30 seconds",
+        ));
+    }
+    let mut request = operation.request;
+    let completion = provider(
+        &state.store,
+        user.id,
+        &mut request,
+        Some(operation.timeout_seconds),
+    )
+    .await?
+    .chat_tools(&request)
+    .await?;
+    Ok(json_response(200, &completion))
+}
