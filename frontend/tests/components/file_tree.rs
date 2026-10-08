@@ -1613,7 +1613,7 @@ async fn nested_file_groups_menus_reveal_and_refresh_work_in_both_modes() {
                     .unwrap()
                     .active_element()
                     .as_ref()
-                    .map(|element| element.as_ref())
+                    .map(AsRef::as_ref)
             )
         );
         variant.click();
