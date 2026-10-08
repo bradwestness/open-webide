@@ -69,7 +69,8 @@ tracks the remaining work rather than every optimization already shipped.
 - [ ] **Incremental paragraph updates:** finish shifted suffix reuse and avoid
   repeated prefix segmentation for over-limit styled run tables. Validated retained
   probes now share rectangle allocations directly and compare each prefix
-  run-boundary interval once. Initial run-table
+  run-boundary interval once. Probe target/commit lookup now visits only sparse
+  anchors within the measured glyph range. Initial run-table
   construction and unsupported-boundary fallbacks still scan complete rows;
   capped metadata attempts now stop once their run budget is exceeded.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,

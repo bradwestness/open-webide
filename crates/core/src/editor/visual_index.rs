@@ -64,6 +64,27 @@ impl VisualLineIndex {
             .filter(|glyph| *glyph < self.0.end.glyph)
             .chain(self.0.end.glyph.checked_sub(1))
     }
+    /// Exact cluster checkpoints within one probe, without traversing other probes'
+    /// checkpoints. Preserve the complete iterator's terminal anchor and duplicates.
+    pub(super) fn anchor_glyphs_in(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> impl Iterator<Item = usize> + '_ {
+        let end = range.end.min(self.0.end.glyph);
+        let start = range.start.min(end);
+        let first = self.0.points.partition_point(|point| point.glyph < start);
+        let last = self.0.points.partition_point(|point| point.glyph < end);
+        self.0.points[first..last]
+            .iter()
+            .map(|point| point.glyph)
+            .chain(
+                self.0
+                    .end
+                    .glyph
+                    .checked_sub(1)
+                    .filter(|glyph| range.contains(glyph)),
+            )
+    }
     /// The plain renderer's original grapheme-safe 512-byte run endings.
     pub fn text_run_boundaries(&self) -> impl Iterator<Item = usize> + '_ {
         self.0.points.iter().skip(1).map(|point| point.byte)
@@ -139,6 +160,50 @@ impl VisualLineIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn probe_anchor_ranges_match_complete_anchor_filtering() {
+        for body in [
+            String::new(),
+            "x".into(),
+            "x".repeat(513),
+            "word 文😀e\u{301} ".repeat(10000),
+            format!("{}e{}tail", "x".repeat(513), "\u{301}".repeat(1000)),
+            "x".repeat(crate::editor::MAX_EDITOR_LINE_BYTES),
+        ] {
+            let index = VisualLineIndex::new(&body).unwrap();
+            let anchors = index.anchor_glyphs().collect::<Vec<_>>();
+            let mut boundaries = anchors.clone();
+            boundaries.extend([0, 1, index.len() - 1, index.len(), usize::MAX]);
+            for anchor in anchors.iter().step_by(127) {
+                boundaries.extend([anchor.saturating_sub(1), anchor + 1]);
+            }
+            boundaries.sort_unstable();
+            boundaries.dedup();
+            for (at, start) in boundaries.iter().copied().enumerate() {
+                for end in boundaries.iter().copied().skip(at).step_by(31) {
+                    let range = start..end;
+                    assert_eq!(
+                        index.anchor_glyphs_in(range.clone()).collect::<Vec<_>>(),
+                        anchors
+                            .iter()
+                            .copied()
+                            .filter(|glyph| range.contains(glyph))
+                            .collect::<Vec<_>>()
+                    );
+                }
+                assert_eq!(index.anchor_glyphs_in(start..start).count(), 0);
+            }
+            assert_eq!(
+                index
+                    .anchor_glyphs_in(std::ops::Range {
+                        start: usize::MAX,
+                        end: 0
+                    })
+                    .count(),
+                0
+            );
+        }
+    }
     #[test]
     fn sparse_glyph_queries_match_complete_cluster_coordinates() {
         for body in [

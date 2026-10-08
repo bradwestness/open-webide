@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Look up sparse editor paragraph anchors within each measured glyph range,
+  avoiding repeated whole-line anchor scans while preserving exact geometry and
+  terminal-anchor behavior.
+
 - Share retained editor paragraph rectangles directly during validated layout
   replay and check each prefix run-boundary interval once. Preserve exact geometry,
   retention limits and fallback when later paint boundaries change.

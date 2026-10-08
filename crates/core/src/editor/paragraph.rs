@@ -347,11 +347,7 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         };
         let mut targets = self
             .index
-            .anchor_glyphs()
-            .filter(|glyph| {
-                *glyph >= self.probe.glyph_start
-                    && (*glyph < commit_end || self.continuation.is_none())
-            })
+            .anchor_glyphs_in(self.probe.glyph_start..commit_end)
             .collect::<Vec<_>>();
         targets.extend(self.expected.iter().map(|rect| rect.glyph));
         if let Some((start, end)) = self.continuation {
@@ -460,9 +456,10 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         let commit_end = next
             .as_ref()
             .map_or(self.index.len() - 1, |(_, _, _, glyph)| *glyph);
-        for glyph in self.index.anchor_glyphs().filter(|glyph| {
-            *glyph >= self.probe.glyph_start && (*glyph < commit_end || next.is_none())
-        }) {
+        for glyph in self
+            .index
+            .anchor_glyphs_in(self.probe.glyph_start..commit_end)
+        {
             let Some(rect) = lookup(glyph) else {
                 return false;
             };

@@ -1863,3 +1863,29 @@ near-limit plain-text contract (13.22 seconds). The component suite took 140.92
 seconds. Both-mode complete-renderer and fallback comparisons remain unchanged.
 These local checks do not establish Linux PSS or physical input readiness; CI
 for this paragraph replay checkpoint will run after push.
+
+
+### Probe-scoped sparse anchor lookup
+
+Paragraph target construction and validated record commitment previously filtered
+the entire sparse line-anchor iterator for every probe. The shared visual index
+now binary-searches the probe's glyph interval and iterates only the matching
+checkpoints, preserving the complete iterator's terminal glyph and duplicate
+semantics. Geometry sampling, overlap proofs, original paint boundaries and
+failure fallback are unchanged. Initial plan admission still counts complete
+anchors; this change addresses repeated per-probe scans.
+
+A core contract compares range lookup with the complete anchor iterator filtered
+independently, including empty/single-glyph text, checkpoint edges, combining
+clusters, Unicode, the admitted maximum line size, empty/reversed ranges and
+bounds beyond EOF. Both-mode complete-renderer browser contracts remain the
+integration gate. No startup, paint or memory improvement is quantified here.
+
+
+Verification passes 453 all-feature core tests, 114 native frontend tests, strict
+core/all-feature and WASM frontend lint, formatting and Trunk/PWA release build.
+All 444 browser checks pass: 442 ordinary checks (component suite 141.37 seconds),
+the font matrix (15.26 seconds) and the near-limit plain-text contract (13.35
+seconds). Both-mode load/scroll/edit geometry, failed-proof and stale ownership
+assertions are unchanged. Linux CI and the broader responsiveness/device gates
+remain separate requirements.
