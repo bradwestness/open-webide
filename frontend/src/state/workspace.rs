@@ -94,6 +94,8 @@ pub struct EditorNativeContext {
     pub(crate) original: openwebide_core::editor::FoldProjection,
     pub(crate) projection: openwebide_core::editor::FoldProjection,
     pub(crate) selections: Vec<openwebide_core::editor::Selection>,
+    pub(crate) geometry_pending: bool,
+    pub(crate) geometry_failed: bool,
 }
 
 /// An insertion declared by beforeinput, bound to the unchanged source until input.

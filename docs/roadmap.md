@@ -56,8 +56,9 @@ tracks the remaining work rather than every optimization already shipped.
 
 **Remaining implementation**:
 
-- [ ] **Cold startup and native input:** avoid initial full-source shaping for
-  styled/large-row files. Finish cold wrapped input, touch pointer selection,
+- [ ] **Cold startup and native input:** extend initial bounded native windows
+  beyond eligible unwrapped large-first-row files, and remove remaining initial
+  full-source shaping. Finish cold wrapped input, touch pointer selection,
   source-owned caret/selection and complete document extents. Preserve composition
   mappings and complete-native fallback where a bounded view cannot be proved.
 - [ ] **Tabbed, wrapped and bidirectional layout:** finish bounded preparation,

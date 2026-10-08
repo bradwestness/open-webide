@@ -286,6 +286,7 @@ impl EditorActions {
                 }
             });
         });
+        self.release_failed_initial_native_context();
     }
 
     pub fn end_composition(self) -> Result<Option<Selection>, EditError> {
@@ -319,6 +320,7 @@ impl EditorActions {
         if let Some((outcome, source, selection, dirty)) = result {
             self.workspace.content.set(source);
             self.workspace.dirty.set(dirty);
+            self.release_failed_initial_native_context();
             return outcome.map(|_| Some(selection));
         }
         Ok(None)
@@ -554,7 +556,11 @@ impl EditorActions {
 
     /// The browser adapter supplies measurements only for the currently mounted document.
     pub fn record_scroll(self, project: i64, path: &str, top: f64, left: f64) {
-        if !self.is_current(project, path) || !top.is_finite() || !left.is_finite() {
+        if !self.is_current(project, path)
+            || self.native_geometry_pending()
+            || !top.is_finite()
+            || !left.is_finite()
+        {
             return;
         }
         self.workspace.editor_scroll.update(|positions| {
@@ -593,9 +599,12 @@ impl EditorActions {
                 None
             }
             Ok(None) => None,
-            Err(()) => Some(
-                "The highlighted view is unavailable for this layout. You can keep editing the file.",
-            ),
+            Err(()) => {
+                self.fail_initial_native_context();
+                Some(
+                    "The highlighted view is unavailable for this layout. You can keep editing the file.",
+                )
+            }
         };
         self.end_row_preparation(ticket);
         message

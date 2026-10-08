@@ -1239,6 +1239,7 @@ body {
   transform: translate(var(--editor-native-ime-x, 0px), var(--editor-native-ime-y, 0px));
 }
 .editor-textarea[data-editor-native-bound="true"]::selection { background: transparent; }
+.editor-textarea[data-editor-native-preparing="true"] { pointer-events: none; }
 
 .editor-textarea {
   position: absolute;

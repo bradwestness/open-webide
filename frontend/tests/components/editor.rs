@@ -11758,6 +11758,179 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
 }
 
 #[wasm_bindgen_test]
+fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Indentation, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for case in 0..10 {
+            let source = match case {
+                1 => "short\n".to_string() + &"a".repeat(70_000),
+                2 => "a\t".repeat(35_000),
+                3 => "אב".repeat(35_000),
+                _ => "a".repeat(70_000),
+            };
+            let slot = Rc::new(Cell::new(None::<EditorActions>));
+            let captured = slot.clone();
+            let initial = source.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("startup.txt".into()));
+                state.workspace.content.set(initial.into());
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = case == 4);
+                captured.set(Some(EditorActions::new(state.workspace)));
+                view! { <div/> }
+            });
+            let actions = slot.get().unwrap();
+            actions.prepare_edit(Selection::caret(0)).unwrap();
+            actions.record_scroll(1, "startup.txt", 120.0, 450.0);
+            if (1..=4).contains(&case) {
+                assert!(
+                    !actions.begin_initial_native_context(),
+                    "unsupported cold layout: {mode:?}, {case}"
+                );
+                assert!(actions.bound_native_context().is_none());
+                continue;
+            }
+            assert!(actions.begin_initial_native_context());
+            assert!(actions.native_geometry_pending());
+            actions.record_scroll(1, "startup.txt", 0.0, 0.0);
+            assert_eq!(actions.scroll().top.to_bits(), 120.0_f64.to_bits());
+            assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
+            assert!(actions.measured_rows().is_none());
+            assert!(!actions.finish_initial_native_context(actions.view_revision()));
+            let context = actions.bound_native_context().unwrap();
+            assert!(context.projection().textarea_text().len() <= 12 * 1024);
+            assert_eq!(
+                context
+                    .source_selection(context.native_selection().unwrap())
+                    .unwrap(),
+                Selection::caret(0)
+            );
+            if case == 5 {
+                let value = "日😀".to_string() + context.projection().textarea_text();
+                actions
+                    .projected_input(
+                        value.clone(),
+                        Selection::caret("日😀".len()),
+                        "insertText",
+                        1.0,
+                    )
+                    .unwrap();
+                assert!(actions.native_geometry_pending());
+                assert_eq!(
+                    mounted.state.workspace.content.get_untracked(),
+                    "日😀".to_string() + &source
+                );
+                assert!(
+                    actions
+                        .native_context_input(
+                            &context,
+                            &value,
+                            Selection::caret(0),
+                            "insertText",
+                            2.0
+                        )
+                        .is_err()
+                );
+                continue;
+            }
+            let projection = actions.projection().unwrap();
+            let ticket = actions
+                .begin_row_preparation(actions.view_revision(), projection.lines().len())
+                .unwrap();
+            let (paint, _) = actions
+                .prepare_row_measurements(
+                    "startup metrics".into(),
+                    projection,
+                    (false, Arc::new(Vec::new())),
+                    Arc::from([0]),
+                    Indentation::default(),
+                    false,
+                )
+                .unwrap();
+            if case == 6 {
+                mounted
+                    .state
+                    .workspace
+                    .open_file
+                    .set(Some("replacement.txt".into()));
+                actions.release_native_context();
+                actions.prepare_edit(Selection::caret(0)).unwrap();
+                assert!(actions.begin_initial_native_context());
+            } else if case == 7 {
+                mounted
+                    .state
+                    .auth
+                    .generation
+                    .update(|generation| *generation += 1);
+                actions.release_native_context();
+                actions.prepare_edit(Selection::caret(0)).unwrap();
+                assert!(actions.begin_initial_native_context());
+            }
+            if case >= 8 {
+                actions.begin_composition();
+            }
+            let message = actions.finish_row_preparation(ticket, paint, Err(()));
+            if case >= 8 {
+                assert!(message.is_some());
+                assert!(actions.native_geometry_pending());
+                let value = "日😀".to_string() + context.projection().textarea_text();
+                actions
+                    .projected_input(
+                        value,
+                        Selection::caret("日😀".len()),
+                        "insertCompositionText",
+                        1.0,
+                    )
+                    .unwrap();
+                assert!(actions.native_geometry_pending());
+                assert!(actions.bound_native_context().is_some());
+                if case == 8 {
+                    actions.end_composition().unwrap();
+                    assert_eq!(
+                        mounted.state.workspace.content.get_untracked(),
+                        "日😀".to_string() + &source
+                    );
+                } else {
+                    actions.cancel_composition();
+                    assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+                }
+                assert!(!actions.native_geometry_pending());
+                assert!(actions.bound_native_context().is_none());
+                continue;
+            }
+            if case == 0 {
+                assert!(message.is_some());
+                assert!(!actions.native_geometry_pending());
+                assert!(actions.bound_native_context().is_none());
+                assert_eq!(actions.input_projection().unwrap().textarea_text(), source);
+                assert_eq!(actions.scroll().top.to_bits(), 120.0_f64.to_bits());
+                assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
+            } else {
+                assert!(message.is_none());
+                assert!(
+                    actions.native_geometry_pending(),
+                    "stale failure must retain replacement context"
+                );
+            }
+            assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+            assert!(actions.measured_rows().is_none());
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 fn in_flight_font_metrics_require_current_preparation_ownership_in_both_modes() {
     use openwebide_core::{
         WorkspaceMode,
@@ -11875,6 +12048,7 @@ async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
         const previous = window.__openwebideEditorProbeTiming;
         const started = performance.now(), probes = new Map();
         const layout = new Map(), restores = [];
+        let maximumNativeUnits = 0;
         const record = (node, name, elapsed) => {
             if (!node.closest?.('.editor')) return;
             const key = `${node.className}.${name}`;
@@ -11905,6 +12079,9 @@ async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
         const native = HTMLTextAreaElement.prototype;
         const value = Object.getOwnPropertyDescriptor(native, 'value');
         Object.defineProperty(native, 'value', {...value, set(text) {
+            if (this.closest?.('.editor') && this.hasAttribute('data-editor-path')) {
+                maximumNativeUnits = Math.max(maximumNativeUnits, text.length);
+            }
             const before = performance.now();
             try { return value.set.call(this, text); }
             finally { record(this, 'value-set', performance.now() - before); }
@@ -11931,6 +12108,7 @@ async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
             previous?.(paint, phase, elapsed, units);
         };
         return {
+            get maximumNativeUnits() { return maximumNativeUnits; },
             progress(root) {
                 const input = root.querySelector('.editor-textarea');
                 return JSON.stringify({
@@ -12015,7 +12193,14 @@ async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
                             .root
                             .query_selector(".editor-code.highlight-ready")
                             .unwrap()
-                            .is_some();
+                            .is_some()
+                            && mounted
+                                .root
+                                .query_selector(
+                                    ".editor-textarea[data-editor-native-preparing='false']",
+                                )
+                                .unwrap()
+                                .is_some();
                         if ready {
                             *scope.borrow_mut() = Some(cache.paint.clone());
                         }
@@ -12027,6 +12212,33 @@ async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
         let scope = scope.into_inner().unwrap();
         let input: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
+        let maximum = js_sys::Reflect::get(&audit.0, &"maximumNativeUnits".into())
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!(
+            maximum > 0.0 && maximum <= 12.0 * 1024.0,
+            "{mode:?}: installed {maximum} native units during startup"
+        );
+        assert_eq!(
+            input.get_attribute("data-editor-native-bound").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            input
+                .get_attribute("data-editor-native-preparing")
+                .as_deref(),
+            Some("false")
+        );
+        let progress = js_sys::Reflect::get(&audit.0, &"progress".into())
+            .unwrap()
+            .unchecked_into::<js_sys::Function>()
+            .call1(&wasm_bindgen::JsValue::NULL, mounted.root.as_ref())
+            .unwrap();
+        wasm_bindgen_test::console_log!(
+            "paragraph completed {mode:?}: {}",
+            progress.as_string().unwrap()
+        );
         assert!(
             openwebide_frontend::components::bounded_paragraph_matches_complete(&input, &scope, 0)
                 .await,

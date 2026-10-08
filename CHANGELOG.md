@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Install source-owned native input windows before initial layout for eligible
+  unwrapped files with large first rows. Keep complete source dimensions behind
+  measured paint, preserve saved scroll during preparation, and restore complete
+  native input on measurement failure after any active composition finishes.
+
 - Retain current in-flight editor measurements when a trusted font notification
   reports identical face availability and CSS metrics. Preserve refreshes for
   changed metrics, stale ownership and unknown measurement environments.

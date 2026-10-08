@@ -308,6 +308,14 @@ fn refresh_editor_folds(actions: EditorActions) {
 
 fn stamp_editor_input(actions: EditorActions, input: &web_sys::HtmlTextAreaElement) {
     let _ = input.set_attribute(
+        "data-editor-native-preparing",
+        if actions.native_geometry_pending() {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    let _ = input.set_attribute(
         "data-editor-native-value-scope",
         &actions.projection_revision().to_string(),
     );
@@ -2421,6 +2429,16 @@ pub fn Editor(
             .ok()
             .flatten()
             .is_some_and(|query| query.matches());
+        if ready && extent.is_some() && editor_actions.native_geometry_pending() {
+            let scroll = editor_actions.scroll();
+            if editor_actions.finish_initial_native_context(editor_actions.view_revision())
+                && let Some(input) = node.as_ref()
+            {
+                stamp_editor_input(editor_actions, input);
+                crate::viewport::set_editor_scroll_top(input, scroll.top);
+                crate::viewport::set_editor_scroll_left(input, scroll.left);
+            }
+        }
         if ready
             && !touch
             && editor_actions.bound_native_context().is_none()
@@ -2862,8 +2880,6 @@ pub fn Editor(
     Effect::new(move || {
         let full_projection = projection.get();
         editor_actions.track_native_context();
-        let current_projection = editor_actions.input_projection().unwrap_or(full_projection);
-        let value = current_projection.textarea_text();
         let key = workspace.active_project.get().zip(open_file.get());
         let Some(el) = ta.get() else {
             return;
@@ -2873,6 +2889,16 @@ pub fn Editor(
         }
         let mounted = restored_textarea
             .with_value(|previous| previous.as_ref() != Some(&(el.clone(), key.clone())));
+        let touch = window()
+            .match_media("(any-pointer: coarse)")
+            .ok()
+            .flatten()
+            .is_some_and(|query| query.matches());
+        if mounted && !touch && view_mode.get_untracked() == ViewMode::Code {
+            editor_actions.begin_initial_native_context();
+        }
+        let current_projection = editor_actions.input_projection().unwrap_or(full_projection);
+        let value = current_projection.textarea_text();
         // FoldProjection already owns the textarea-normalized value.
         let changed = el.value() != value;
         if mounted || changed {

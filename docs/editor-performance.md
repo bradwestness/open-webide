@@ -1699,3 +1699,45 @@ near-limit differential contract (21.59 seconds). Those elapsed samples do not
 prove startup latency or CI reliability; the complete-native layout remains.
 The 114 native frontend tests, strict WASM frontend lint, formatting and
 Trunk/PWA release build also pass.
+
+
+### Source-owned native input before initial long-row layout
+
+CI checkpoints `37781861651` and `37782390116` both passed all five jobs after
+retaining matching in-flight font measurements. These repeated successes do not
+complete the broader Linux latency and memory gates.
+
+The next startup candidate installs the existing source-owned native context
+before the first native value when the initial row exceeds 65,536 bytes and the
+projection is uniform, unwrapped and free of unsupported long-row tabs or bidi.
+The shared facade retains source selections and a pending-geometry state; the DOM
+adapter does not publish the native window's dimensions as complete extents.
+Pointer selection waits for current source paint and measured extents. Automatic
+scroll clamping cannot overwrite the saved source scroll during this interval.
+Failed measurement restores complete native input; a composing input method keeps
+its installed window until commit/cancel before that fallback.
+
+The [window installation sample](editor-performance/native-install-window.jsonl)
+records the unchanged near-1-MiB plain-text Unicode paragraph in Mac Chrome. Both modes installed
+8,776 UTF-16 units, rather than 748,980. Current measured paint was ready at 1,863 ms
+Local and 1,704 ms Remote. The maximum scroll-surface width read was 26.895 ms Local
+and 5.550 ms Remote, compared with the earlier 3,803/3,145 ms reads. The strengthened
+contract rejects any initial native value above 12 KiB and compares the resulting
+complete source extents/anchors/hit geometry with the complete renderer. That run
+passed in 13.21 seconds, including both modes and their complete-renderer oracles.
+These are individual observations, not latency percentiles or Linux evidence. This
+plain-text boundary test does not prove near-limit styled Rust String behavior.
+
+Cold short-first-row, wrapped, tabbed, bidi and coarse-pointer views retain their
+complete-native capability fallback. Initial paint-run construction and paragraph
+geometry still visit the long source; this candidate does not complete the cold
+startup or bounded-layout roadmap items. All 429 browser checks pass: 427 ordinary checks, the font matrix (15.75 seconds),
+and the final near-limit differential contract (13.50 seconds). The near-limit
+readiness predicate now requires both visible paint and completed native geometry
+within the unchanged 30-second deadline, including when a newer measurement job
+supersedes an earlier visible frame. Composition-safe failure and saved-scroll
+regressions pass in both modes. Native frontend tests (114), strict WASM frontend
+lint, formatting and the Trunk/PWA release build pass. The aggregate invocation
+passed all runtime checks but failed dependent-crate resolution during doctests;
+a separate current-artifact doctest invocation passed. This startup checkpoint
+still needs Linux CI verification.

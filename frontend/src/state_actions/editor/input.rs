@@ -71,6 +71,108 @@ impl EditorNativeContext {
 }
 
 impl EditorActions {
+    fn initial_native_layout_eligible(self, projection: &FoldProjection) -> bool {
+        if self.preferences().word_wrap || !projection.has_uniform_rows() {
+            return false;
+        }
+        // Existing cold short-row frames use complete native dimensions before
+        // the height table is ready. Keep that contract for short initial rows.
+        if projection
+            .lines()
+            .first()
+            .is_none_or(|line| line.source.len() <= openwebide_core::editor::MAX_MEASURE_BYTES)
+        {
+            return false;
+        }
+        let mut large = false;
+        for (row, line) in projection.lines().iter().enumerate() {
+            if line.source.len() <= openwebide_core::editor::MAX_MEASURE_BYTES {
+                continue;
+            }
+            large = true;
+            if projection
+                .line_body(row)
+                .is_none_or(|body| body.as_bytes().contains(&b'\t'))
+                || projection
+                    .visual_line_index(row)
+                    .is_none_or(|index| !index.source_paint_eligible())
+            {
+                return false;
+            }
+        }
+        large
+    }
+
+    /// Install source-owned surrounding text before the first large-row layout.
+    /// Geometry remains explicitly pending; this does not publish source extents.
+    pub fn begin_initial_native_context(self) -> bool {
+        if self.is_composing() || self.bound_native_context().is_some() || self.limit().is_some() {
+            return false;
+        }
+        let Some(mut context) = self.native_context() else {
+            return false;
+        };
+        if !context.projection.is_windowed()
+            || !self.initial_native_layout_eligible(&context.original)
+        {
+            return false;
+        }
+        context.geometry_pending = true;
+        self.set_native_binding(Some(context));
+        true
+    }
+
+    pub fn native_geometry_pending(self) -> bool {
+        self.native_binding.with_untracked(|context| {
+            context
+                .as_ref()
+                .is_some_and(|context| context.geometry_pending && context.current(self))
+        })
+    }
+
+    /// The DOM adapter confirms the current measured extent and source paint.
+    pub fn finish_initial_native_context(self, revision: u64) -> bool {
+        if self.view_revision() != revision || self.measured_rows().is_none() {
+            return false;
+        }
+        let Some(mut context) = self.bound_native_context().filter(|context| {
+            context.geometry_pending && !context.geometry_failed && context.current(self)
+        }) else {
+            return false;
+        };
+        context.geometry_pending = false;
+        self.set_native_binding(Some(context));
+        true
+    }
+
+    pub(super) fn fail_initial_native_context(self) {
+        let Some(mut context) = self
+            .bound_native_context()
+            .filter(|context| context.geometry_pending && context.current(self))
+        else {
+            return;
+        };
+        if self.is_composing() {
+            // Keep the installed native value until the input method commits or cancels.
+            context.geometry_failed = true;
+            self.set_native_binding(Some(context));
+        } else {
+            self.release_native_context();
+        }
+    }
+
+    pub(super) fn release_failed_initial_native_context(self) {
+        if !self.is_composing()
+            && self.native_binding.with_untracked(|context| {
+                context
+                    .as_ref()
+                    .is_some_and(|context| context.geometry_failed)
+            })
+        {
+            self.release_native_context();
+        }
+    }
+
     pub(super) fn set_native_binding(self, context: Option<EditorNativeContext>) {
         if self
             .native_binding
@@ -171,6 +273,7 @@ impl EditorActions {
     }
 
     pub fn input_projection(self) -> Option<FoldProjection> {
+        self.release_failed_initial_native_context();
         self.refresh_native_binding();
         if let Some(context) = self.native_binding.get_untracked() {
             if context.current(self) {
@@ -233,6 +336,21 @@ impl EditorActions {
                 let projection = document
                     .input_context(NATIVE_CONTEXT_BYTES - CONTEXT_HEADROOM_BYTES)
                     .ok()?;
+                let geometry_pending = self.native_binding.with_untracked(|previous| {
+                    previous.as_ref().is_some_and(|previous| {
+                        previous.geometry_pending
+                            && previous.key == key
+                            && previous.read == self.workspace.editor_read_revision.get_untracked()
+                            && previous.account == self.account_generation()
+                            && self.initial_native_layout_eligible(&original)
+                    })
+                });
+                let geometry_failed = geometry_pending
+                    && self.native_binding.with_untracked(|previous| {
+                        previous
+                            .as_ref()
+                            .is_some_and(|previous| previous.geometry_failed)
+                    });
                 Some(EditorNativeContext {
                     key,
                     epoch: self.workspace.pending_epoch.get_untracked(),
@@ -244,6 +362,8 @@ impl EditorActions {
                     original,
                     projection,
                     selections: document.selections().to_vec(),
+                    geometry_pending,
+                    geometry_failed,
                 })
             })
         })

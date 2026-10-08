@@ -174,7 +174,9 @@ impl EditorActions {
         if self.is_composing() {
             return false;
         }
-        self.release_native_context();
+        if !self.native_geometry_pending() {
+            self.release_native_context();
+        }
         true
     }
 
