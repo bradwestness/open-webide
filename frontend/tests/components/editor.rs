@@ -15513,3 +15513,185 @@ async fn paragraph_global_origin_preserves_exact_overflow_rounding_in_both_modes
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn paragraph_unchanged_suffix_reuses_exact_browser_geometry_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::{
+        components::{retained_paragraph_matches_complete, take_paragraph_suffix_probes},
+        state_actions::editor::EditorActions,
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for styled in [false, true] {
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let body = format!("a{}", "word 文😀  ".repeat(12000));
+            let source = if styled {
+                format!("const VALUE: &str = \"{body}\";")
+            } else {
+                body
+            };
+            let original = source.clone();
+            let actions_slot = std::rc::Rc::new(std::cell::Cell::new(None));
+            let capture = actions_slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some(if styled { "suffix.rs" } else { "suffix.txt" }.into()));
+                let actions = EditorActions::new(state.workspace);
+                capture.set(Some(actions));
+                if styled {
+                    actions.install_syntax_transport(installed);
+                }
+                state.workspace.content.set(source.into());
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+            });
+            super::support::wait_until_with_timeout("original suffix measurements", 30_000, || {
+                if styled && !transport.pending.borrow().is_empty() {
+                    transport.respond(true);
+                }
+                mounted
+                    .state
+                    .workspace
+                    .editor_paragraph_cache
+                    .with_untracked(|cache| {
+                        cache.as_ref().is_some_and(|cache| {
+                            !cache.rows.is_empty()
+                                && (!styled
+                                    || (cache.paint.prepared_source
+                                        && cache
+                                            .paint
+                                            .tokens
+                                            .iter()
+                                            .flat_map(|row| row.iter())
+                                            .any(|token| {
+                                                token.kind
+                                                    == openwebide_core::highlight::TokenKind::String
+                                            })))
+                                && cache.paint.projection.line_body(0) == Some(original.as_str())
+                        })
+                    })
+            })
+            .await;
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            let old_paint = mounted
+                .state
+                .workspace
+                .editor_paragraph_cache
+                .get_untracked()
+                .unwrap()
+                .paint;
+            let old_matches = openwebide_frontend::components::bounded_paragraph_matches_complete(
+                &input, &old_paint, 0,
+            )
+            .await;
+            let at = if styled {
+                original.find('"').unwrap() + 1
+            } else {
+                0
+            };
+            let mut changed = original.clone();
+            changed.replace_range(at..at + 1, "z");
+            let actions = actions_slot.get().unwrap();
+            take_paragraph_suffix_probes();
+            actions
+                .native_input(changed.clone(), Selection::caret(at + 1), "insertText", 1.0)
+                .unwrap();
+            super::support::wait_until_with_timeout(
+                "changed source suffix measurements",
+                30_000,
+                || {
+                    if styled && !transport.pending.borrow().is_empty() {
+                        transport.respond(true);
+                    }
+                    mounted
+                        .state
+                        .workspace
+                        .editor_paragraph_cache
+                        .with_untracked(|cache| {
+                            cache.as_ref().is_some_and(|cache| {
+                                !cache.rows.is_empty()
+                                    && (!styled || (cache.paint.prepared_source && cache.paint.tokens.iter().flat_map(|row| row.iter()).any(|token| token.kind == openwebide_core::highlight::TokenKind::String)))
+                                    && cache.paint.projection.line_body(0) == Some(changed.as_str())
+                            })
+                        })
+                },
+            )
+            .await;
+            assert!(
+                take_paragraph_suffix_probes() > 2,
+                "{mode:?} must reuse unchanged suffix probes"
+            );
+            let paint = mounted
+                .state
+                .workspace
+                .editor_paragraph_cache
+                .get_untracked()
+                .unwrap()
+                .paint;
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            let retained_matches =
+                retained_paragraph_matches_complete(&input, &paint, 0, actions).await;
+            let fresh_matches =
+                openwebide_frontend::components::bounded_paragraph_matches_complete(
+                    &input, &paint, 0,
+                )
+                .await;
+            assert!(
+                old_matches && retained_matches && fresh_matches,
+                "{mode:?} styled={styled} old={old_matches} retained={retained_matches} fresh={fresh_matches} exact complete extent and glyph anchors"
+            );
+            // A captured suffix must revalidate ownership when replay begins.
+            // A same-source prefix leaves the last probe ready for suffix reuse,
+            // so a fresh request after restoring each scope proves the rejection
+            // was ownership-related. Font/layout changes also advance view identity.
+            let mut paint = paint.clone();
+            for case in 0..7 {
+                let suffix = actions.paragraph_suffix(&paint, 0).unwrap();
+                let mut plan = EditorActions::paragraph_measurements(&paint, 0).unwrap();
+                assert!(actions.resume_paragraph_measurements(&paint, 0, &mut plan) > 1);
+                let workspace = mounted.state.workspace;
+                match case {
+                    0 => workspace.editor_font_epoch.update(|value| *value += 1),
+                    1 => workspace.editor_layout_epoch.update(|value| *value += 1),
+                    2 => workspace.editor_read_revision.update(|value| *value += 1),
+                    3 => workspace.pending_epoch.update(|value| *value += 1),
+                    4 => mounted.state.auth.generation.update(|value| *value += 1),
+                    5 => workspace.active_project.set(Some(2)),
+                    _ => workspace.open_file.set(Some("other.txt".into())),
+                }
+                assert_eq!(
+                    actions.resume_paragraph_suffix(&suffix, &mut plan),
+                    0,
+                    "{mode:?} styled={styled} stale case={case}"
+                );
+                assert!(plan.probe().is_some());
+                match case {
+                    0 => workspace.editor_font_epoch.update(|value| *value -= 1),
+                    1 => workspace.editor_layout_epoch.update(|value| *value -= 1),
+                    2 => workspace.editor_read_revision.update(|value| *value -= 1),
+                    3 => workspace.pending_epoch.update(|value| *value -= 1),
+                    4 => mounted.state.auth.generation.update(|value| *value -= 1),
+                    5 => workspace.active_project.set(Some(1)),
+                    _ => workspace.open_file.set(Some(paint.key.1.clone())),
+                }
+                paint.view_revision = actions.view_revision();
+                let fresh = actions.paragraph_suffix(&paint, 0).unwrap();
+                let mut plan = EditorActions::paragraph_measurements(&paint, 0).unwrap();
+                assert!(actions.resume_paragraph_measurements(&paint, 0, &mut plan) > 1);
+                assert!(actions.resume_paragraph_suffix(&fresh, &mut plan) > 0);
+                assert!(plan.probe().is_none());
+            }
+            assert_eq!(actions.source(), changed);
+            assert!(mounted.state.workspace.dirty.get_untracked());
+        }
+    }
+}

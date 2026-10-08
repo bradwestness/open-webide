@@ -93,6 +93,13 @@ fn extent_supported(input: &web_sys::HtmlTextAreaElement, rows: &MeasuredRows) -
         .is_some_and(|extent| crate::viewport::check_editor_extent(extent.width, extent.height))
 }
 
+#[cfg(feature = "test-support")]
+thread_local! { static SUFFIX_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(feature = "test-support")]
+pub(super) fn take_paragraph_suffix_probes() -> usize {
+    SUFFIX_PROBES.replace(0)
+}
+
 async fn measure_paragraph(
     paint: &web_sys::Element,
     scope: &crate::state::workspace::EditorRowPaint,
@@ -107,6 +114,7 @@ async fn measure_paragraph(
     if let Some(actions) = actions {
         actions.resume_paragraph_measurements(scope, logical, &mut plan);
     }
+    let suffix = actions.and_then(|actions| actions.paragraph_suffix(scope, logical));
     let mut probes = 0_usize;
     while let Some(probe) = plan.probe().cloned() {
         let Some(targets) = plan.targets() else {
@@ -139,6 +147,13 @@ async fn measure_paragraph(
             &layout.rectangles,
         ) {
             return Ok(None);
+        }
+        if let Some((actions, suffix)) = actions.zip(suffix.as_ref()) {
+            let reused = actions.resume_paragraph_suffix(suffix, &mut plan);
+            #[cfg(feature = "test-support")]
+            SUFFIX_PROBES.set(SUFFIX_PROBES.get() + reused);
+            #[cfg(not(feature = "test-support"))]
+            let _ = reused;
         }
         paint.set_inner_html("");
         probes += 1;

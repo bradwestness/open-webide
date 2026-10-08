@@ -814,6 +814,11 @@ pub fn take_highlight_segment_bytes() -> usize {
     HIGHLIGHT_SEGMENT_BYTES.replace(0)
 }
 
+#[cfg(feature = "test-support")]
+pub fn take_paragraph_suffix_probes() -> usize {
+    super::editor_rows::take_paragraph_suffix_probes()
+}
+
 /// Differential browser oracle: compare bounded preparation with the complete
 /// production renderer, including every retained glyph anchor. Test-only full
 /// layout must never run in ordinary preparation.

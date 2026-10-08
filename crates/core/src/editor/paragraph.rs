@@ -146,6 +146,71 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         }
         reused
     }
+    /// Replay unchanged probes only after an exact measured reconnection. No
+    /// translation is admitted: source/run offsets, glyph targets, dimensions,
+    /// origin and every incoming overlap rectangle must match the retained probe.
+    pub fn reuse_suffix(
+        &mut self,
+        old_body: &str,
+        old: &ParagraphMeasurements,
+        style_start: usize,
+    ) -> usize {
+        if old_body.len() != self.body.len() || self.expected.is_empty() {
+            return 0;
+        }
+        let mut reused = 0;
+        while let Some(probe) = self.probe().cloned() {
+            if probe.bytes.start < style_start {
+                break;
+            }
+            let Some(record) = old
+                .records
+                .binary_search_by_key(&probe.bytes.start, |record| record.bytes.start)
+                .ok()
+                .map(|index| &old.records[index])
+                .filter(|record| record.bytes == probe.bytes)
+            else {
+                break;
+            };
+            if self.dimensions != Some((record.width, record.height))
+                || old_body.get(probe.bytes.clone()) != self.body.get(probe.bytes.clone())
+                || record
+                    .rectangles
+                    .iter()
+                    .find(|rect| rect.glyph == probe.glyph_start)
+                    .is_none_or(|rect| rect.left.to_bits() != probe.origin.to_bits())
+                || self.expected.iter().any(|expected| {
+                    record
+                        .rectangles
+                        .binary_search_by_key(&expected.glyph, |rect| rect.glyph)
+                        .ok()
+                        .is_none_or(|index| record.rectangles[index] != *expected)
+                })
+            {
+                break;
+            }
+            let run_slice = |runs: &[usize]| {
+                let start = runs.partition_point(|byte| *byte <= probe.bytes.start);
+                let end = runs.partition_point(|byte| *byte <= probe.bytes.end);
+                start..end
+            };
+            if old.runs[run_slice(&old.runs)] != self.runs[run_slice(&self.runs)]
+                || !self.record(
+                    record.width,
+                    record.height,
+                    record.scroll_width,
+                    &record.rectangles,
+                )
+            {
+                break;
+            }
+            if let Some(last) = self.records.last_mut() {
+                last.rectangles = record.rectangles.clone();
+            }
+            reused += 1;
+        }
+        reused
+    }
     fn boundary(
         body: &str,
         index: &VisualLineIndex,
@@ -545,6 +610,51 @@ mod tests {
         let mut plan = ParagraphMeasurementPlan::new(&old, index).unwrap();
         assert_eq!(plan.reuse_prefix(&old, &bad, old.len()), 0);
         assert_eq!(plan.probe().unwrap().bytes.start, 0);
+    }
+
+    #[test]
+    fn unchanged_suffix_requires_exact_measured_reconnection() {
+        let old = format!("a{}", "文😀 words ".repeat(12000));
+        let (old_width, geometry, retained) = measured(&old);
+        let changed = format!("z{}", &old[1..]);
+        let make = || {
+            ParagraphMeasurementPlan::new(&changed, VisualLineIndex::new(&changed).unwrap())
+                .unwrap()
+        };
+        let mut plan = make();
+        assert_eq!(plan.reuse_suffix(&old, &retained, 1), 0);
+        let probe = plan.probe().unwrap().clone();
+        let end = plan.index.index_at_byte(&changed, probe.bytes.end).unwrap();
+        let rects = rectangles(&plan);
+        let width = (f64::from(u32::try_from(end).unwrap()) * 7.0).max(244.0);
+        assert!(plan.record(244.0, 15.0, width, &rects));
+        assert!(plan.reuse_suffix(&old, &retained, 1) > 2);
+        let (next_width, next, reused) = plan.finish_with_measurements().unwrap();
+        assert_eq!(next_width.to_bits(), old_width.to_bits());
+        assert_eq!(next, geometry);
+        assert!(Arc::ptr_eq(
+            &reused.records[1].rectangles,
+            &retained.records[1].rectangles
+        ));
+        for fractional_shift in [0.125, 1.0] {
+            let mut plan = make();
+            let mut moved = rects.clone();
+            for rect in &mut moved {
+                rect.left += fractional_shift;
+            }
+            assert!(plan.record(244.0, 15.0, width, &moved));
+            assert_eq!(plan.reuse_suffix(&old, &retained, 1), 0);
+            assert!(plan.probe().is_some());
+        }
+        let mut plan = make();
+        assert!(plan.record(244.0, 15.0, width, &rects));
+        assert_eq!(plan.reuse_suffix(&old, &retained, changed.len()), 0);
+        let different = format!("{changed}x");
+        let mut plan =
+            ParagraphMeasurementPlan::new(&different, VisualLineIndex::new(&different).unwrap())
+                .unwrap();
+        assert!(plan.record(244.0, 15.0, width, &rects));
+        assert_eq!(plan.reuse_suffix(&old, &retained, 0), 0);
     }
 
     #[test]

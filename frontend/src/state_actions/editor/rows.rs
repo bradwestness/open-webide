@@ -129,6 +129,59 @@ fn paint_prefix_end(old: &PaintRow<'_>, new: &PaintRow<'_>) -> usize {
     }
     end
 }
+fn paint_suffix_start(old: &PaintRow<'_>, new: &PaintRow<'_>) -> Option<usize> {
+    if old.guide != new.guide || old.ending != new.ending {
+        return None;
+    }
+    if old.plain.is_some() && new.plain.is_some() {
+        return Some(0);
+    }
+    if old.plain.is_some() || new.plain.is_some() || old.normalize_cr != new.normalize_cr {
+        return None;
+    }
+    fn text<'a>(row: &PaintRow<'_>, token: &'a Token, last: bool) -> &'a str {
+        if row.normalize_cr && last {
+            token.text.strip_suffix('\r').unwrap_or(&token.text)
+        } else {
+            &token.text
+        }
+    }
+    let length = |row: &PaintRow<'_>| {
+        row.tokens
+            .iter()
+            .enumerate()
+            .map(|(index, token)| text(row, token, index + 1 == row.tokens.len()).len())
+            .sum::<usize>()
+    };
+    let mut start = length(new);
+    if length(old) != start {
+        return None;
+    }
+    for (index, (a, b)) in old
+        .tokens
+        .iter()
+        .rev()
+        .zip(new.tokens.iter().rev())
+        .enumerate()
+    {
+        let a_text = text(old, a, index == 0);
+        let b_text = text(new, b, index == 0);
+        if a.kind != b.kind || (a_text.len() > 512) != (b_text.len() > 512) {
+            break;
+        }
+        let same = a_text
+            .bytes()
+            .rev()
+            .zip(b_text.bytes().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        start -= same;
+        if same != a_text.len() || same != b_text.len() {
+            break;
+        }
+    }
+    Some(start)
+}
 fn same_measurement_environment(old: &EditorRowPaint, paint: &EditorRowPaint) -> bool {
     old.font_epoch == paint.font_epoch
         && old.key == paint.key
@@ -165,6 +218,14 @@ pub struct EditorRowSourceSlice {
     /// The continuation plan or plain source index proved this endpoint is an
     /// original paint-run boundary; other viewport slices make no declaration.
     pub starts_paint_run: bool,
+}
+/// Immutable source/style proof for an eligible unchanged paragraph suffix.
+pub struct EditorParagraphSuffix {
+    scope: EditorRowPaint,
+    previous: EditorRowPaint,
+    row: usize,
+    measurements: Arc<openwebide_core::editor::ParagraphMeasurements>,
+    style_start: usize,
 }
 impl EditorActions {
     pub fn paragraph_measurements(
@@ -243,6 +304,51 @@ impl EditorActions {
                 };
                 plan.reuse_prefix(body, measurements, paint_prefix_end(&old, &new))
             })
+    }
+    pub fn paragraph_suffix(
+        self,
+        paint: &EditorRowPaint,
+        row: usize,
+    ) -> Option<EditorParagraphSuffix> {
+        if !self.row_paint_current(paint) {
+            return None;
+        }
+        self.workspace
+            .editor_paragraph_cache
+            .with_untracked(|cache| {
+                let cache = cache
+                    .as_ref()
+                    .filter(|cache| same_measurement_environment(&cache.paint, paint))?;
+                // Reject shifted byte offsets before comparing styled suffixes.
+                if cache.paint.projection.line_body(row)?.len()
+                    != paint.projection.line_body(row)?.len()
+                {
+                    return None;
+                }
+                let (_, measurements) = cache.rows.iter().find(|(index, _)| *index == row)?;
+                let (old, new) = paint_row(&cache.paint, row).zip(paint_row(paint, row))?;
+                let style_start = paint_suffix_start(&old, &new)?;
+                Some(EditorParagraphSuffix {
+                    scope: paint.clone(),
+                    previous: cache.paint.clone(),
+                    row,
+                    measurements: measurements.clone(),
+                    style_start,
+                })
+            })
+    }
+    pub fn resume_paragraph_suffix(
+        self,
+        suffix: &EditorParagraphSuffix,
+        plan: &mut openwebide_core::editor::ParagraphMeasurementPlan<'_>,
+    ) -> usize {
+        if !self.row_paint_current(&suffix.scope) {
+            return 0;
+        }
+        let Some(body) = suffix.previous.projection.line_body(suffix.row) else {
+            return 0;
+        };
+        plan.reuse_suffix(body, &suffix.measurements, suffix.style_start)
     }
     pub fn retain_paragraph_measurements(
         self,
@@ -791,5 +897,55 @@ mod tests {
             ..old
         };
         assert_eq!(paint_prefix_end(&old, &changed), 0);
+    }
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn paragraph_suffix_requires_unchanged_style_and_paint_topology() {
+        let tokens = [Token {
+            kind: TokenKind::Comment,
+            text: format!("a{}", "word 文😀 ".repeat(100)),
+        }];
+        fn row(tokens: &[Token]) -> PaintRow<'_> {
+            PaintRow {
+                tokens,
+                plain: None,
+                guide: 0,
+                normalize_cr: false,
+                ending: false,
+            }
+        }
+        let old = row(&tokens);
+        assert_eq!(paint_suffix_start(&old, &old), Some(0));
+        let mut changed = tokens.clone();
+        changed[0].text.replace_range(0..1, "z");
+        assert_eq!(paint_suffix_start(&old, &row(&changed)), Some(1));
+        changed[0].kind = TokenKind::String;
+        assert_eq!(
+            paint_suffix_start(&old, &row(&changed)),
+            Some(tokens[0].text.len())
+        );
+        changed[0].text.push('x');
+        assert_eq!(paint_suffix_start(&old, &row(&changed)), None);
+        for changed in [
+            PaintRow {
+                guide: 1,
+                ..row(&tokens)
+            },
+            PaintRow {
+                ending: true,
+                ..row(&tokens)
+            },
+            PaintRow {
+                normalize_cr: true,
+                ..row(&tokens)
+            },
+            PaintRow {
+                tokens: &[],
+                plain: Some(&tokens[0].text),
+                ..row(&tokens)
+            },
+        ] {
+            assert_eq!(paint_suffix_start(&old, &changed), None);
+        }
     }
 }

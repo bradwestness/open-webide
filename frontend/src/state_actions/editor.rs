@@ -32,7 +32,9 @@ mod motion;
 pub use input::{EditorNativeCommit, EditorNativeContext};
 mod preparation;
 mod rows;
-pub use rows::{EditorFragmentCache, EditorFragmentWindow, EditorRowSourceSlice};
+pub use rows::{
+    EditorFragmentCache, EditorFragmentWindow, EditorParagraphSuffix, EditorRowSourceSlice,
+};
 
 /// Identity of a retained editor presentation; source revisions can advance
 /// within it, while replacing a document or account releases the old frame.

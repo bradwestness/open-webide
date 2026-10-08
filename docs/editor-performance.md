@@ -1567,6 +1567,32 @@ also pass. This establishes the correction
 for the regression fixture; it does not ship or prove suffix reconnection,
 wrapped/tabbed/bidi preparation or initial native shaping.
 
+### Exact-origin suffix replay
+
+After the fractional-offset correction, the original suffix candidate passes
+plain and grammar-styled browser geometry in both workspace modes. A first
+String character replacement (`a` to `z`) reuses more than two suffix probes,
+while original fresh, changed retained and changed fresh preparation each match
+the complete production renderer's scroll extent and every glyph anchor. The
+focused ownership run took 5.02 seconds; that is a contract-test duration, not
+an application latency measurement.
+
+The shared core replays only records with identical byte/run positions,
+dimensions, measured origin and every incoming overlap rectangle. The facade
+holds immutable source/style proof and rechecks current ownership before replay.
+Captured font, layout, read, pending-source, account, project and file changes
+reject reuse; fresh owner-scoped requests remain eligible. Subpixel/whole-pixel
+origin shifts and changed lengths require fresh measurement. Rectangle storage
+remains shared and retained limits are unchanged. No translated suffix geometry
+is admitted; insertion/deletion, shifted suffixes, initial native shaping and
+wrapped/tabbed/bidi incremental preparation remain open.
+
+Verification: 448 native core tests, 114 native frontend tests and all 426 browser
+checks pass (424 ordinary checks plus the font and near-limit matrices). The
+matrices took 14.85 and 24.40 seconds locally. Strict native core and WASM frontend
+lint, formatting and the Trunk/PWA release build pass; these timings do not
+establish application latency.
+
 ## Browser CI module footprint
 
 The `faf1040` CI run passed all 421 ordinary browser checks and the separate
@@ -1592,3 +1618,10 @@ deadline (`admitted paragraph measurements`). The boundary geometry comparison
 was not reached. Optimized module loading alone therefore does not establish CI
 reliability; investigate the preparation delay without relaxing its geometry
 or readiness assertions.
+
+The next full CI run (`37769663927`, fractional-offset checkpoint) passed all five
+jobs. Its browser job passed the ordinary suite, font matrix, near-1-MiB contract
+and browser storage measurements. The near-limit test took 69.16 seconds across
+both adapters and differential oracles, retaining each unchanged 30-second
+readiness deadline. This is one Linux success; the previous readiness timeout
+still requires repeat verification before claiming reliable CI.
