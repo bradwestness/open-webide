@@ -63,6 +63,31 @@ impl<K: Eq> SyntaxPreparations<K> {
         tab_width: usize,
         should_continue: impl FnMut() -> bool,
     ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
+        self.prepare_with(key, language, source.len(), |document| {
+            document.prepare(source, tab_width, should_continue)
+        })
+    }
+
+    pub fn prepare_shared(
+        &mut self,
+        key: K,
+        language: Language,
+        source: Arc<String>,
+        tab_width: usize,
+        should_continue: impl FnMut() -> bool,
+    ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
+        self.prepare_with(key, language, source.len(), |document| {
+            document.prepare_shared(source, tab_width, should_continue)
+        })
+    }
+
+    fn prepare_with(
+        &mut self,
+        key: K,
+        language: Language,
+        source_len: usize,
+        prepare: impl FnOnce(&mut SyntaxDocument) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>),
+    ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
         let old = self
             .entries
             .iter()
@@ -77,16 +102,15 @@ impl<K: Eq> SyntaxPreparations<K> {
                 document
             }
         };
-        let result = document.prepare(source, tab_width, should_continue);
+        let result = prepare(&mut document);
         if result.1.is_some() {
             while self.entries.len() >= MAX_SYNTAX_DOCUMENTS
-                || self.retained_source_bytes().saturating_add(source.len())
-                    > MAX_SYNTAX_SOURCE_BYTES
+                || self.retained_source_bytes().saturating_add(source_len) > MAX_SYNTAX_SOURCE_BYTES
             {
                 self.entries.pop_front();
             }
             self.entries
-                .push_back((key, language, document, source.len()));
+                .push_back((key, language, document, source_len));
         }
         result
     }

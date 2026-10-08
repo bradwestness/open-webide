@@ -98,10 +98,10 @@ impl SyntaxPreparations<String> {
             return control_reply(SyntaxStatus::Cancelled);
         }
         let source = request.source.resolve(base_source)?;
-        let (mut status, prepared) = self.prepare(
+        let (mut status, prepared) = self.prepare_shared(
             request.document.clone(),
             request.language,
-            &source,
+            std::sync::Arc::new(source),
             request.tab_width,
             should_continue,
         );
@@ -157,14 +157,19 @@ impl SyntaxReply {
         source: &str,
         previous: Option<(u32, &super::SyntaxAnalysis)>,
     ) -> Option<(SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>)> {
-        Self::receive_source(message, ticket, || std::sync::Arc::from(source), previous)
+        Self::receive_source(
+            message,
+            ticket,
+            || std::sync::Arc::new(source.to_owned()),
+            previous,
+        )
     }
 
     /// Retain the facade's immutable snapshot after validating the worker's source.
     pub fn receive_shared(
         message: &str,
         ticket: u32,
-        source: std::sync::Arc<str>,
+        source: std::sync::Arc<String>,
         previous: Option<(u32, &super::SyntaxAnalysis)>,
     ) -> Option<(SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>)> {
         Self::receive_source(message, ticket, || source, previous)
@@ -173,7 +178,7 @@ impl SyntaxReply {
     fn receive_source(
         message: &str,
         ticket: u32,
-        source: impl FnOnce() -> std::sync::Arc<str>,
+        source: impl FnOnce() -> std::sync::Arc<String>,
         previous: Option<(u32, &super::SyntaxAnalysis)>,
     ) -> Option<(SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>)> {
         if message.len() > MAX_ANALYSIS_MESSAGE_BYTES {

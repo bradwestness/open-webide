@@ -933,10 +933,9 @@ impl EditorActions {
             .as_ref()
             .filter(|prepared| self.syntax_scope_current(&prepared.scope))
             .map(|prepared| prepared.scope.source.clone());
-        let owned_source = shared_source
-            .is_none()
-            .then(|| self.workspace.content.get_untracked());
-        let text = shared_source.as_deref().or(owned_source.as_deref())?;
+        let source =
+            shared_source.unwrap_or_else(|| self.workspace.content.get_untracked().shared());
+        let text = source.as_str();
         let tab_width = self.rules_untracked().indentation.tab_width();
         let result = if worker_active {
             if !should_continue() {
@@ -955,10 +954,13 @@ impl EditorActions {
             self.workspace
                 .editor_syntax
                 .try_update(|documents| {
-                    let (status, prepared) =
-                        documents.prepare(key.clone(), language, text, tab_width, || {
-                            js_sys::Date::now() <= deadline && should_continue()
-                        });
+                    let (status, prepared) = documents.prepare_shared(
+                        key.clone(),
+                        language,
+                        source.clone(),
+                        tab_width,
+                        || js_sys::Date::now() <= deadline && should_continue(),
+                    );
                     Some(result_for(prepared.as_deref(), status))
                 })
                 .flatten()

@@ -156,7 +156,7 @@ pub const LEXICAL_BATCHES_PER_FRAME: usize = 8;
 /// Complete contextual lexical paint and the row states needed for exact reuse.
 #[derive(Debug)]
 pub struct LexicalSnapshot {
-    source: std::sync::Arc<str>,
+    source: std::sync::Arc<String>,
     language: Language,
     normalize_crlf: bool,
     rows: Vec<LexicalRow>,
@@ -184,7 +184,7 @@ struct LexicalRow {
 /// batches. Callers can discard it on cancellation; unfinished paint is never
 /// returned by finish. Budgets count whole rows, allowing one oversized row.
 pub struct LexicalPreparation {
-    source: std::sync::Arc<str>,
+    source: std::sync::Arc<String>,
     language: Language,
     normalize_crlf: bool,
     next: usize,
@@ -196,7 +196,7 @@ pub struct LexicalPreparation {
     complete: bool,
 }
 impl LexicalPreparation {
-    pub fn new(source: std::sync::Arc<str>, language: Language) -> Self {
+    pub fn new(source: std::sync::Arc<String>, language: Language) -> Self {
         Self {
             source,
             language,
@@ -211,7 +211,7 @@ impl LexicalPreparation {
         }
     }
     /// Match native textarea newline normalization without copying full source.
-    pub fn for_textarea(source: std::sync::Arc<str>, language: Language) -> Self {
+    pub fn for_textarea(source: std::sync::Arc<String>, language: Language) -> Self {
         Self {
             normalize_crlf: true,
             ..Self::new(source, language)
@@ -1472,7 +1472,7 @@ mod tests {
             Language::Plain,
         ] {
             for normalize in [false, true] {
-                let source: std::sync::Arc<str> = source.as_str().into();
+                let source = std::sync::Arc::new(source.clone());
                 let mut job = if normalize {
                     LexicalPreparation::for_textarea(source.clone(), language)
                 } else {
@@ -1489,14 +1489,17 @@ mod tests {
                 } else {
                     source.to_string()
                 };
+                let snapshot = job.finish_snapshot().unwrap();
+                assert!(std::sync::Arc::ptr_eq(&source, &snapshot.source));
                 assert_eq!(
-                    job.finish().unwrap(),
-                    share_token_rows(highlight_lines(&expected, language))
+                    snapshot.tokens().as_ref(),
+                    &share_token_rows(highlight_lines(&expected, language))
                 );
             }
         }
         for source in ["", "\n", "\r\n", "\r", "a\n\n"] {
-            let mut job = LexicalPreparation::new(source.into(), Language::Plain);
+            let mut job =
+                LexicalPreparation::new(std::sync::Arc::new(source.to_owned()), Language::Plain);
             while !job.is_complete() {
                 job.advance(2, 8);
             }
@@ -1505,7 +1508,10 @@ mod tests {
                 share_token_rows(highlight_lines(source, Language::Plain))
             );
         }
-        let mut cancelled = LexicalPreparation::new("/*\nunfinished\n*/".into(), Language::Rust);
+        let mut cancelled = LexicalPreparation::new(
+            std::sync::Arc::new("/*\nunfinished\n*/".to_owned()),
+            Language::Rust,
+        );
         assert_eq!(cancelled.advance(1, 8), 1);
         assert!(
             cancelled.finish().is_none(),
@@ -1520,7 +1526,8 @@ mod tests {
             previous: Option<std::sync::Arc<LexicalSnapshot>>,
             language: Language,
         ) -> LexicalSnapshot {
-            let mut job = LexicalPreparation::for_textarea(source.into(), language);
+            let mut job =
+                LexicalPreparation::for_textarea(std::sync::Arc::new(source.to_owned()), language);
             if let Some(previous) = previous {
                 job = job.reuse(previous);
             }

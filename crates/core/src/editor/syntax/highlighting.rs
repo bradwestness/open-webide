@@ -120,7 +120,7 @@ impl RowPaint {
 
 #[derive(Default)]
 pub(super) struct SyntaxPaint {
-    pub(super) source: Arc<str>,
+    pub(super) source: Arc<String>,
     pub(super) source_change: Option<super::InputEdit>,
     pieces: HashMap<usize, Piece>,
     rows: HashMap<usize, PaintedRow>,

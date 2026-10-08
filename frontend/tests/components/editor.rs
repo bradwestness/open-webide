@@ -8229,7 +8229,7 @@ async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_
                     .with_untracked(|paint| {
                         paint
                             .as_ref()
-                            .is_some_and(|paint| paint.scope.source.as_ref() == revised)
+                            .is_some_and(|paint| paint.scope.source.as_str() == revised)
                     })
             })
             .await;
@@ -9419,7 +9419,7 @@ async fn worker_source_resync_is_bounded_and_rejects_superseded_ownership_in_bot
                             prepared.scope.account_generation == generation
                                 && prepared.scope.key.0 == project
                                 && prepared.scope.read_revision == read_revision
-                                && prepared.scope.source.as_ref() == newest
+                                && prepared.scope.source.as_str() == newest
                                 && prepared
                                     .analysis
                                     .as_ref()

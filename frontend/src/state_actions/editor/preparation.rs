@@ -31,6 +31,10 @@ mod tests {
             let first = actions.syntax_scope().unwrap();
             let second = actions.syntax_scope().unwrap();
             assert!(Arc::ptr_eq(&first.source, &second.source));
+            assert!(Arc::ptr_eq(
+                &first.source,
+                &workspace.content.get_untracked().shared()
+            ));
             assert_eq!(first.source_revision, second.source_revision);
             assert!(actions.syntax_source_retained(&second));
             let mut indentation = actions.rules_untracked().indentation;
@@ -49,10 +53,10 @@ mod tests {
             assert_ne!(refreshed.source_revision, changed.source_revision);
             assert!(actions.syntax_source_retained(&refreshed));
             let mut external = refreshed.clone();
-            external.source = Arc::from(refreshed.source.as_ref());
+            external.source = Arc::new(refreshed.source.as_ref().clone());
             assert!(!actions.syntax_source_retained(&external));
             assert!(actions.syntax_scope_current(&external));
-            external.source = Arc::from("forged source");
+            external.source = Arc::new("forged source".to_owned());
             assert!(!actions.syntax_scope_current(&external));
             workspace.open_file.set(None);
             assert!(actions.syntax_scope().is_none());
@@ -84,7 +88,13 @@ mod tests {
                     _ => auth.generation.update(|generation| *generation += 1),
                 }
                 let next = actions.syntax_scope().unwrap();
-                assert!(!Arc::ptr_eq(&previous.source, &next.source));
+                assert!(Arc::ptr_eq(
+                    &workspace.content.get_untracked().shared(),
+                    &next.source
+                ));
+                if change == 0 {
+                    assert!(!Arc::ptr_eq(&previous.source, &next.source));
+                }
                 assert!(!actions.syntax_scope_current(&previous));
                 assert!(actions.syntax_scope_current(&next));
                 previous = next;
@@ -120,10 +130,7 @@ impl EditorActions {
                             && (cached.source_revision == source_revision
                                 || cached.source.as_ref() == source.as_str())
                     })
-                    .map_or_else(
-                        || std::sync::Arc::from(source.as_str()),
-                        |cached| cached.source.clone(),
-                    )
+                    .map_or_else(|| source.shared(), |cached| cached.source.clone())
             })
         });
         let scope = EditorSyntaxScope {

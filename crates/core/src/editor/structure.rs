@@ -33,7 +33,7 @@ impl RegionKind {
 
 #[derive(Clone, Debug)]
 pub struct Structure {
-    source: Arc<str>,
+    source: Arc<String>,
     language: Language,
     pub(super) scopes: Vec<(Range<usize>, Language)>,
     selection_ranges: Vec<Range<usize>>,
@@ -116,7 +116,7 @@ impl Structure {
             return Self::unavailable();
         };
         Self {
-            source: text.into(),
+            source: Arc::new(text.to_owned()),
             language,
             scopes: Vec::new(),
             selection_ranges: Vec::new(),
@@ -338,7 +338,7 @@ impl Structure {
 
     fn unavailable() -> Self {
         Self {
-            source: "".into(),
+            source: Arc::new(String::new()),
             language: Language::Plain,
             scopes: Vec::new(),
             selection_ranges: Vec::new(),
@@ -417,7 +417,7 @@ impl Structure {
 
     #[cfg(feature = "editor-parser")]
     pub(super) fn parsed(
-        text: Arc<str>,
+        text: Arc<String>,
         language: Language,
         mut protected: Vec<(Range<usize>, bool, RegionKind)>,
         scopes: Vec<(Range<usize>, Language)>,
@@ -887,7 +887,7 @@ impl StructurePublication {
     }
     pub(super) fn validate(
         self,
-        source: Arc<str>,
+        source: Arc<String>,
         previous: Option<&Structure>,
         budget: usize,
     ) -> Option<Structure> {
@@ -957,7 +957,7 @@ impl StructureData {
             .saturating_add(self.protected.len())
             .saturating_add(self.brackets.len())
     }
-    pub(super) fn validate(self, source: Arc<str>) -> Option<Structure> {
+    pub(super) fn validate(self, source: Arc<String>) -> Option<Structure> {
         let valid_range = |range: &Range<usize>| {
             range.start < range.end
                 && source.is_char_boundary(range.start)

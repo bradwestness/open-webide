@@ -37,19 +37,19 @@ pub enum SyntaxStatus {
 /// Immutable source-bound preparation shared by rendering and editing callers.
 #[derive(Clone, Debug)]
 pub struct SyntaxAnalysis {
-    source: Arc<str>,
+    source: Arc<String>,
     folds: Vec<FoldRange>,
     structure: Option<Arc<Structure>>,
     highlights: Option<Arc<crate::highlight::TokenRows>>,
 }
 impl SyntaxAnalysis {
     pub fn matches_source(&self, source: &str) -> bool {
-        self.source.as_ref() == source
+        std::ptr::eq(self.source.as_str(), source) || self.source.as_str() == source
     }
     pub fn source(&self) -> &str {
         &self.source
     }
-    pub fn source_snapshot(&self) -> &Arc<str> {
+    pub fn source_snapshot(&self) -> &Arc<String> {
         &self.source
     }
     pub fn folds(&self) -> &[FoldRange] {
@@ -92,7 +92,7 @@ pub struct SyntaxDocument {
     ready: bool,
     tree: Option<Tree>,
     embedded: Vec<EmbeddedSyntax>,
-    text: Arc<str>,
+    text: Arc<String>,
     source_lines: Vec<super::lines::Line>,
     prepared: Option<(usize, Arc<SyntaxAnalysis>)>,
     lexical: Option<Arc<crate::highlight::LexicalSnapshot>>,
@@ -120,7 +120,7 @@ impl SyntaxDocument {
             ready: false,
             tree: None,
             embedded: Vec::new(),
-            text: Arc::from(""),
+            text: Arc::new(String::new()),
             source_lines: provider.map_or_else(Vec::new, |_| super::lines::lines("")),
             prepared: None,
             lexical: None,
@@ -132,10 +132,15 @@ impl SyntaxDocument {
         })
     }
 
-    pub fn update(
+    pub fn update(&mut self, text: &str, should_continue: impl FnMut() -> bool) -> SyntaxStatus {
+        self.update_source(text, should_continue, || Arc::new(text.to_owned()))
+    }
+
+    fn update_source(
         &mut self,
         text: &str,
         mut should_continue: impl FnMut() -> bool,
+        source: impl FnOnce() -> Arc<String>,
     ) -> SyntaxStatus {
         if text.len() > MAX_STRUCTURE_BYTES {
             self.clear();
@@ -145,12 +150,12 @@ impl SyntaxDocument {
             self.clear();
             return SyntaxStatus::Cancelled;
         }
-        if self.ready && self.text.as_ref() == text {
+        if self.ready && (std::ptr::eq(self.text.as_str(), text) || self.text.as_str() == text) {
             return SyntaxStatus::Ready { incremental: true };
         }
         self.prepared = None;
         let Some(parser) = self.parser.as_mut() else {
-            self.text = Arc::from(text);
+            self.text = source();
             self.ready = true;
             return SyntaxStatus::Ready { incremental: false };
         };
@@ -186,7 +191,7 @@ impl SyntaxDocument {
                 let mut paint = self.paint.borrow_mut();
                 paint.source_change = Arc::ptr_eq(&paint.source, &self.text).then_some(edit);
                 drop(paint);
-                self.text = Arc::from(text);
+                self.text = source();
                 SyntaxStatus::Ready { incremental }
             }
             Err(status) => {
@@ -204,12 +209,34 @@ impl SyntaxDocument {
         tab_width: usize,
         should_continue: impl FnMut() -> bool,
     ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
+        self.prepare_source(text, tab_width, should_continue, || {
+            Arc::new(text.to_owned())
+        })
+    }
+
+    /// Retain a host's immutable source through parsing and all prepared consumers.
+    pub fn prepare_shared(
+        &mut self,
+        text: Arc<String>,
+        tab_width: usize,
+        should_continue: impl FnMut() -> bool,
+    ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
+        self.prepare_source(&text, tab_width, should_continue, || text.clone())
+    }
+
+    fn prepare_source(
+        &mut self,
+        text: &str,
+        tab_width: usize,
+        should_continue: impl FnMut() -> bool,
+        source: impl FnOnce() -> Arc<String>,
+    ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
         if preparation_exceeds_limits(text) {
             self.clear();
             return (SyntaxStatus::TooLarge, None);
         }
         let mut should_continue = should_continue;
-        let status = self.update(text, &mut should_continue);
+        let status = self.update_source(text, &mut should_continue, source);
         if !matches!(status, SyntaxStatus::Ready { .. }) {
             return (status, None);
         }
@@ -458,7 +485,7 @@ impl SyntaxDocument {
         self.ready = false;
         self.tree = None;
         self.embedded.clear();
-        self.text = Arc::from("");
+        self.text = Arc::new(String::new());
         self.source_lines = self
             .provider
             .map_or_else(Vec::new, |_| super::lines::lines(""));
@@ -1389,6 +1416,38 @@ mod tests {
                     .unwrap()
                     .matches_source(analysis.source())
             );
+        }
+    }
+
+    #[test]
+    fn shared_preparation_retains_host_source_across_consumers_and_edits() {
+        for language in [
+            Language::Rust,
+            Language::Python,
+            Language::Json,
+            Language::Plain,
+        ] {
+            let source = Arc::new("fn main() { 文😀(); }\r\n".to_owned());
+            let mut syntax = SyntaxDocument::new(language).unwrap();
+            let (_, first) = syntax.prepare_shared(source.clone(), 4, || true);
+            let first = first.unwrap();
+            assert!(Arc::ptr_eq(&source, first.source_snapshot()));
+            assert!(Arc::ptr_eq(&source, &syntax.text));
+            if let Some(structure) = first.structure() {
+                assert!(structure.matches_source(&source));
+            }
+            let (_, width) = syntax.prepare_shared(source.clone(), 8, || true);
+            assert!(Arc::ptr_eq(&source, width.unwrap().source_snapshot()));
+            let changed = Arc::new(format!("{source}\nnext"));
+            let (_, next) = syntax.prepare_shared(changed.clone(), 4, || true);
+            assert!(Arc::ptr_eq(&changed, next.unwrap().source_snapshot()));
+            assert_eq!(first.source(), source.as_str());
+            assert_eq!(
+                syntax.prepare_shared(changed.clone(), 4, || false).0,
+                SyntaxStatus::Cancelled
+            );
+            let (_, restored) = syntax.prepare_shared(source.clone(), 4, || true);
+            assert!(Arc::ptr_eq(&source, restored.unwrap().source_snapshot()));
         }
     }
 

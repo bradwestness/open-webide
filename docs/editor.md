@@ -468,8 +468,10 @@ until providers refresh. Admission reuses indexed break counts for unchanged com
 rows in already admitted sources, scanning inserted text and joining boundary rows.
 Non-admitted source retains the full scan and its error order. The index adds a break
 prefix and oversized-row flag per logical row; suffix updates still shift those
-prefixes. Parser/lexer snapshots, Git diff shaping, serialization and normalized
-native text still materialize source Strings. The native textarea still owns
+prefixes. Syntax scopes, lexical jobs and shared parser preparation retain the immutable
+editor source; validated worker replies retain the same snapshot. Workers retain
+resolved request strings directly. Borrowed external parser calls, Git diff shaping,
+serialization and normalized native text still materialize source Strings. The native textarea still owns
 the complete projected source during initial cold preparation and on touch devices;
 prepared fine-pointer editors retain surrounding text instead. Remaining source
 materialization and retained versions still prevent complete viewport memory bounds.

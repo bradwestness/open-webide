@@ -91,12 +91,16 @@ impl SyntaxSource {
         }
     }
 
-    fn validate(self, expected: Arc<str>, previous: Option<&SyntaxAnalysis>) -> Option<Arc<str>> {
+    fn validate(
+        self,
+        expected: Arc<String>,
+        previous: Option<&SyntaxAnalysis>,
+    ) -> Option<Arc<String>> {
         if expected.len() > MAX_STRUCTURE_BYTES {
             return None;
         }
         match self {
-            Self::Full(source) => (source == expected.as_ref()).then_some(expected),
+            Self::Full(source) => (source == expected.as_str()).then_some(expected),
             Self::Replace { start, end, text } => {
                 let old = previous?.source();
                 if start > end {
@@ -258,11 +262,11 @@ impl SyntaxAnalysisData {
         if expected_source.len() > MAX_STRUCTURE_BYTES {
             return None;
         }
-        self.validate_shared(Arc::from(expected_source), previous)
+        self.validate_shared(Arc::new(expected_source.to_owned()), previous)
     }
     pub(super) fn validate_shared(
         self,
-        expected_source: Arc<str>,
+        expected_source: Arc<String>,
         previous: Option<(u32, &SyntaxAnalysis)>,
     ) -> Option<Arc<SyntaxAnalysis>> {
         if self
@@ -434,7 +438,7 @@ mod tests {
                     .clone()
                     .unwrap()
                     .validate(
-                        Arc::from(revised.as_str()),
+                        Arc::new(revised.clone()),
                         old.structure().map(AsRef::as_ref),
                         1,
                     )
@@ -524,7 +528,7 @@ mod tests {
             let next = document.prepare(&revised, 4, || true).1.unwrap();
             let wire = next.transfer_data_reusing(Some((42, &old))).unwrap();
             assert!(wire.highlights.as_ref().unwrap().len() <= max_runs);
-            let snapshot: Arc<str> = Arc::from(revised);
+            let snapshot: Arc<String> = Arc::new(revised.to_owned());
             let restored = wire
                 .validate_shared(snapshot.clone(), Some((42, &old)))
                 .unwrap();
@@ -532,7 +536,7 @@ mod tests {
             assert_eq!(restored.highlights(), next.highlights());
         }
         let full = old.transfer_data().unwrap();
-        let snapshot: Arc<str> = Arc::from(source);
+        let snapshot: Arc<String> = Arc::new(source.to_owned());
         let restored = full.validate_shared(snapshot.clone(), None).unwrap();
         assert!(Arc::ptr_eq(&snapshot, restored.source_snapshot()));
         let wire = old.transfer_data_reusing(Some((42, &old))).unwrap();
@@ -570,7 +574,7 @@ mod tests {
             MAX_ANALYSIS_RECORDS / 2
         ]);
         let old = SyntaxAnalysis {
-            source: Arc::from(""),
+            source: Arc::new(String::new()),
             folds: vec![],
             structure: None,
             highlights: Some(Arc::new(vec![row])),
@@ -632,7 +636,7 @@ mod tests {
                     end,
                     text: text.into()
                 }
-                .validate(Arc::from(source.as_str()), Some(&old))
+                .validate(Arc::new(source.clone()), Some(&old))
                 .is_none()
             );
         }

@@ -115,7 +115,7 @@ pub struct EditorTextInsertion {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditorSyntaxScope {
     pub key: (i64, String),
-    pub source: std::sync::Arc<str>,
+    pub source: std::sync::Arc<String>,
     pub source_revision: u64,
     pub epoch: u64,
     pub read_revision: u64,
