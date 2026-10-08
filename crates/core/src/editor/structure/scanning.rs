@@ -1,13 +1,66 @@
 //! Source-relative lexical state shared by complete and yielding structure scans.
 use super::{
     Language, LexicalStructure, MAX_BRACKETS, MAX_STRUCTURE_BYTES, RegionKind, closing,
-    regex_position, supports_brackets, supports_quote, yaml_scalar_end,
+    regex_position, supports_brackets, supports_quote,
 };
+
+#[derive(Clone, Copy)]
+struct Context {
+    last_nonwhite_end: usize,
+    line_start: usize,
+    indent: usize,
+    leading: bool,
+}
+impl Default for Context {
+    fn default() -> Self {
+        Self {
+            last_nonwhite_end: 0,
+            line_start: 0,
+            indent: 0,
+            leading: true,
+        }
+    }
+}
+impl Context {
+    fn consume(&mut self, position: usize, ch: char) {
+        if !ch.is_whitespace() {
+            self.last_nonwhite_end = position + ch.len_utf8();
+        }
+        if ch == '\n' {
+            self.line_start = position + 1;
+            self.indent = 0;
+            self.leading = true;
+        } else if self.leading && matches!(ch, ' ' | '\t') {
+            self.indent += 1;
+        } else {
+            self.leading = false;
+        }
+    }
+}
+#[derive(Clone, Copy)]
+enum YamlSuffix {
+    Leading,
+    Flags,
+    Trailing,
+    Comment,
+}
 
 #[derive(Default)]
 enum Mode {
     #[default]
     Code,
+    YamlHeader {
+        start: usize,
+        depth: usize,
+        restore: Context,
+        suffix: YamlSuffix,
+    },
+    YamlBody {
+        start: usize,
+        depth: usize,
+        row: Context,
+        admitted: bool,
+    },
     Line {
         start: usize,
     },
@@ -45,11 +98,12 @@ enum Mode {
 
 /// The driver owns immutable source for the duration of a scan. No borrowed node
 /// or text survives a batch. UTF-8 characters and fixed delimiters are atomic;
-/// YAML scalar lookahead remains a complete-region operation.
+/// tentative YAML rows replay through the same scanner when they are not literal.
 pub(in crate::editor) struct LexicalScan {
     language: Language,
     position: usize,
-    last_nonwhite_end: usize,
+    context: Context,
+    worked: usize,
     mode: Mode,
     metadata: LexicalStructure,
     stack: Vec<usize>,
@@ -62,7 +116,8 @@ impl LexicalScan {
         Self {
             language,
             position: 0,
-            last_nonwhite_end: 0,
+            context: Context::default(),
+            worked: 0,
             mode: Mode::Code,
             metadata: LexicalStructure::default(),
             stack: Vec::new(),
@@ -79,40 +134,67 @@ impl LexicalScan {
         if self.complete {
             return Some(true);
         }
-        let initial = self.position;
-        while self.position < text.len() && self.position - initial < max_bytes {
+        let initial = self.worked;
+        loop {
+            // A header without a newline is not a scalar. Replay its suffix as code.
+            if self.position == text.len() {
+                if let Mode::YamlHeader { start, restore, .. } = self.mode {
+                    self.position = start + 1;
+                    self.context = restore;
+                    self.mode = Mode::Code;
+                    continue;
+                } else {
+                    match std::mem::take(&mut self.mode) {
+                        Mode::Line { start } => self.protect(start, false, RegionKind::LineComment),
+                        Mode::Block { start, .. } => {
+                            self.protect(start, false, RegionKind::BlockComment);
+                        }
+                        Mode::Raw { start, .. } | Mode::Quote { start, .. } => {
+                            self.protect(start, false, RegionKind::String);
+                        }
+                        Mode::Regex { start, .. } => self.protect(start, false, RegionKind::Regex),
+                        Mode::Template {
+                            start,
+                            continuation,
+                        } => self.template(start, false, continuation),
+                        Mode::YamlBody { start, .. } => {
+                            self.protect(start, true, RegionKind::String);
+                        }
+                        Mode::Code | Mode::RawPrefix { .. } => {}
+                        Mode::YamlHeader { .. } => unreachable!(),
+                    }
+                    self.complete = true;
+                    break;
+                }
+            }
+            if self.worked - initial >= max_bytes {
+                break;
+            }
             let before = self.position;
             if self.step(text).is_none() {
                 self.failed = true;
                 return None;
             }
-            for (offset, ch) in text[before..self.position].char_indices() {
-                if !ch.is_whitespace() {
-                    self.last_nonwhite_end = before + offset + ch.len_utf8();
+            // Replaying a speculative header/row restores its context in step().
+            // Charge transitions too, so arbitrarily many zero-byte steps cannot
+            // monopolize a batch. Work counts visited bytes, including replay.
+            let consumed = self.position.saturating_sub(before);
+            self.worked = self.worked.saturating_add(consumed.max(1));
+            if self.position >= before {
+                for (offset, ch) in text[before..self.position].char_indices() {
+                    self.context.consume(before + offset, ch);
                 }
             }
-        }
-        if self.position == text.len() {
-            match std::mem::take(&mut self.mode) {
-                Mode::Line { start } => self.protect(start, false, RegionKind::LineComment),
-                Mode::Block { start, .. } => self.protect(start, false, RegionKind::BlockComment),
-                Mode::Raw { start, .. } | Mode::Quote { start, .. } => {
-                    self.protect(start, false, RegionKind::String);
-                }
-                Mode::Regex { start, .. } => self.protect(start, false, RegionKind::Regex),
-                Mode::Template {
-                    start,
-                    continuation,
-                } => self.template(start, false, continuation),
-                Mode::Code | Mode::RawPrefix { .. } => {}
-            }
-            self.complete = true;
         }
         Some(self.complete)
     }
     #[cfg(test)]
     pub(in crate::editor) fn position(&self) -> usize {
         self.position
+    }
+    #[cfg(test)]
+    fn worked(&self) -> usize {
+        self.worked
     }
     pub(in crate::editor) fn finish(self) -> Option<LexicalStructure> {
         (self.complete && !self.failed).then_some(self.metadata)
@@ -135,6 +217,83 @@ impl LexicalScan {
         let ch = rest.chars().next().unwrap();
         match std::mem::take(&mut self.mode) {
             Mode::Code => return self.code(text),
+            Mode::YamlHeader {
+                start,
+                depth,
+                restore,
+                mut suffix,
+            } => {
+                if ch == '\n' {
+                    self.position += 1;
+                    let mut row = self.context;
+                    row.consume(self.position - 1, ch);
+                    self.mode = Mode::YamlBody {
+                        start,
+                        depth,
+                        row,
+                        admitted: false,
+                    };
+                } else {
+                    let valid = match suffix {
+                        YamlSuffix::Comment => true,
+                        _ if ch == '#' => {
+                            suffix = YamlSuffix::Comment;
+                            true
+                        }
+                        YamlSuffix::Leading if ch.is_whitespace() => true,
+                        YamlSuffix::Leading | YamlSuffix::Flags
+                            if matches!(ch, '+' | '-' | '1'..='9') =>
+                        {
+                            suffix = YamlSuffix::Flags;
+                            true
+                        }
+                        YamlSuffix::Flags | YamlSuffix::Trailing if ch.is_whitespace() => {
+                            suffix = YamlSuffix::Trailing;
+                            true
+                        }
+                        _ => false,
+                    };
+                    if valid {
+                        self.position += ch.len_utf8();
+                        self.mode = Mode::YamlHeader {
+                            start,
+                            depth,
+                            restore,
+                            suffix,
+                        };
+                    } else {
+                        self.position = start + 1;
+                        self.context = restore;
+                    }
+                }
+            }
+            Mode::YamlBody {
+                start,
+                depth,
+                mut row,
+                mut admitted,
+            } => {
+                if !admitted && !ch.is_whitespace() && self.context.indent <= depth {
+                    self.position = row.line_start;
+                    self.context = row;
+                    self.protect(start, true, RegionKind::String);
+                } else {
+                    self.position += ch.len_utf8();
+                    if ch == '\n' {
+                        row = self.context;
+                        row.consume(self.position - 1, ch);
+                        admitted = false;
+                    } else if !ch.is_whitespace() {
+                        admitted = true;
+                    }
+                    self.mode = Mode::YamlBody {
+                        start,
+                        depth,
+                        row,
+                        admitted,
+                    };
+                }
+            }
             Mode::Line { start } => {
                 if ch == '\n' {
                     self.protect(start, false, RegionKind::LineComment);
@@ -354,7 +513,7 @@ impl LexicalScan {
             language,
             Language::JavaScript | Language::TypeScript | Language::Jsx | Language::Tsx
         ) && rest.starts_with('/')
-            && regex_position(&text[..self.last_nonwhite_end])
+            && regex_position(&text[..self.context.last_nonwhite_end])
         {
             self.position += 1;
             self.mode = Mode::Regex {
@@ -366,10 +525,22 @@ impl LexicalScan {
         let ch = rest.chars().next().unwrap();
         if language == Language::Yaml
             && matches!(ch, '|' | '>')
-            && let Some(end) = yaml_scalar_end(text, i)
+            && self.context.last_nonwhite_end > self.context.line_start
+            && text
+                .as_bytes()
+                .get(self.context.last_nonwhite_end - 1)
+                .is_some_and(|byte| matches!(byte, b':' | b'-'))
         {
-            self.position = end;
-            self.protect(i, true, RegionKind::String);
+            let depth = self.context.indent;
+            let mut restore = self.context;
+            restore.consume(i, ch);
+            self.position += 1;
+            self.mode = Mode::YamlHeader {
+                start: i,
+                depth,
+                restore,
+                suffix: YamlSuffix::Leading,
+            };
             return Some(());
         }
         let lifetime = language == Language::Rust && ch == '\'' && {
@@ -454,6 +625,74 @@ mod tests {
         metadata: serde_json::Value,
     }
     #[test]
+    fn long_yaml_headers_rows_and_dedentation_are_bounded() {
+        for (source, expected) in [
+            (
+                format!(
+                    "  key: | #{}\n    literal # []\nnext: true\n",
+                    "文😀".repeat(149_000)
+                ),
+                true,
+            ),
+            (
+                format!("key: |\n  {}\nnext: true\n", "文😀".repeat(149_000)),
+                true,
+            ),
+            (
+                format!("key: |{}+\n  value\nnext: true\n", " ".repeat(1_000_000)),
+                true,
+            ),
+            (
+                format!("key: |+{}+\n  value\n", " ".repeat(1_000_000)),
+                false,
+            ),
+            (format!("key: |{}", " ".repeat(1_000_000)), false),
+            (
+                format!("key: |\n{}\n  value\nnext: true\n", " ".repeat(1_000_000)),
+                true,
+            ),
+            (
+                format!(
+                    "key: |\n  value\n{}next: true\n",
+                    "\u{2003}".repeat(300_000)
+                ),
+                true,
+            ),
+        ] {
+            let mut scan = LexicalScan::new(Language::Yaml);
+            let mut batches = 0;
+            loop {
+                let before = scan.worked();
+                let result = scan.advance(&source, 8_192);
+                assert!(scan.worked() - before <= 8_196);
+                if result == Some(true) {
+                    break;
+                }
+                assert_eq!(result, Some(false));
+                assert!(scan.worked() > before);
+                batches += 1;
+                assert!(batches < 1_000);
+            }
+            assert!(batches > 100);
+            let metadata = scan.finish().unwrap();
+            assert_eq!(metadata.protected.len(), usize::from(expected));
+            if expected {
+                let (range, closed, kind) = &metadata.protected[0];
+                assert!(*closed);
+                assert_eq!(*kind, RegionKind::String);
+                assert_eq!(range.start, source.find('|').unwrap());
+                assert_eq!(
+                    range.end,
+                    source
+                        .find("\u{2003}")
+                        .or_else(|| source.find("next:"))
+                        .unwrap_or(source.len())
+                );
+            }
+        }
+    }
+
+    #[test]
     fn scan_limits_and_incomplete_results_survive_yields() {
         let source = "(".repeat(MAX_BRACKETS + 1);
         let mut scan = LexicalScan::new(Language::Rust);
@@ -486,21 +725,25 @@ mod tests {
 
     #[test]
     fn every_batch_boundary_matches_the_original_scanner_oracle() {
-        let cases: Vec<Case> = serde_json::from_str(include_str!("scanning_cases.json")).unwrap();
+        let mut cases: Vec<Case> =
+            serde_json::from_str(include_str!("scanning_cases.json")).unwrap();
         assert_eq!(cases.len(), 864);
+        let yaml: Vec<Case> = serde_json::from_str(include_str!("yaml_cases.json")).unwrap();
+        assert_eq!(yaml.len(), 192);
+        cases.extend(yaml);
         for case in cases {
             for budget in [1, 2, 3, 7, 64, usize::MAX] {
                 let mut scan = LexicalScan::new(case.language);
                 loop {
-                    let before = scan.position();
+                    let before = scan.worked();
                     let result = scan.advance(&case.source, budget);
-                    if case.language != Language::Yaml && result.is_some() {
-                        assert!(scan.position() - before <= budget.saturating_add(4));
+                    if result.is_some() {
+                        assert!(scan.worked() - before <= budget.saturating_add(4));
                     }
                     if result != Some(false) {
                         break;
                     }
-                    assert!(scan.position() > before, "pending batches make progress");
+                    assert!(scan.worked() > before, "pending batches make progress");
                     assert!(case.source.is_char_boundary(scan.position()));
                 }
                 let metadata = scan.finish().map(|value| serde_json::json!({"protected":value.protected,"opaque_starts":value.opaque_starts,"brackets":value.brackets})).unwrap_or(serde_json::Value::Null);

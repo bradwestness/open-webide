@@ -77,7 +77,7 @@ tracks the remaining work rather than every optimization already shipped.
   capped metadata attempts now stop once their run budget is exceeded.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
-  YAML scalar/lookahead scans, final context assembly and bounded metadata publication,
+  final context assembly and bounded metadata publication,
   larger fenced-code workloads and changed-source plain row-table
   reconstruction/validation. Source-change comparison still traverses retained
   text; resolved worker parser replacements now reuse their validated spans only
@@ -85,7 +85,8 @@ tracks the remaining work rather than every optimization already shipped.
   raw-byte boundary validation. Fallback range/opaque-point checks now use ordered
   embedded-scope lookup. Unchanged embedded bodies retain relative fallback contexts;
   outer/new-body scanning now resumes across worker tasks, including long literal
-  and comment bodies. YAML lookahead and final context/selection-list assembly remain.
+  and comment bodies, YAML headers/scalars and speculative row replay. Final
+  context/selection-list assembly remains.
 - [ ] **Source ownership and storage:** finish remaining external parser snapshots,
   changed-revision source comparisons, transport serialization, diff shaping and
   native-text materialization. Folded/bounded projection tables still assemble

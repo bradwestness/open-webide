@@ -452,6 +452,16 @@ mod tests {
         for (language, source, embedded) in [
             (Language::Rust, format!("let s = \"{literal}\";\n"), false),
             (
+                Language::Yaml,
+                format!("value: |\n  {literal}\nnext: true\n"),
+                false,
+            ),
+            (
+                Language::Markdown,
+                format!("```yaml\nvalue: |\n  {literal}\nnext: true\n```\n"),
+                true,
+            ),
+            (
                 Language::Markdown,
                 format!("```rust\nlet s = \"{literal}\";\n```\n"),
                 true,

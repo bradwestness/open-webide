@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Resume YAML scalar headers, literal bodies and dedentation checks in bounded
+  syntax worker batches. Replay invalid headers and dedented rows through the
+  shared scanner, preserving complete metadata and source-bound publication.
+
+
 - Keep automatic task naming separate from scripted child edits in the browser
   approval regression fixture so CI checks the intended approval and history flow.
 

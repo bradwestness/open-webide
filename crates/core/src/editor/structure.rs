@@ -376,41 +376,6 @@ impl Structure {
     }
 }
 
-// YAML block-scalar contents are literal even when they resemble comments or
-// code. Dedentation ends the value; blank rows do not.
-fn yaml_scalar_end(text: &str, offset: usize) -> Option<usize> {
-    let start = text[..offset].rfind('\n').map_or(0, |newline| newline + 1);
-    let before = &text[start..offset];
-    if !before.trim_end().ends_with([':', '-']) {
-        return None;
-    }
-    let newline = text[offset..].find('\n').map(|newline| offset + newline)?;
-    let indicator = text[offset + 1..newline].split('#').next()?.trim();
-    if !indicator
-        .chars()
-        .all(|ch| matches!(ch, '+' | '-' | '1'..='9'))
-    {
-        return None;
-    }
-    let depth = before
-        .chars()
-        .take_while(|ch| matches!(ch, ' ' | '\t'))
-        .count();
-    let mut end = newline + 1;
-    for line in text[end..].split_inclusive('\n') {
-        let body = line.trim();
-        let indent = line
-            .chars()
-            .take_while(|ch| matches!(ch, ' ' | '\t'))
-            .count();
-        if !body.is_empty() && indent <= depth {
-            break;
-        }
-        end += line.len();
-    }
-    Some(end)
-}
-
 fn regex_position(before: &str) -> bool {
     let before = before.trim_end();
     before.is_empty()

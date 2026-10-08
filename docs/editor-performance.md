@@ -2338,3 +2338,30 @@ The corrected ordinary Chrome suite passed: 18 WASM unit tests, 444 component
 contracts and four adapter integrations. The two unchanged heavy paragraph
 geometry matrices remain separate CI gates. Full CI for this checkpoint is still
 required; prior checkpoint green runs do not substitute for that result.
+
+### Resumable YAML scalars (2026-10-08)
+
+YAML header validation and scalar bodies now retain lexical/row state across the
+same 8 KiB fallback batches. They track ASCII indentation and Unicode whitespace
+without whole-row trimming or prefix/newline searches. A rejected header or a
+nonblank dedented row replays through the ordinary shared scanner, restoring its
+row context. No extra source snapshot or text copy is retained. Budget accounting
+includes bytes revisited during replay and zero-byte state transitions; every
+batch, including YAML, has at most four bytes of atomic delimiter/UTF-8 overrun.
+Final metadata and paint assembly remain synchronous.
+
+Before replacing YAML lookahead, 192 additional fixed cases captured its exact
+ranges across indentation, indicators, comments, invalid/no-newline headers,
+LF/CRLF, blank rows and Unicode whitespace. The existing 864-case scanner oracle
+and these YAML cases match at 1/2/3/7/64-byte and complete budgets. Near-1-MiB
+headers, scalars, whitespace rows and rejected-header replay remain bounded.
+Native standalone/fenced YAML additionally exercises scanner yields, exact fresh
+publication, cancellation/source release and recovery in the same syntax engine.
+
+Validation passed: 485 all-feature and 384 no-default-feature core tests, strict
+core/WASM frontend linting and the finalized release build. The production worker
+check paints a String span exceeding 1,000,000 bytes in a 1,043,026-byte YAML source,
+requires 14 forced yields, and matches source/highlight/structure/fold publication
+against fresh preparation. The retained Rust literal still passes its styling and
+14-yield gate. The full check reports 1,552 cooperative yields. These are worker
+contracts; main-editor load/scroll/input, PSS and the other full-goal gates remain.
