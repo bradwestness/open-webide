@@ -486,6 +486,7 @@ fn new_parser(provider: SyntaxProvider) -> Result<Parser, SyntaxStatus> {
     Ok(parser)
 }
 
+#[cfg(test)]
 fn visit_tree<'tree>(
     tree: &'tree Tree,
     visited: &mut usize,
@@ -517,59 +518,93 @@ fn visit_node<'tree>(
     }
 }
 
-fn select_injections(
-    tree: &Tree,
-    provider: Option<SyntaxProvider>,
-    text: &str,
-    rows: &[super::lines::Line],
-    should_continue: &mut impl FnMut() -> bool,
-) -> Result<Vec<(Language, Range)>, SyntaxStatus> {
-    if !should_continue() {
-        return Err(SyntaxStatus::Cancelled);
-    }
-    let Some(select) = provider.and_then(|provider| provider.injection) else {
-        return Ok(Vec::new());
-    };
-    let source_point = |offset| indexed_point(rows, offset);
-    let mut selected = Vec::new();
-    let mut code_bodies = 0;
-    let mut visited = 0;
-    let mut until_check = 0;
-    visit_tree(tree, &mut visited, |node| {
-        if until_check == 0 {
-            if !should_continue() {
-                return Err(SyntaxStatus::Cancelled);
-            }
-            until_check = 256;
+#[derive(Default)]
+struct InjectionSelection {
+    next_node: usize,
+    visited: usize,
+    code_bodies: usize,
+    selected: Vec<(Language, Range)>,
+    complete: bool,
+}
+impl InjectionSelection {
+    /// Resume at the next descendant of the same immutable tree. No borrowed
+    /// cursor or node survives a batch, and every visited node is charged once.
+    fn advance(
+        &mut self,
+        tree: &Tree,
+        provider: Option<SyntaxProvider>,
+        text: &str,
+        rows: &[super::lines::Line],
+        should_continue: &mut impl FnMut() -> bool,
+        should_yield: &mut impl FnMut() -> bool,
+    ) -> Result<bool, SyntaxStatus> {
+        if !should_continue() {
+            return Err(SyntaxStatus::Cancelled);
         }
-        until_check -= 1;
-        if let Some((language, range)) = select(node, text) {
-            // Inline Markdown is ordinary prose syntax, not a separately configured
-            // code body. Its count remains bounded by the shared node/record budgets.
-            if language != Language::MarkdownInline {
-                if code_bodies == MAX_INJECTIONS {
-                    return Err(SyntaxStatus::TooLarge);
+        if self.complete {
+            return Ok(true);
+        }
+        let Some(select) = provider.and_then(|provider| provider.injection) else {
+            self.complete = true;
+            return Ok(true);
+        };
+        let source_point = |offset| indexed_point(rows, offset);
+        let mut cursor = tree.walk();
+        cursor.goto_descendant(self.next_node);
+        let mut until_check = 0;
+        loop {
+            if until_check == 0 {
+                if !should_continue() {
+                    return Err(SyntaxStatus::Cancelled);
                 }
-                code_bodies += 1;
+                if should_yield() {
+                    return Ok(false);
+                }
+                until_check = 256;
             }
-            if range.start_byte > range.end_byte
-                || !text.is_char_boundary(range.start_byte)
-                || !text.is_char_boundary(range.end_byte)
-                || range.start_point != source_point(range.start_byte)
-                || range.end_point != source_point(range.end_byte)
-                || selected
-                    .last()
-                    .is_some_and(|(_, previous): &(Language, Range)| {
-                        previous.end_byte > range.start_byte
-                    })
-            {
-                return Err(SyntaxStatus::Cancelled);
+            until_check -= 1;
+            subtrees::charge_visits(&mut self.visited, 1)?;
+            let node = cursor.node();
+            if let Some((language, range)) = select(node, text) {
+                // Inline Markdown is ordinary prose syntax, not a separately configured
+                // code body. Its count remains bounded by the shared node/record budgets.
+                if language != Language::MarkdownInline {
+                    if self.code_bodies == MAX_INJECTIONS {
+                        return Err(SyntaxStatus::TooLarge);
+                    }
+                    self.code_bodies += 1;
+                }
+                if range.start_byte > range.end_byte
+                    || !text.is_char_boundary(range.start_byte)
+                    || !text.is_char_boundary(range.end_byte)
+                    || range.start_point != source_point(range.start_byte)
+                    || range.end_point != source_point(range.end_byte)
+                    || self
+                        .selected
+                        .last()
+                        .is_some_and(|(_, previous): &(Language, Range)| {
+                            previous.end_byte > range.start_byte
+                        })
+                {
+                    return Err(SyntaxStatus::Cancelled);
+                }
+                self.selected.push((language, range));
             }
-            selected.push((language, range));
+
+            if !cursor.goto_first_child() {
+                loop {
+                    if cursor.goto_next_sibling() {
+                        break;
+                    }
+                    if !cursor.goto_parent() {
+                        self.complete = true;
+                        return Ok(true);
+                    }
+                }
+            }
+            self.next_node = cursor.descendant_index();
         }
-        Ok(())
-    })?;
-    Ok(selected)
+    }
 }
 
 fn indexed_point(rows: &[super::lines::Line], offset: usize) -> Point {

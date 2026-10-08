@@ -2208,3 +2208,22 @@ they are not proved to meet a 100 ms wall-clock bound. Bounded selection and
 publication, cold native input/layout, physical-device checks and full CI
 reliability remain in the editor goal. The preceding e0174b7 checkpoint achieved
 one complete green CI run; this change still needs its own CI evidence.
+
+### Resumable embedded-language selection (2026-10-08)
+
+The shared syntax engine now retains injection selection's next descendant index,
+selected ranges and cumulative node/code-body counters. It reconstructs a cursor
+on the same immutable tree at each batch and checks cancellation/yield every 256
+nodes. No borrowed node/cursor or partial syntax publication crosses a batch.
+The synchronous and worker message adapters use this same traversal.
+
+Native regressions compare resumable selection with an independent complete tree
+walk for 1,000 Unicode/CRLF Markdown paragraphs and nested HTML script/style
+bodies. They require exact node counts and ranges, at most 256 visited nodes per
+forced batch, cancellation without advancing state and a node budget that does
+not reset across batches. The complete core suite passed 477 tests.
+
+Retained-body matching and final metadata/paint assembly remain synchronous;
+this change does not prove a 100 ms wall-clock bound for the complete preparation
+pipeline. Cold layout, process memory, physical device checks and reliable CI
+remain completion gates.

@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Resume embedded-language selection across syntax worker batches, preserving
+  traversal position, exact source ranges and cumulative node/code-body limits.
+
 - Continue syntax parsing across worker tasks when its 100 ms batch expires,
   retaining outer/embedded parser progress instead of discarding cold Markdown
   analysis. Share request validation, queue limits, reply shaping and cancellation

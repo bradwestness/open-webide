@@ -1,8 +1,8 @@
 //! Source-bound parsing progress; synchronous and yielding drivers share this engine.
 use super::{
-    EmbeddedSyntax, MAX_PROGRESS_CHECKS, MAX_STRUCTURE_BYTES, SyntaxAnalysis, SyntaxDocument,
-    SyntaxStatus, indexed_point, input_edit, input_edit_change, new_parser,
-    preparation_exceeds_limits, select_injections, syntax_provider,
+    EmbeddedSyntax, InjectionSelection, MAX_PROGRESS_CHECKS, MAX_STRUCTURE_BYTES, SyntaxAnalysis,
+    SyntaxDocument, SyntaxStatus, indexed_point, input_edit, input_edit_change, new_parser,
+    preparation_exceeds_limits, syntax_provider,
 };
 use crate::highlight::Language;
 use std::{collections::HashMap, ops::ControlFlow, sync::Arc};
@@ -16,6 +16,7 @@ pub(super) struct SyntaxWork {
     tree: Option<Tree>,
     embedded: Option<EmbeddedWork>,
     checks: usize,
+    selection: InjectionSelection,
 }
 struct EmbeddedWork {
     selected: std::vec::IntoIter<(Language, Range)>,
@@ -102,6 +103,7 @@ impl SyntaxDocument {
             tree: None,
             embedded: None,
             checks: 0,
+            selection: InjectionSelection::default(),
         });
         None
     }
@@ -261,13 +263,17 @@ impl SyntaxWork {
                 continue;
             }
             if self.embedded.is_none() {
-                let selected = select_injections(
+                if !self.selection.advance(
                     self.tree.as_ref().unwrap(),
                     document.provider,
                     &self.source,
                     &document.source_lines,
                     should_continue,
-                )?;
+                    should_yield,
+                )? {
+                    return Ok(false);
+                }
+                let selected = std::mem::take(&mut self.selection.selected);
                 self.embedded =
                     Some(document.begin_embedded(selected, &self.edit, should_continue)?);
                 continue;
@@ -393,6 +399,59 @@ fn parse_step(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn injection_selection_resumes_at_exact_nodes_and_keeps_global_limits() {
+        for (language, source) in [
+            (Language::Markdown, (0..1_000).map(|index| format!("Paragraph {index}: **文😀** and `code`.\r\n\r\n")).collect::<String>()),
+            (Language::Html, "<main><script>const x = 1;</script><section><style>a { color: red; }</style></section></main>".to_owned()),
+        ] {
+            let mut document = SyntaxDocument::new(language).unwrap();
+            let (status, _) = document.prepare_shared(Arc::new(source.clone()), 4, || true);
+            assert!(matches!(status, SyntaxStatus::Ready { .. }));
+            let tree = document.tree.as_ref().unwrap();
+            let select = document.provider.unwrap().injection.unwrap();
+            let mut expected = Vec::new();
+            let mut visits = 0;
+            super::super::visit_tree(tree, &mut visits, |node| {
+                if let Some(body) = select(node, &source) {
+                    expected.push(body);
+                }
+                Ok(())
+            }).unwrap();
+            let mut selection = InjectionSelection::default();
+            let mut batches = 0;
+            loop {
+                let before = selection.visited;
+                let mut checks = 0;
+                let complete = selection.advance(tree, document.provider, &source, &document.source_lines, &mut || true, &mut || {
+                    checks += 1;
+                    checks > 1
+                }).unwrap();
+                assert!(selection.visited > before);
+                assert!(selection.visited - before <= 256);
+                batches += 1;
+                if complete { break; }
+                let retained = selection.visited;
+                assert_eq!(selection.advance(tree, document.provider, &source, &document.source_lines, &mut || false, &mut || false), Err(SyntaxStatus::Cancelled));
+                assert_eq!(selection.visited, retained);
+                assert!(batches < 1_000);
+            }
+            assert_eq!(selection.visited, visits, "each node is visited exactly once");
+            assert_eq!(selection.selected, expected);
+            if language == Language::Markdown { assert!(batches > 1); }
+            if visits > 256 {
+                let mut limited = InjectionSelection {
+                    visited: super::super::MAX_FOLD_NODES - 256,
+                    ..InjectionSelection::default()
+                };
+                let mut checks = 0;
+                assert!(!limited.advance(tree, document.provider, &source, &document.source_lines, &mut || true, &mut || { checks += 1; checks > 1 }).unwrap());
+                assert_eq!(limited.visited, super::super::MAX_FOLD_NODES);
+                assert_eq!(limited.advance(tree, document.provider, &source, &document.source_lines, &mut || true, &mut || false), Err(SyntaxStatus::TooLarge));
+            }
+        }
+    }
 
     #[test]
     fn cooperative_parser_resumes_without_reparsing_completed_bodies() {
