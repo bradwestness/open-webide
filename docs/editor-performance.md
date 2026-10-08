@@ -2293,3 +2293,48 @@ Full CI completed successfully for b1dc2b4, b930042, b16d7b4 and e39c8b7. These
 checkpoints provide repeated baseline evidence; the changed implementation still
 needs its own full CI run, and completion requires the remaining performance,
 geometry, device/input, recovery and accessibility work.
+
+### Resumable lexical fallback scanning (2026-10-08)
+
+The complete scanner and syntax worker now use one retained lexical state machine.
+It carries comment depth, raw-string hash prefixes/closing matches, quote/escape
+state, regex classes, template holes and bracket links across batches. Worker
+preparation scans outer and newly parsed embedded source in 8 KiB batches before
+installing source-bound trees/metadata. A completed embedded parse is retained
+while its fallback scan yields; unchanged bodies retain their prior contexts.
+Explicit cancellation discards incomplete scanning with the pending source.
+
+The regex expression-position check uses the retained last non-whitespace offset
+and bounded keyword-suffix checks, avoiding repeated prefix scans. Normal UTF-8
+characters, escapes and fixed delimiters are atomic; a batch can overrun by at
+most four bytes. YAML scalar lookahead still processes a complete region and does
+not satisfy that byte bound. Final context, paint, fold and transfer assembly are
+still synchronous; no total 100 ms wall-clock guarantee is claimed.
+
+Before extraction, 864 synthetic cases captured the original scanner's exact
+protected ranges, opaque starts and bracket links across 24 languages, LF/CRLF,
+malformed/truncated input and nested constructs. Each golden case is checked at
+1/2/3/7/64-byte and complete budgets. Native near-1-MiB Unicode Rust and fenced
+Markdown literals require many fallback batches, retained completed trees, exact
+fresh publication, cancellation/source release and recovery. Separate contracts
+retain source/bracket caps across yields and forbid incomplete publication.
+
+These are scanner/worker contracts. Main editor load/scroll/input, exact geometry,
+Linux process memory, physical IME/touch, permission recovery and accessibility
+remain full-goal completion gates.
+
+Validation passed: 484 all-feature core tests, 383 no-default-feature core tests,
+strict core and WASM frontend linting, and the finalized release bundle. The real
+production worker check compares fresh/cooperative publication and paints a
+1,043,013-byte Unicode source with a String span exceeding 1,000,000 bytes. It
+reports 1,538 forced paragraph yields and 14 large-literal yields; those are worker
+scheduling evidence, not a main-thread input or PSS measurement.
+
+The preceding 477fe58 checkpoint passed four CI jobs but failed the browser child
+approval fixture. Its automatic task-name request consumed the scripted child
+file-edit completion. The fixture now supplies naming separately, retaining the
+manual approval, inherited-file and durable nested-history assertions.
+The corrected ordinary Chrome suite passed: 18 WASM unit tests, 444 component
+contracts and four adapter integrations. The two unchanged heavy paragraph
+geometry matrices remain separate CI gates. Full CI for this checkpoint is still
+required; prior checkpoint green runs do not substitute for that result.

@@ -87,6 +87,9 @@ struct FallbackContexts {
 impl FallbackContexts {
     fn scan(text: &str, language: Language) -> Self {
         let lexical = Structure::scan(text, language).unwrap_or_default();
+        Self::from_lexical(lexical)
+    }
+    fn from_lexical(lexical: super::structure::LexicalStructure) -> Self {
         Self {
             opaque_starts: lexical.opaque_starts,
             protected: lexical.protected,
@@ -114,6 +117,7 @@ pub struct SyntaxDocument {
     embedded: Vec<EmbeddedSyntax>,
     embedded_parsers: Vec<(Language, Parser)>,
     pending: Option<preparation::SyntaxWork>,
+    outer_fallback: Option<Arc<FallbackContexts>>,
     #[cfg(test)]
     embedded_parses: usize,
     text: Arc<String>,
@@ -146,6 +150,7 @@ impl SyntaxDocument {
             embedded: Vec::new(),
             embedded_parsers: Vec::new(),
             pending: None,
+            outer_fallback: None,
             #[cfg(test)]
             embedded_parses: 0,
             text: Arc::new(String::new()),
@@ -300,9 +305,12 @@ impl SyntaxDocument {
         if !self.ready || self.provider.is_none() {
             return None;
         }
-        let fallback = FallbackContexts::scan(&self.text, self.language);
-        let mut opaque_starts = fallback.opaque_starts;
-        let mut baseline = fallback.protected;
+        let fallback = self
+            .outer_fallback
+            .clone()
+            .unwrap_or_else(|| Arc::new(FallbackContexts::scan(&self.text, self.language)));
+        let mut opaque_starts = fallback.opaque_starts.clone();
+        let mut baseline = fallback.protected.clone();
         let scopes: Vec<_> = self
             .embedded
             .iter()
@@ -437,6 +445,7 @@ impl SyntaxDocument {
         }
         self.embedded_parsers.clear();
         self.pending = None;
+        self.outer_fallback = None;
         self.ready = false;
         self.tree = None;
         self.embedded.clear();

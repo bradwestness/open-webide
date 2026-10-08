@@ -204,9 +204,9 @@ def check():
                             readyReject(error);
                             for (const waiter of pendingProbe.values()) waiter.reject(error);
                         };
-                        const probeRequest = (ticket, document, source, base_ticket = null) => new Promise((resolve, reject) => {
+                        const probeRequest = (ticket, document, source, base_ticket = null, language = 'Markdown') => new Promise((resolve, reject) => {
                             pendingProbe.set(ticket, {resolve, reject});
-                            probe.postMessage(JSON.stringify({version:6, ticket, document, language:'Markdown', source, tab_width:4, base_ticket}));
+                            probe.postMessage(JSON.stringify({version:6, ticket, document, language, source, tab_width:4, base_ticket}));
                         });
                         let batches;
                         try {
@@ -237,6 +237,21 @@ def check():
                                 structure:!!structure && ['language','scopes','selections','opaque_starts','protected','brackets'].every(key =>
                                     JSON.stringify(structure[key]) === JSON.stringify(fresh.analysis?.structure?.[key])),
                                 folds:JSON.stringify(warm.analysis?.folds) === JSON.stringify(fresh.analysis?.folds)};
+                            const largeLiteral = 'let s = "' + '文😀'.repeat(149000) + '";\r\n';
+                            const literalStart = yields;
+                            const literal = await probeRequest(903, 'yielded-literal', largeLiteral, null, 'Rust');
+                            const reference = await request('fresh-literal', 'Rust', largeLiteral);
+                            batches.literal = {
+                                bytes:new TextEncoder().encode(largeLiteral).length,
+                                yields:yields - literalStart,
+                                ready:!!literal.status?.Ready && !!reference.status?.Ready,
+                                source:literal.analysis?.source === largeLiteral && reference.analysis?.source === largeLiteral,
+                                colors:JSON.stringify(literal.analysis?.highlights) === JSON.stringify(reference.analysis?.highlights),
+                                structure:JSON.stringify(literal.analysis?.structure) === JSON.stringify(reference.analysis?.structure),
+                                folds:JSON.stringify(literal.analysis?.folds) === JSON.stringify(reference.analysis?.folds),
+                                painted:literal.analysis?.highlights?.some(row => Array.isArray(row) && row.some((token, index) => token[1] === 'String' && token[0] - (index ? row[index - 1][0] : 0) > 1000000))
+                            };
+                            batches.yields = yields;
                         } finally {probe.terminate(); URL.revokeObjectURL(probeUrl);}
                         const oversized = await request('large', 'Rust', 'x'.repeat(2*1024*1024+1));
                         worker.terminate();
@@ -272,9 +287,11 @@ def check():
                 assert result['oversizedStatus'] == 'TooLarge' and result['oversizedAnalysis'] is None, result
                 assert result['batches']['coldYields'] > 0 and result['batches']['yields'] > result['batches']['coldYields'], result['batches']
                 assert all(result['batches'][key] for key in ['ready','source','colors','structure','folds']), result['batches']
+                assert 1_000_000 < result['batches']['literal']['bytes'] < 1_048_576 and result['batches']['literal']['yields'] > 10, result['batches']['literal']
+                assert all(result['batches']['literal'][key] for key in ['ready','source','colors','structure','folds','painted']), result['batches']['literal']
                 print(json.dumps({'providers': len(result['providers'])+1, 'config_languages': len(result['configs']) - 1, 'plain_fallback_languages': 1, 'nested_languages': len(result['nested']), 'incremental': True, 'structural_delta': result['structuralDelta'],
                                   'ui_event_during_worker': result['uiEvent'], 'oversize_fallback': True, 'changed_row_records': result['heavyRowRuns'],
-                                  'cooperative_yields': result['batches']['yields']}))
+                                  'cooperative_yields': result['batches']['yields'], 'large_literal_bytes':result['batches']['literal']['bytes'], 'large_literal_yields':result['batches']['literal']['yields']}))
             finally:
                 browser.stop()
     finally:

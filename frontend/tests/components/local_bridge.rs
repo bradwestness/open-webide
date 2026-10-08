@@ -2022,6 +2022,9 @@ async fn browser_child_task_uses_inherited_files_manual_approval_and_durable_nes
             stop_reason: StopReason::Complete,
             usage: None,
         };
+        // Task naming uses a separate model request; do not consume the child edit.
+        *state.fake.background_completion.borrow_mut() =
+            Some(Ok(completion(ChatResponse::Text("Delegated edit".into()))));
         state.fake.scripted_completions.borrow_mut().extend([
             completion(ChatResponse::ToolCalls(vec![ToolCall { id: "parent-wire".into(), name: "task".into(), arguments: serde_json::json!({"tasks":[{"description":"Delegated edit","prompt":"Write child.txt with after"}]}).to_string() }])),
             completion(ChatResponse::ToolCalls(vec![ToolCall { id: "child-wire".into(), name: "write_file".into(), arguments: serde_json::json!({"path":"child.txt","content":"after"}).to_string() }])),
@@ -2051,7 +2054,11 @@ async fn browser_child_task_uses_inherited_files_manual_approval_and_durable_nes
             .root
             .text_content()
             .unwrap()
-            .contains("Waiting for approval")
+            .contains("Waiting for approval"),
+        "child run error: {:?}; streaming: {}; completions: {}",
+        mounted.state.chat.error.get_untracked(),
+        mounted.state.chat.streaming.get_untracked(),
+        mounted.state.fake.completion_requests.borrow().len()
     );
     let child = mounted
         .state

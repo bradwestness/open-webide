@@ -2,6 +2,7 @@
 //! unsupported languages retain plain-text editing rather than guessing syntax.
 use std::ops::Range;
 use std::sync::Arc;
+pub(super) mod scanning;
 
 use crate::highlight::Language;
 
@@ -129,214 +130,9 @@ impl Structure {
 
     /// Scan borrowed source; callers that only need metadata need no source snapshot.
     pub(super) fn scan(text: &str, language: Language) -> Option<LexicalStructure> {
-        if language == Language::Plain || text.len() > MAX_STRUCTURE_BYTES {
-            return None;
-        }
-        let mut protected = Vec::new();
-        let mut opaque_starts = Vec::new();
-        let mut template_holes = Vec::new();
-        let mut brackets: Vec<(usize, char, Option<usize>)> = Vec::new();
-        let mut stack: Vec<usize> = Vec::new();
-        let mut i = 0;
-        while i < text.len() {
-            let rest = &text[i..];
-            let hash_comments = matches!(
-                language,
-                Language::Python
-                    | Language::Shell
-                    | Language::Toml
-                    | Language::Yaml
-                    | Language::Ini
-                    | Language::Php
-            );
-            let slash_comments = super::line_comment(language) == Some("//");
-            let line_comment = (hash_comments && rest.starts_with('#'))
-                || (slash_comments && rest.starts_with("//"))
-                || (language == Language::Sql && rest.starts_with("--"));
-            if line_comment {
-                let end = rest.find('\n').map_or(text.len(), |n| i + n);
-                protected.push((i..end, false, RegionKind::LineComment));
-                i = end;
-                continue;
-            }
-            let block = if (slash_comments || matches!(language, Language::Css | Language::Sql))
-                && rest.starts_with("/*")
-            {
-                Some(("/*", "*/", language == Language::Rust))
-            } else if matches!(
-                language,
-                Language::Html | Language::Xml | Language::Markdown | Language::MarkdownInline
-            ) && rest.starts_with("<!--")
-            {
-                Some(("<!--", "-->", false))
-            } else {
-                None
-            };
-            if let Some((open, close, nested)) = block {
-                let start = i;
-                i += open.len();
-                let mut depth = 1;
-                while i < text.len() && depth > 0 {
-                    if nested && text[i..].starts_with(open) {
-                        depth += 1;
-                        i += open.len();
-                    } else if text[i..].starts_with(close) {
-                        depth -= 1;
-                        i += close.len();
-                    } else {
-                        i += text[i..].chars().next().unwrap().len_utf8();
-                    }
-                }
-                protected.push((start..i, depth == 0, RegionKind::BlockComment));
-                continue;
-            }
-            // Rust raw strings use a matching number of hashes, not backslash escapes.
-            if language == Language::Rust && (rest.starts_with('r') || rest.starts_with("br")) {
-                let prefix = if rest.starts_with("br") { 2 } else { 1 };
-                let hashes = rest[prefix..].bytes().take_while(|b| *b == b'#').count();
-                if rest.as_bytes().get(prefix + hashes) == Some(&b'"') {
-                    let close = format!("\"{}", "#".repeat(hashes));
-                    let start = i;
-                    i += prefix + hashes + 1;
-                    let found = text[i..].find(&close);
-                    i = found.map_or(text.len(), |n| i + n + close.len());
-                    protected.push((start..i, found.is_some(), RegionKind::String));
-                    continue;
-                }
-            }
-            // A slash in expression-start position can begin a JavaScript regex.
-            // Character classes and escaped slashes do not end the literal.
-            if matches!(
-                language,
-                Language::JavaScript | Language::TypeScript | Language::Jsx | Language::Tsx
-            ) && rest.starts_with('/')
-                && regex_position(&text[..i])
-            {
-                let start = i;
-                i += 1;
-                let mut class = false;
-                let mut closed = false;
-                while i < text.len() && text.as_bytes()[i] != b'\n' {
-                    let ch = text[i..].chars().next().unwrap();
-                    i += ch.len_utf8();
-                    match ch {
-                        '\\' => {
-                            if i < text.len() {
-                                i += text[i..].chars().next().unwrap().len_utf8();
-                            }
-                        }
-                        '[' => class = true,
-                        ']' => class = false,
-                        '/' if !class => {
-                            closed = true;
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                protected.push((start..i, closed, RegionKind::Regex));
-                continue;
-            }
-            let ch = rest.chars().next().unwrap();
-            if language == Language::Yaml
-                && matches!(ch, '|' | '>')
-                && let Some(end) = yaml_scalar_end(text, i)
-            {
-                protected.push((i..end, true, RegionKind::String));
-                i = end;
-                continue;
-            }
-            let quotes = supports_quote(language, ch);
-            // An apostrophe before a Rust identifier is a lifetime unless a closing
-            // apostrophe follows its single character (possibly an escape).
-            let lifetime = language == Language::Rust && ch == '\'' && {
-                let after = &rest[1..];
-                after
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_alphabetic() || c == '_')
-                    && !after.chars().nth(1).is_some_and(|c| c == '\'')
-            };
-            if ch == '`'
-                && matches!(
-                    language,
-                    Language::JavaScript | Language::TypeScript | Language::Jsx | Language::Tsx
-                )
-            {
-                let (end, closed, hole) = template_fragment(text, i, true);
-                protected.push((i..end, closed, RegionKind::Template));
-                if let Some(hole) = hole {
-                    template_holes.push(hole);
-                    i = hole;
-                } else {
-                    i = end;
-                }
-                continue;
-            }
-            if quotes && !lifetime {
-                let start = i;
-                let triple =
-                    language == Language::Python && rest.starts_with(&ch.to_string().repeat(3));
-                let delimiter = ch.to_string().repeat(if triple { 3 } else { 1 });
-                i += delimiter.len();
-                let mut closed = false;
-                while i < text.len() {
-                    if text[i..].starts_with(&delimiter) {
-                        i += delimiter.len();
-                        closed = true;
-                        break;
-                    }
-                    if text.as_bytes()[i] == b'\\' && !(language == Language::Go && ch == '`') {
-                        i += 1;
-                        if i < text.len() {
-                            i += text[i..].chars().next().unwrap().len_utf8();
-                        }
-                    } else {
-                        i += text[i..].chars().next().unwrap().len_utf8();
-                    }
-                }
-                protected.push((start..i, closed, RegionKind::String));
-                continue;
-            }
-            if supports_brackets(language) && matches!(ch, '(' | '[' | '{' | ')' | ']' | '}') {
-                if brackets.len() == MAX_BRACKETS {
-                    return None;
-                }
-                let index = brackets.len();
-                brackets.push((i, ch, None));
-                if matches!(ch, '(' | '[' | '{') {
-                    stack.push(index);
-                } else if let Some(&open) = stack.last()
-                    && closing(brackets[open].1) == Some(ch)
-                {
-                    stack.pop();
-                    brackets[open].2 = Some(i);
-                    brackets[index].2 = Some(brackets[open].0);
-                    if template_holes.last() == Some(&brackets[open].0) {
-                        template_holes.pop();
-                        let start = i + ch.len_utf8();
-                        let (end, closed, hole) = template_fragment(text, start, false);
-                        if start < end {
-                            opaque_starts.push(start);
-                            protected.push((start..end, closed, RegionKind::Template));
-                        }
-                        if let Some(hole) = hole {
-                            template_holes.push(hole);
-                            i = hole;
-                        } else {
-                            i = end;
-                        }
-                        continue;
-                    }
-                }
-            }
-            i += ch.len_utf8();
-        }
-        Some(LexicalStructure {
-            opaque_starts,
-            protected,
-            brackets,
-        })
+        let mut scan = scanning::LexicalScan::new(language);
+        scan.advance(text, usize::MAX)?;
+        scan.finish()
     }
 
     fn unavailable() -> Self {
@@ -615,26 +411,6 @@ fn yaml_scalar_end(text: &str, offset: usize) -> Option<usize> {
     Some(end)
 }
 
-/// Scan literal text up to a closing backtick or an interpolation opening brace.
-fn template_fragment(text: &str, start: usize, opening: bool) -> (usize, bool, Option<usize>) {
-    let mut position = start + usize::from(opening);
-    while position < text.len() {
-        let rest = &text[position..];
-        if rest.starts_with("${") {
-            return (position, false, Some(position + 1));
-        }
-        let ch = rest.chars().next().unwrap();
-        position += ch.len_utf8();
-        if ch == '`' {
-            return (position, true, None);
-        }
-        if ch == '\\' && position < text.len() {
-            position += text[position..].chars().next().unwrap().len_utf8();
-        }
-    }
-    (position, false, None)
-}
-
 fn regex_position(before: &str) -> bool {
     let before = before.trim_end();
     before.is_empty()
@@ -644,10 +420,16 @@ fn regex_position(before: &str) -> bool {
                 '=' | '(' | '[' | '{' | ',' | ':' | ';' | '!' | '?' | '&' | '|'
             )
         })
-        || before
-            .rsplit(|ch: char| !ch.is_alphanumeric() && ch != '_')
-            .next()
-            .is_some_and(|word| matches!(word, "return" | "throw" | "case" | "yield" | "await"))
+        || ["return", "throw", "case", "yield", "await"]
+            .iter()
+            .any(|word| {
+                before.strip_suffix(word).is_some_and(|prefix| {
+                    prefix
+                        .chars()
+                        .next_back()
+                        .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_')
+                })
+            })
 }
 
 pub fn supports_quote(language: Language, ch: char) -> bool {

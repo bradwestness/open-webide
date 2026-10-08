@@ -1,10 +1,13 @@
 //! Source-bound parsing progress; synchronous and yielding drivers share this engine.
 use super::{
-    EmbeddedSyntax, InjectionSelection, MAX_PROGRESS_CHECKS, MAX_STRUCTURE_BYTES, SyntaxAnalysis,
-    SyntaxDocument, SyntaxStatus, indexed_point, input_edit, input_edit_change, new_parser,
-    preparation_exceeds_limits, syntax_provider,
+    EmbeddedSyntax, FallbackContexts, InjectionSelection, MAX_PROGRESS_CHECKS, MAX_STRUCTURE_BYTES,
+    SyntaxAnalysis, SyntaxDocument, SyntaxStatus, indexed_point, input_edit, input_edit_change,
+    new_parser, preparation_exceeds_limits, syntax_provider,
 };
+use crate::editor::structure::scanning::LexicalScan;
 use crate::highlight::Language;
+
+const FALLBACK_BATCH_BYTES: usize = 8 * 1024;
 use std::{collections::HashMap, ops::ControlFlow, sync::Arc};
 use tree_sitter::{InputEdit, ParseOptions, Parser, Range, Tree};
 
@@ -17,6 +20,7 @@ pub(super) struct SyntaxWork {
     embedded: Option<EmbeddedWork>,
     checks: usize,
     selection: InjectionSelection,
+    fallback: LexicalScan,
 }
 struct EmbeddedWork {
     selected: std::vec::IntoIter<(Language, Range)>,
@@ -31,6 +35,7 @@ struct EmbeddedBody {
     body: EmbeddedSyntax,
     previous: Option<Tree>,
     parser_index: usize,
+    fallback: LexicalScan,
     #[cfg(test)]
     checks_at_start: usize,
 }
@@ -70,6 +75,7 @@ impl SyntaxDocument {
             return Some(SyntaxStatus::Ready { incremental: true });
         }
         self.prepared = None;
+        self.outer_fallback = None;
         if self.parser.is_none() {
             self.text = source();
             self.ready = true;
@@ -106,6 +112,7 @@ impl SyntaxDocument {
             embedded: None,
             checks: 0,
             selection: InjectionSelection::default(),
+            fallback: LexicalScan::new(self.language),
         });
         None
     }
@@ -162,6 +169,9 @@ impl SyntaxDocument {
             }
             Ok(true) => {
                 self.ready = true;
+                self.outer_fallback = Some(Arc::new(FallbackContexts::from_lexical(
+                    work.fallback.finish().unwrap_or_default(),
+                )));
                 self.tree = work.tree;
                 self.embedded = work.embedded.map_or_else(Vec::new, |work| work.next);
                 let mut paint = self.paint.borrow_mut();
@@ -292,6 +302,9 @@ impl SyntaxWork {
             }
             if embedded.current.is_none() {
                 let Some((language, range)) = embedded.selected.next() else {
+                    if self.fallback.advance(&self.source, FALLBACK_BATCH_BYTES) == Some(false) {
+                        continue;
+                    }
                     return Ok(true);
                 };
                 if let Some(bodies) = embedded
@@ -318,7 +331,7 @@ impl SyntaxWork {
                         contexts: std::cell::RefCell::default(),
                         highlights: std::cell::RefCell::default(),
                     });
-                let mut previous = body.tree.clone();
+                let mut previous = body.tree.take();
                 if let Some(tree) = previous.as_mut() {
                     tree.edit(&self.edit);
                 }
@@ -346,29 +359,47 @@ impl SyntaxWork {
                     body,
                     previous,
                     parser_index,
+                    fallback: LexicalScan::new(language),
                     #[cfg(test)]
                     checks_at_start: self.checks,
                 });
             }
             let current = embedded.current.as_mut().unwrap();
-            let Some(tree) = parse_step(
-                &mut document.embedded_parsers[current.parser_index].1,
-                &self.source,
-                current.previous.as_ref(),
-                &mut self.checks,
-                should_continue,
-                should_yield,
-            )?
-            else {
-                return Ok(false);
-            };
-            let mut current = embedded.current.take().unwrap();
-            current.body.tree = Some(tree);
-            embedded.next.push(current.body);
-            #[cfg(test)]
-            {
-                document.embedded_parses += 1;
+            if current.body.tree.is_none() {
+                let Some(tree) = parse_step(
+                    &mut document.embedded_parsers[current.parser_index].1,
+                    &self.source,
+                    current.previous.as_ref(),
+                    &mut self.checks,
+                    should_continue,
+                    should_yield,
+                )?
+                else {
+                    return Ok(false);
+                };
+                current.body.tree = Some(tree);
+                current.previous = None;
+                #[cfg(test)]
+                {
+                    document.embedded_parses += 1;
+                }
             }
+            if should_yield() {
+                return Ok(false);
+            }
+            let range = current.body.range;
+            if current.fallback.advance(
+                &self.source[range.start_byte..range.end_byte],
+                FALLBACK_BATCH_BYTES,
+            ) == Some(false)
+            {
+                continue;
+            }
+            let current = embedded.current.take().unwrap();
+            *current.body.fallback.borrow_mut() = Some(Arc::new(FallbackContexts::from_lexical(
+                current.fallback.finish().unwrap_or_default(),
+            )));
+            embedded.next.push(current.body);
         }
     }
 }
@@ -414,6 +445,125 @@ fn parse_step(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outer_and_embedded_large_literal_scans_yield_and_cancel() {
+        let literal = "文😀".repeat(149_000);
+        for (language, source, embedded) in [
+            (Language::Rust, format!("let s = \"{literal}\";\n"), false),
+            (
+                Language::Markdown,
+                format!("```rust\nlet s = \"{literal}\";\n```\n"),
+                true,
+            ),
+        ] {
+            let source = Arc::new(source);
+            assert!(source.len() > 1_000_000 && source.len() < 1_048_576);
+            let mut document = SyntaxDocument::new(language).unwrap();
+            let mut scan_batches = 0;
+            let mut previous_position = 0;
+            let mut total_batches = 0;
+            let result = loop {
+                let mut checks = 0;
+                let result = document.prepare_cooperative(
+                    source.clone(),
+                    4,
+                    || true,
+                    || {
+                        checks += 1;
+                        checks >= 8
+                    },
+                );
+                total_batches += 1;
+                assert!(total_batches < 10_000);
+                if let Some(result) = result {
+                    break result;
+                }
+                assert!(document.structure().is_none());
+                let work = document.pending.as_ref().unwrap();
+                let position = if embedded {
+                    work.embedded
+                        .as_ref()
+                        .and_then(|bodies| bodies.current.as_ref())
+                        .filter(|body| body.body.tree.is_some())
+                        .map_or(0, |body| body.fallback.position())
+                } else {
+                    work.fallback.position()
+                };
+                if position > 0 {
+                    assert!(position >= previous_position);
+                    assert!(position - previous_position <= (FALLBACK_BATCH_BYTES + 4) * 8);
+                    previous_position = position;
+                    scan_batches += 1;
+                }
+            };
+            assert!(
+                scan_batches > 10,
+                "the large literal cannot finish in one scan task"
+            );
+            assert_eq!(result.0, SyntaxStatus::Ready { incremental: false });
+            let actual = result.1.unwrap();
+            assert!(Arc::ptr_eq(actual.source_snapshot(), &source));
+            let mut fresh = SyntaxDocument::new(language).unwrap();
+            let (_, expected) = fresh.prepare_shared(source.clone(), 4, || true);
+            assert_eq!(
+                serde_json::to_value(actual.transfer_data()).unwrap(),
+                serde_json::to_value(expected.unwrap().transfer_data()).unwrap()
+            );
+
+            let mut cancelled = SyntaxDocument::new(language).unwrap();
+            let cancel_source = Arc::new(source.as_str().to_owned());
+            let weak = Arc::downgrade(&cancel_source);
+            loop {
+                let mut checks = 0;
+                assert!(
+                    cancelled
+                        .prepare_cooperative(
+                            cancel_source.clone(),
+                            4,
+                            || true,
+                            || {
+                                checks += 1;
+                                checks >= 8
+                            }
+                        )
+                        .is_none()
+                );
+                let work = cancelled.pending.as_ref().unwrap();
+                let position = if embedded {
+                    work.embedded
+                        .as_ref()
+                        .and_then(|bodies| bodies.current.as_ref())
+                        .filter(|body| body.body.tree.is_some())
+                        .map_or(0, |body| body.fallback.position())
+                } else {
+                    work.fallback.position()
+                };
+                if position > 0 {
+                    break;
+                }
+            }
+            assert_eq!(
+                cancelled
+                    .prepare_cooperative(cancel_source.clone(), 4, || false, || false)
+                    .unwrap()
+                    .0,
+                SyntaxStatus::Cancelled
+            );
+            assert!(cancelled.pending.is_none() && cancelled.outer_fallback.is_none());
+            assert!(cancelled.embedded.is_empty());
+            drop(cancel_source);
+            assert!(weak.upgrade().is_none());
+            let replacement = Arc::new("fn recovered() {}\n".to_owned());
+            assert!(matches!(
+                cancelled
+                    .prepare_cooperative(replacement, 4, || true, || false)
+                    .unwrap()
+                    .0,
+                SyntaxStatus::Ready { .. }
+            ));
+        }
+    }
 
     #[test]
     fn injection_selection_resumes_at_exact_nodes_and_keeps_global_limits() {

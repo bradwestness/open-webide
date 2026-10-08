@@ -9,6 +9,15 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Keep automatic task naming separate from scripted child edits in the browser
+  approval regression fixture so CI checks the intended approval and history flow.
+
+- Resume outer and embedded fallback scanning across syntax worker tasks, including
+  long strings, raw strings, comments, regexes and template interpolation. Retain
+  lexical state and publish only complete metadata; synchronous callers use the
+  same scanner. YAML scalar lookahead and final assembly remain synchronous.
+
+
 - Retain relative fallback contexts for unchanged embedded syntax bodies across
   source edits and coordinate shifts; rescan changed/new bodies without retaining
   extra source snapshots or bracket tables.
