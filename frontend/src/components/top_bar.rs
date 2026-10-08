@@ -12,6 +12,7 @@ use leptos::prelude::*;
 pub fn TopBar(
     on_open_settings: Callback<()>,
     on_logout: Callback<()>,
+    #[prop(default = Callback::new(|()| ()))] on_select_chat: Callback<()>,
     #[prop(default = Callback::new(|()| ()))] on_open_local: Callback<()>,
     #[prop(default = Callback::new(|()| ()))] on_open_remote: Callback<()>,
     #[prop(default = Callback::new(|_: i64| ()))] on_open_project: Callback<i64>,
@@ -21,6 +22,7 @@ pub fn TopBar(
     let auth = expect_context::<AuthState>();
     let layout = expect_context::<LayoutState>();
     let ui = expect_context::<UiState>();
+    let projects = expect_context::<ProjectsState>();
     let menu_open = RwSignal::new(false);
     let account_open = RwSignal::new(false);
     let close = Callback::new(move |()| menu_open.set(false));
@@ -48,7 +50,8 @@ pub fn TopBar(
                 <button type="button" class="btn ghost logo app-drawer-trigger" aria-label="App menu" aria-controls="app-drawer" aria-expanded=move || menu_open.get().to_string() on:click=move |_| menu_open.set(true)><super::ui::LogoMark /><span class="brand-name">"Open WebIDE"</span><super::ui::Icon name=super::ui::IconName::ChevronDown /></button>
             </Show>
             {children.map(|children| children())}
-            <button type="button" class="btn ghost omnibar-trigger" aria-label="Search commands, files, projects and sessions" title="Search (Ctrl/⌘+Shift+P)" on:click=move |_| ui.palette_open.set(true)><super::ui::Icon name=super::ui::IconName::Search /><span>"Search…"</span><kbd>"⌘/Ctrl ⇧ P"</kbd></button>
+            {if use_context::<crate::state_actions::omnibar::OmnibarActions>().is_some() { view! { <super::Omnibar /> }.into_any() } else { view! { <input class="form-input omnibar-trigger" aria-label="Search commands, files, projects and sessions" placeholder="Search…" disabled /> }.into_any() }}
+            <button class="btn ghost chat-tab" title="Chat without a project" aria-label="Chat without a project" aria-pressed={move || projects.active_project.get().is_none().to_string()} on:click=move |_| on_select_chat.run(())><super::ui::Icon name=super::ui::IconName::MessageCircle /></button>
             <Show when=move || auth.username.get().is_some()>
                 <super::dropdown::Dropdown aria_label="Account menu" class="topbar-account" open=account_open label=move || view! { <super::ui::Icon name=super::ui::IconName::User /><span class="topbar-user">{move || auth.username.get().unwrap_or_default()}</span> }>
                     <button role="menuitem" class="ui-dropdown-item recent-item" aria-label="Log out" on:click=move |_| { account_open.set(false); on_logout.run(()); }><super::ui::Icon name=super::ui::IconName::LogOut /><span>"Log out"</span></button>

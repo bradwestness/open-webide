@@ -3356,9 +3356,15 @@ button.browser-item {
 .app-navigation .logo { font-size: var(--font-control); padding: 4px; }
 .app-navigation .logo-mark { width: 28px; height: 28px; }
 .app-navigation .logo .ui-dropdown-label { display: inline-flex; align-items: center; gap: var(--space-2); }
-.omnibar-trigger { flex: 0 1 220px; min-width: 44px; justify-content: flex-start; color: var(--text-muted); }
-.omnibar-trigger > span:not(.ui-icon-glyph) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.omnibar-trigger kbd { margin-left: auto; font-size: var(--font-caption); white-space: nowrap; }
+.omnibar-trigger { position: relative; flex: 0 1 360px; min-width: 160px; color: var(--text-muted); }
+.omnibar-field { box-sizing: border-box; width: 100%; gap: var(--space-2); padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); }
+.omnibar-field:focus-within { border-color: var(--accent); }
+.omnibar-field .command-search { flex: 1; width: 0; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; font: inherit; font-size: var(--font-control); }
+.omnibar-trigger kbd { flex: none; font-size: var(--font-caption); white-space: nowrap; }
+.omnibar-panel { position: fixed; z-index: 151; display: flex; flex-direction: column; box-sizing: border-box; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-panel); color: var(--text); box-shadow: 0 8px 24px rgba(0,0,0,.4); overflow: hidden; }
+.omnibar-panel .command-results { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.app-navigation > .chat-tab { flex: none; }
+
 .app-menu-heading, .ui-menu-heading { font-size: var(--font-caption); color: var(--text-muted); padding: var(--space-2); margin: 0; }
 .app-menu .ui-dropdown-menu { min-width: 280px; max-height: calc(100dvh - 64px); overflow-y: auto; }
 .app-menu-items { display: flex; flex-direction: column; }
@@ -3368,7 +3374,7 @@ button.browser-item {
 .app-configuration [hidden] { display: none; }
 .modal-overlay:has(> .app-drawer) { align-items: stretch; justify-content: flex-start; padding: 0; }
 .phone-layout .app-navigation .brand-name, .phone-layout .app-navigation > .tabbar-wrap, .phone-layout .omnibar-trigger kbd { display: none; }
-.phone-layout .app-navigation .omnibar-trigger { flex: 1; }
+.phone-layout .app-navigation .omnibar-trigger { flex: 1; min-width: 0; }
 .phone-layout .app-navigation .topbar-account { margin-left: auto; }
 .phone-layout .app-drawer { width: min(340px, calc(100vw - 32px)); max-width: none; height: var(--visible-height, 100dvh); max-height: var(--visible-height, 100dvh); border-radius: 0; margin: 0; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); box-sizing: border-box; }
 @media (max-width: 1100px) { .app-navigation .brand-name, .omnibar-trigger kbd { display: none; } }

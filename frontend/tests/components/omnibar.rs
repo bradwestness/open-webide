@@ -87,7 +87,7 @@ async fn universal_search_discovers_nested_files_through_both_adapters_and_navig
             session.name = "Other conversation".into();
             state.fake.sessions.borrow_mut().push(session);
             command_actions(state.clone());
-            view! {<button class="opener" on:click=move |_|state.ui.palette_open.set(true)>"Search"</button><CommandDialogs />}
+            view! {<button class="opener" on:click=move |_|state.ui.palette_open.set(true)>"Search"</button><openwebide_frontend::components::Omnibar /><CommandDialogs />}
         });
         settle().await;
         mounted.click(".opener");
@@ -157,7 +157,7 @@ async fn discovery_failures_keep_commands_available_and_late_results_cannot_cros
     let mounted = mount_test(|state| {
         state.seed_project();
         command_actions(state.clone());
-        view! {<button class="opener" on:click=move |_|state.ui.palette_open.set(true)>"Search"</button><CommandDialogs />}
+        view! {<button class="opener" on:click=move |_|state.ui.palette_open.set(true)>"Search"</button><openwebide_frontend::components::Omnibar /><CommandDialogs />}
     });
     settle().await;
     let (send, receive) = futures::channel::oneshot::channel();
@@ -259,7 +259,7 @@ async fn phone_drawer_and_desktop_menu_share_configuration_and_project_actions()
             let layout = expect_context::<LayoutState>();
             slot.set(Some(layout));
             view! {<style>{include_str!("../../styles.css")}</style><div class="app" style="width:1000px;height:700px" class:phone-layout=move ||layout.phone.get()>
-                <TopBar on_open_settings=settings.on_open_settings on_logout=Callback::new(|()|()) on_open_local=Callback::new(move |()|opened.update(|count|*count+=1)) on_open_remote=Callback::new(move |()|opened.update(|count|*count+=10))><TabBar on_select=Callback::new(|_|()) on_select_chat=Callback::new(|()|()) on_close=Callback::new(|_|()) /></TopBar>
+                <TopBar on_open_settings=settings.on_open_settings on_logout=Callback::new(|()|()) on_open_local=Callback::new(move |()|opened.update(|count|*count+=1)) on_open_remote=Callback::new(move |()|opened.update(|count|*count+=10))><TabBar show_chat=false on_select=Callback::new(|_|()) on_select_chat=Callback::new(|()|()) on_close=Callback::new(|_|()) /></TopBar>
                 <Sidebar on_select_session=Callback::new(|_|()) on_new_session=Callback::new(|()|()) on_rename_session=Callback::new(|_|()) on_delete_session=Callback::new(|_|()) />
                 <Configuration on_new_connection=settings.on_new_connection on_edit_connection=settings.on_edit_connection on_cancel_connection=settings.on_cancel_connection on_delete_connection=settings.on_delete_connection on_new_prompt=settings.on_new_prompt on_edit_prompt=settings.on_edit_prompt on_save_prompt=settings.on_save_prompt on_cancel_prompt=settings.on_cancel_prompt on_delete_prompt=settings.on_delete_prompt />
                 <CommandDialogs />
@@ -387,7 +387,7 @@ async fn compact_editor_uses_one_footer_and_shared_tree_preferences_in_both_mode
             let health = RwSignal::new(None);
             let layout = expect_context::<LayoutState>();
             let editor = editor_view(state);
-            view! { <style>{include_str!("../../styles.css")}</style><div class="app" class:phone-layout=move || layout.phone.get() style="width:1000px;height:700px"><ToolPanel panel=Panel::Editor>{editor}</ToolPanel><FilesPanel on_new_file=Callback::new(|()|()) on_new_dir=Callback::new(|()|())><FileTree on_toggle=Callback::new(|_|()) on_open=Callback::new(|_|()) /></FilesPanel><StatusBar health=health.read_only() on_toggle_terminal=||() /><CommandDialogs /></div> }
+            view! { <style>{include_str!("../../styles.css")}</style><div class="app" class:phone-layout=move || layout.phone.get() style="width:1000px;height:700px"><ToolPanel panel=Panel::Editor>{editor}</ToolPanel><FilesPanel on_new_file=Callback::new(|()|()) on_new_dir=Callback::new(|()|())><FileTree on_toggle=Callback::new(|_|()) on_open=Callback::new(|_|()) /></FilesPanel><StatusBar health=health.read_only() on_toggle_terminal=||() /><openwebide_frontend::components::Omnibar /><CommandDialogs /></div> }
         });
         settle().await;
         wait_until("editor status in app footer", || {

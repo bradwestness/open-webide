@@ -65,6 +65,7 @@ impl OmnibarActions {
             notice.set(None);
             loading.set(false);
             if !open {
+                query.set(String::new());
                 opened_scope.set_value(None);
                 return;
             }
@@ -77,7 +78,6 @@ impl OmnibarActions {
                 return;
             }
             opened_scope.set_value(Some(token));
-            query.set(String::new());
             sessions.set(chat.sessions.get_untracked());
             loading.set(true);
             let current = move || {

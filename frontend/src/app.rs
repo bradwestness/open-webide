@@ -378,8 +378,8 @@ pub fn App() -> impl IntoView {
                     >
                         <div class="app" class:phone-layout=move || layout.phone.get()>
                             <crate::components::CommandDialogs />
-                            <TopBar on_open_settings=on_open_settings on_logout=on_logout on_open_local=on_open_local on_open_remote=on_open_remote on_open_project=on_open_project on_delete_project=on_delete_project>
-                                <TabBar on_select_chat=Callback::new(move |()| { select_chat.run(()); layout_actions.show.run(Panel::Chat); }) on_select=select_project on_tab_action=tab_action on_close=close_project />
+                            <TopBar on_select_chat=Callback::new(move |()| { select_chat.run(()); layout_actions.show.run(Panel::Chat); }) on_open_settings=on_open_settings on_logout=on_logout on_open_local=on_open_local on_open_remote=on_open_remote on_open_project=on_open_project on_delete_project=on_delete_project>
+                                <TabBar show_chat=false on_select_chat=Callback::new(move |()| { select_chat.run(()); layout_actions.show.run(Panel::Chat); }) on_select=select_project on_tab_action=tab_action on_close=close_project />
                             </TopBar>
                             <crate::components::Configuration on_new_connection=on_new_connection on_edit_connection=on_edit_connection on_cancel_connection=on_cancel_connection on_delete_connection=on_delete_connection on_new_prompt=on_new_prompt on_edit_prompt=on_edit_prompt on_save_prompt=on_save_prompt on_cancel_prompt=on_cancel_prompt on_delete_prompt=on_delete_prompt />
                             <div class=move || format!("app-body{}{}", if active_resizer.get() != ActiveResizer::None { " is-resizing" } else { "" }, if layout.visible_panels.get().editor { "" } else { " editor-collapsed" })>

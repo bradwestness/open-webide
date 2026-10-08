@@ -29,7 +29,7 @@ pub mod ui;
 
 pub use auth_gate::AuthGate;
 pub use chat_pane::{ChatPane, ToolStepResult};
-pub use commands::CommandDialogs;
+pub use commands::{CommandDialogs, Omnibar};
 pub use confirm_dialog::ConfirmDialog;
 pub use editor::Editor;
 #[cfg(feature = "test-support")]

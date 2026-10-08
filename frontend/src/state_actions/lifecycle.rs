@@ -81,6 +81,9 @@ pub fn install_keyboard_shortcuts(chat: ChatState) {
             }
             let modifier = event.ctrl_key() || event.meta_key();
             let key = event.key().to_lowercase();
+            if ui.palette_open.get_untracked() && !(modifier && event.shift_key() && key == "p") {
+                return;
+            }
             let command = if modifier && event.shift_key() && key == "p" && !event.alt_key() {
                 Some(crate::commands::Command::Palette)
             } else if modifier && !event.alt_key() && event.code() == "Slash" {

@@ -208,12 +208,19 @@ autocomplete) into the editor while keeping the core diagnostics engine
   pending-edit review; reject stale selections after document or project changes.
 - Offer the same actions through keyboard and touch controls in both modes.
 
+### Project memory
+
+- Store project memories in the user-scoped database and share them across project sessions in both modes.
+- Add a Memories section below the Sessions listing with editable entries and a Project memory toggle in its header. Enable it by default; persist opt-out in database settings.
+- When enabled, include bounded memory context in runs and offer agent tools to create, search, read, update and delete memories. Disabling removes automatic context and tools while preserving stored entries for viewing and deletion.
+- Keep retrieval, validation, limits and ownership checks shared across local and remote execution; reject stale project/account responses.
+
 ### Phone device verification
 
 The compact app/editor rows, universal search, logo drawer, single status footer,
 on-demand pane controls, grouped menus, responsive dialogs, tree controls and Git icons/counts are implemented in
 both modes, with browser coverage for narrow layouts, focus restoration, keyboard
-navigation, stable file-tab geometry across preview availability changes, tooltip dismissal during pointer activation and scroll restoration, and review safeguards. Remaining checks need physical devices:
+navigation, inline header search with viewport-bounded results, stable file-tab geometry across preview availability changes, tooltip dismissal during pointer activation and scroll restoration, and review safeguards. Remaining checks need physical devices:
 
 - Verify density, model/approval controls, activity-group touch controls and the
   compact context indicator on real phones in both modes.

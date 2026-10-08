@@ -7,6 +7,7 @@ use crate::state::projects::ProjectsState;
 #[component]
 pub fn TabBar(
     on_select: Callback<i64>,
+    #[prop(default = true)] show_chat: bool,
     on_select_chat: Callback<()>,
     on_close: Callback<i64>,
     #[prop(default = Callback::new(|_| ()))] on_tab_action: Callback<(i64, crate::tabs::TabAction)>,
@@ -57,7 +58,7 @@ pub fn TabBar(
                     }
                 />
             </div>
-            <button
+            <Show when=move || show_chat><button
                 class=move || if active_project.get().is_none() { "tab chat-tab active" } else { "tab chat-tab" }
                 title="Chat without a project — web tools and host information"
                 aria-label="Chat without a project"
@@ -65,7 +66,7 @@ pub fn TabBar(
                 on:click=move |_| { on_select_chat.run(()); }
             >
                 <super::ui::Icon name=super::ui::IconName::MessageCircle />
-            </button>
+            </button></Show>
 
         </div>
     }

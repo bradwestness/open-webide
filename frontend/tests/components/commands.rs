@@ -62,7 +62,7 @@ async fn palette_search_keyboard_capabilities_and_actions_share_every_mode() {
             }
             command_actions(state.clone());
             install_keyboard_shortcuts(state.chat);
-            view! { <button class="opener" on:click=move |_| state.ui.palette_open.set(true)>"Commands"</button><textarea class="composer-input"/><CommandDialogs/> }
+            view! { <button class="opener" on:click=move |_| state.ui.palette_open.set(true)>"Commands"</button><textarea class="composer-input"/><openwebide_frontend::components::Omnibar /><CommandDialogs/> }
         });
         settle().await;
         let opener = mounted.element(".opener");
@@ -195,7 +195,7 @@ async fn commands_close_on_scope_change_and_reject_stale_project_actions() {
         state.seed_session();
         let actions = command_actions(state.clone());
         install_keyboard_shortcuts(state.chat);
-        view! { <button class="opener" on:click=move |_| actions.run.run(Command::Palette)>"Commands"</button><CommandDialogs/> }
+        view! { <button class="opener" on:click=move |_| actions.run.run(Command::Palette)>"Commands"</button><openwebide_frontend::components::Omnibar /><CommandDialogs/> }
     });
     settle().await;
     mounted.click(".opener");
@@ -237,7 +237,7 @@ async fn palette_panel_actions_and_direct_shortcuts_use_one_layout_facade() {
             view! { <button class="opener" on:click=move |_| actions.run.run(Command::Palette)>"Commands"</button>
             <span class="terminal-visible">{move || layout.visible_panels.get().terminal.to_string()}</span>
             <span class="files-visible">{move || layout.visible_panels.get().visible(Panel::Files).to_string()}</span>
-            <CommandDialogs/> }
+            <openwebide_frontend::components::Omnibar /><CommandDialogs/> }
         });
         settle().await;
         mounted.click(".opener");
@@ -288,7 +288,7 @@ async fn palette_captures_editor_selection_and_focuses_chat_without_overwriting_
             let actions = command_actions(state.clone());
             install_keyboard_shortcuts(state.chat);
             view! { <button class="opener" on:click=move |_| actions.run.run(Command::Palette)>"Commands"</button>
-            {super::support::editor_view(state.clone())}<textarea class="composer-input"/><CommandDialogs/> }
+            {super::support::editor_view(state.clone())}<textarea class="composer-input"/><openwebide_frontend::components::Omnibar /><CommandDialogs/> }
         });
         settle().await;
         let editor: web_sys::HtmlTextAreaElement =
@@ -332,6 +332,92 @@ async fn palette_captures_editor_selection_and_focuses_chat_without_overwriting_
                 .active_element()
                 .unwrap()
                 .is_same_node(Some(&editor))
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn inline_search_retains_input_and_closes_without_a_modal_in_every_mode() {
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_session();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            command_actions(state.clone());
+            install_keyboard_shortcuts(state.chat);
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <div class="app" style="width:100%;height:700px">
+                    <openwebide_frontend::components::TopBar on_open_settings=Callback::new(|()|()) on_logout=Callback::new(|()|())>
+                        <openwebide_frontend::components::TabBar show_chat=false on_select=Callback::new(|_|()) on_select_chat=Callback::new(|()|()) on_close=Callback::new(|_|()) />
+                    </openwebide_frontend::components::TopBar>
+                    <button class="outside">"Outside"</button>
+                </div>
+            }
+        });
+        settle().await;
+        let search = mounted.element(".command-search");
+        let chat = mounted.element(".topbar > .chat-tab");
+        assert!(
+            search.get_bounding_client_rect().right() <= chat.get_bounding_client_rect().left()
+        );
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all(".chat-tab")
+                .unwrap()
+                .length(),
+            1
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".omnibar-panel")
+                .unwrap()
+                .is_none()
+        );
+        query(&mounted, ">theme");
+        settle().await;
+        search.focus().unwrap();
+        settle().await;
+        assert_eq!(
+            mounted
+                .element(".command-search")
+                .unchecked_ref::<web_sys::HtmlInputElement>()
+                .value(),
+            ">theme"
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector("[aria-modal=true]")
+                .unwrap()
+                .is_none()
+        );
+        let panel = mounted.element(".omnibar-panel").get_bounding_client_rect();
+        let viewport_width = f64::from(document().document_element().unwrap().client_width());
+        assert!(
+            panel.width() <= 720.0 && panel.left() >= 7.0 && panel.right() <= viewport_width - 7.0
+        );
+        assert!(panel.top() >= search.get_bounding_client_rect().bottom());
+        assert!(!key(&search, "Escape", "Escape", false, false, false));
+        settle().await;
+        assert!(!mounted.state.ui.palette_open.get_untracked());
+        assert!(search.is_same_node(Some(&mounted.element(".command-search"))));
+        search.click();
+        settle().await;
+        assert!(mounted.state.ui.palette_open.get_untracked());
+        mounted.element(".outside").focus().unwrap();
+        settle().await;
+        assert!(!mounted.state.ui.palette_open.get_untracked());
+        assert!(
+            document()
+                .active_element()
+                .unwrap()
+                .is_same_node(Some(&mounted.element(".outside")))
         );
     }
 }
