@@ -184,6 +184,16 @@ mod tests {
                     .await
                     .unwrap();
                 assert_eq!(complete.status, GoalStatus::Completed);
+                assert_eq!(complete.started_at, Some(1));
+                assert_eq!(
+                    store
+                        .get_goal(user, session)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .completed_duration_seconds(),
+                    Some(3)
+                );
                 let original = store
                     .insert_message(session, Role::User, "original prompt", 1)
                     .await

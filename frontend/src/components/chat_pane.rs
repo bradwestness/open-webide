@@ -686,6 +686,7 @@ fn TuiStatusLine(
             <span class="tui-tools-count">
                 {move || format!("{} tools", session_telemetry.with(|telemetry| telemetry.tool_calls_count))}
             </span>
+            <super::goal::GoalStatusIndicator />
         </div>
     }
 }
@@ -942,7 +943,7 @@ pub fn ChatPane(
             </Show>
 
             <Show when=move || chat.compacting.get()><p class="form-hint" role="status">"Compacting conversation…" <button class="btn stop" on:click=move |_| on_stop.run(())>"Stop"</button></p></Show>
-            <super::goal::GoalPanel />
+            <super::goal::GoalNotice />
             <super::todo_plan::TodoPlanPanel />
             <crate::prompt::PromptControls composer=prompt_composer />
             <Show when=move || chat.prompt_edit.get().is_some()>

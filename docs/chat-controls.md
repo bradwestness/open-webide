@@ -63,7 +63,11 @@ Send `/goal <objective>` to save an objective in this session and start an agent
 run. A session is created if needed. Use `/goal start <objective>` when the text
 would otherwise be interpreted as a control command.
 
-The goal panel shows the objective alongside the agent's existing plan and progress.
+The chat statusline shows **Goal active**, **Goal paused**, or **Goal complete**.
+Click it to open the goal context panel with the objective, current status and
+controls. Completed goals include elapsed time, such as `Goal complete (1h23m)`,
+measured from starting the goal through completion, including pauses. Older saved
+goals show completion without a duration because their start time was not recorded.
 The usual tools, permissions and Stop control apply. An agent reply leaves the goal
 open for review; it does not automatically mark the objective successful or launch
 another run.

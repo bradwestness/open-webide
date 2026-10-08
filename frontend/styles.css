@@ -3443,3 +3443,20 @@ button.browser-item {
 .tree-line-stats .git-deletions { color: var(--offline); }
 
 .files-panel-toolbar { min-height: calc(var(--control-height) + 2 * var(--space-2)); }
+
+/* Compact goal status opens the shared context-panel surface. */
+.tui-statusline .tui-goal-status { flex: none; margin-left: auto; min-width: 0; }
+.tui-goal-status .tui-goal-label { font: inherit; padding: 2px 4px; color: var(--accent); }
+.tui-goal-menu { white-space: normal; overflow-y: auto; }
+.tui-goal-menu .tui-goal { margin: 0; padding: var(--space-3); border: 0; }
+.approval-mode-picker .approval-mode-manual, .approval-mode-menu .approval-mode-manual { color: var(--online); }
+.approval-mode-picker .approval-mode-edits, .approval-mode-menu .approval-mode-edits { color: var(--accent); }
+.approval-mode-picker .approval-mode-auto, .approval-mode-menu .approval-mode-auto,
+.approval-mode-picker .approval-mode-always, .approval-mode-menu .approval-mode-always { color: var(--warn); }
+.approval-mode-picker .approval-mode-yolo, .approval-mode-menu .approval-mode-yolo { color: var(--offline); }
+
+@container (max-width: 600px) {
+  .tui-statusline:has(.tui-goal-status) .tui-context-detail { display: none; }
+  .tui-statusline:has(.tui-goal-status) .tui-model-picker { min-width: 0; }
+  .tui-statusline:has(.tui-goal-status) .approval-mode-picker .ui-dropdown-label { max-width: 88px; overflow: hidden; text-overflow: ellipsis; }
+}

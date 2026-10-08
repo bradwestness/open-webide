@@ -16,6 +16,9 @@ pub struct Goal {
     pub status: GoalStatus,
     pub revision: u64,
     pub updated_at: i64,
+    /// Absent on older saved goals; never invent an elapsed duration for them.
+    #[serde(default)]
+    pub started_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +69,7 @@ impl Goal {
                     status: GoalStatus::Active,
                     revision,
                     updated_at: now,
+                    started_at: Some(now),
                 }
             }
             control => {
@@ -90,6 +94,14 @@ impl Goal {
         goal.revision = revision;
         goal.updated_at = now;
         Ok(goal)
+    }
+    pub fn completed_duration_seconds(&self) -> Option<u64> {
+        if self.status != GoalStatus::Completed {
+            return None;
+        }
+        self.started_at
+            .and_then(|start| self.updated_at.checked_sub(start))
+            .and_then(|elapsed| u64::try_from(elapsed).ok())
     }
     pub fn prompt(&self) -> String {
         format!(
@@ -133,6 +145,8 @@ mod tests {
         assert!(resumed.prompt().contains("Verify your work"));
         let completed = Goal::transition(Some(&resumed), 1, GoalCommand::Complete, 13).unwrap();
         assert_eq!(completed.status, GoalStatus::Completed);
+        assert_eq!(completed.started_at, Some(10));
+        assert_eq!(completed.completed_duration_seconds(), Some(3));
         assert!(Goal::transition(Some(&completed), 1, GoalCommand::Resume, 14).is_err());
         assert!(
             Goal::transition(
@@ -156,5 +170,25 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn legacy_goals_preserve_unknown_duration_and_restart_the_clock_for_new_objectives() {
+        let legacy: Goal = serde_json::from_str(r#"{"session_id":1,"objective":"Legacy","status":"paused","revision":1,"updated_at":10}"#).unwrap();
+        assert_eq!(legacy.started_at, None);
+        let completed = Goal::transition(Some(&legacy), 1, GoalCommand::Complete, 100).unwrap();
+        assert_eq!(completed.completed_duration_seconds(), None);
+        let started = Goal::transition(
+            Some(&completed),
+            1,
+            GoalCommand::Start {
+                objective: "New".into(),
+            },
+            200,
+        )
+        .unwrap();
+        assert_eq!(started.started_at, Some(200));
+        assert_eq!(started.completed_duration_seconds(), None);
+        let reversed = Goal::transition(Some(&started), 1, GoalCommand::Complete, 199).unwrap();
+        assert_eq!(reversed.completed_duration_seconds(), None);
     }
 }
