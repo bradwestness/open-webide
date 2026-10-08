@@ -352,16 +352,35 @@ fn mark_block(block: &MarkdownBlock, marker: &str) -> String {
     ) {
         return format!("<{marker}>{}</{marker}>", block.html);
     }
-    let events = block.events.iter().cloned().map(|event| match event {
-        Event::Text(text) => {
-            Event::Html(format!("<{marker}>{}</{marker}>", escape_html(&text)).into())
+    let mut events = Vec::new();
+    let mut text = String::new();
+    let flush = |events: &mut Vec<Event<'static>>, text: &mut String| {
+        if !text.is_empty() {
+            events.push(Event::Html(
+                format!("<{marker}>{}</{marker}>", escape_html(text)).into(),
+            ));
+            text.clear();
         }
-        Event::Code(text) => {
-            Event::Html(format!("<code><{marker}>{}</{marker}></code>", escape_html(&text)).into())
+    };
+    for event in block.events.iter().cloned() {
+        match event {
+            Event::Text(value) => text.push_str(&value),
+            // Markdown source wraps become visible spaces. Keep them inside the
+            // same highlight as adjacent text rather than leaving unmarked gaps.
+            Event::SoftBreak => text.push('\n'),
+            event => {
+                flush(&mut events, &mut text);
+                events.push(match event {
+                    Event::Code(value) => Event::Html(
+                        format!("<code><{marker}>{}</{marker}></code>", escape_html(&value)).into(),
+                    ),
+                    _ => event,
+                });
+            }
         }
-        _ => event,
-    });
-    event_html(events)
+    }
+    flush(&mut events, &mut text);
+    event_html(events.into_iter())
 }
 
 fn rendered_blocks(md: &str) -> Vec<MarkdownBlock> {
@@ -405,6 +424,33 @@ fn event_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn added_and_removed_source_wraps_stay_inside_highlights() {
+        let markdown = "## Added section\n\n- First line\n  continues with **bold** text\n  and [a link](https://example.com).\n\nWrapped paragraph\ncontinues here.\n";
+        for (old, new, marker) in [("", markdown, "ins"), (markdown, "", "del")] {
+            let html = render_diff(old, new);
+            assert!(
+                html.contains(&format!("<{marker}>First line\ncontinues with </{marker}>")),
+                "{html}"
+            );
+            assert!(
+                html.contains(&format!("<{marker}> text\nand </{marker}>")),
+                "{html}"
+            );
+            assert!(
+                html.contains(&format!(
+                    "<{marker}>Wrapped paragraph\ncontinues here.</{marker}>"
+                )),
+                "{html}"
+            );
+            assert!(html.contains(&format!("<strong><{marker}>bold</{marker}></strong>")));
+            assert!(
+                !html.contains(&format!("</{marker}>\n<{marker}>")),
+                "{html}"
+            );
+        }
+    }
 
     #[test]
     fn one_word_in_changelog_keeps_the_section_and_list_once() {

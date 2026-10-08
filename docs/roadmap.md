@@ -223,6 +223,33 @@ autocomplete) into the editor while keeping the core diagnostics engine
 - When enabled, include bounded memory context in runs and offer agent tools to create, search, read, update and delete memories. Disabling removes automatic context and tools while preserving stored entries for viewing and deletion.
 - Keep retrieval, validation, limits and ownership checks shared across local and remote execution; reject stale project/account responses.
 
+### Scheduled and recurring tasks
+
+- Add a Tasks section in the Sessions pane alongside Memories, scoped to the current
+  project. Each task is a saved prompt with a schedule: when the event fires,
+  automatically inject the prompt as a user message into that project's chat and
+  start the normal agent response. Allow users to add, edit, pause/resume and remove
+  tasks; show the schedule, next run, last result and a link to the chat.
+- Offer agent tools to list, add, update and remove jobs for the current project,
+  using the same validation and ownership checks as the UI. Persist job definitions,
+  schedules and run history in the user-scoped database.
+- Use a host-side scheduler to deliver due prompts through the shared chat submission
+  entry point, even when the browser is closed. Define timezone/DST behavior, missed-run
+  handling after downtime, overlap limits and durable claims to prevent duplicate
+  dispatch across restarts or multiple scheduler instances.
+- Mark injected messages with their originating task. Define which project session
+  receives the prompt and queue delivery when that chat is already running. Use the
+  chat's normal model and tool approval settings; surface failed or blocked responses
+  and retain normal cancellation controls.
+- Share scheduling policy, dispatch and result handling across both modes, with
+  thin host/runtime adapters. Remote projects use the server bridge; local projects
+  need an available paired host with authorized access to the same folder, since a
+  host cannot use a browser directory handle. Show unavailable execution clearly
+  and keep unattended local execution parity as a completion requirement.
+- Verify both adapter contracts, downtime recovery, duplicate/overlapping triggers,
+  job updates/removal during dispatch and stale project/account results before
+  marking this feature complete.
+
 ### Phone device verification
 
 The compact app/editor rows, universal search, logo drawer, single status footer,

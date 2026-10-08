@@ -2767,8 +2767,8 @@ async fn rust_editor_commands_history_and_stale_dom_share_both_modes() {
 async fn markdown_preview_gutters_share_git_and_pending_changes_in_both_modes() {
     use openwebide_core::{FileDiff, WorkspaceMode};
     use openwebide_frontend::state::git::HeadContent;
-    let old = "# Keep\n\nOld text\n\nEnd\n\nRemove me\n";
-    let new = "# Keep\n\nNew text\n\nAdded\n\nEnd\n";
+    let old = "# Keep\n\nOld text\n\nEnd\n\nRemove me\nwith wrapped text\n";
+    let new = "# Keep\n\nNew text\n\nAdded\nwith wrapped text\n\nEnd\n";
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         let mounted = mount_test(move |state| {
             state.seed_project();
@@ -2816,6 +2816,22 @@ async fn markdown_preview_gutters_share_git_and_pending_changes_in_both_modes() 
                 .unwrap()
                 .contains("Remove me")
         );
+        let assert_wrapped_highlights = || {
+            for (selector, expected) in [
+                (".rich-preview-block.added ins", "Added\nwith wrapped text"),
+                (
+                    ".rich-preview-block.removed del",
+                    "Remove me\nwith wrapped text",
+                ),
+            ] {
+                assert_eq!(
+                    mounted.element(selector).text_content().as_deref(),
+                    Some(expected),
+                    "Source-wrap whitespace must remain inside the highlight in {mode:?}"
+                );
+            }
+        };
+        assert_wrapped_highlights();
         mounted.state.workspace.merge_pending(
             1,
             FileDiff {
@@ -2829,6 +2845,7 @@ async fn markdown_preview_gutters_share_git_and_pending_changes_in_both_modes() 
         settle().await;
         mounted.click_text("Preview");
         settle().await;
+        assert_wrapped_highlights();
         assert!(
             mounted
                 .root
