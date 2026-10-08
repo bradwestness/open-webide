@@ -12,6 +12,10 @@ pub fn StatusBar(
     #[prop(default = Callback::new(|_: String| ()))] on_select_branch: Callback<String>,
     #[prop(default = Callback::new(|_| ()))] on_sync_click: Callback<()>,
 ) -> impl IntoView {
+    let editor_actions = crate::state_actions::editor::EditorActions::new(expect_context::<
+        crate::state::workspace::WorkspaceState,
+    >());
+    let preparing = Signal::derive(move || editor_actions.syntax_preparation_pending());
     let chrome = use_context::<super::editor_chrome::EditorFooterMount>();
     let chat = expect_context::<ChatState>();
     let git = expect_context::<GitState>();
@@ -76,6 +80,11 @@ pub fn StatusBar(
             >
                 <super::ui::Icon name=super::ui::IconName::Terminal />"Output"
             </button>
+            <span class="status-preparation" title=move || if preparing.get() { "Preparing syntax…" } else { "" }>
+                <Show when=move || preparing.get()>
+                    <super::ui::LoadingStatus label="Preparing syntax…" compact=true />
+                </Show>
+            </span>
         </footer>
     }
 }

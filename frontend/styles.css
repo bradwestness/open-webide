@@ -744,6 +744,9 @@ body {
   color: var(--text-muted);
 }
 
+/* Keep the final progress slot fixed so right-aligned controls never move. */
+.status-preparation { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 1.5em; width: 1.5em; }
+
 .status.online {
   color: var(--online);
 }
@@ -3014,7 +3017,7 @@ button.browser-item {
 /* The same disclosure and compact actions serve reasoning and tool histories. */
 .ui-icon { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; border-radius: var(--radius-sm); }
 .ui-icon:focus-visible, .ui-disclosure-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; min-width: 0; min-height: 0; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .ui-disclosure-panel { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); overflow: hidden; }
 .ui-disclosure-toggle { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: var(--space-2); width: 100%; padding: var(--space-2); text-align: left; font: inherit; font-size: var(--font-caption); color: var(--text-muted); background: var(--bg-panel); border: 0; cursor: pointer; }
 .ui-disclosure-toggle:hover { color: var(--text); background: var(--bg-hover); }
@@ -3126,7 +3129,7 @@ button.browser-item {
 .ui-field > .ui-dropdown { width: 100%; }
 .ui-field > .ui-dropdown > .ui-dropdown-trigger { width: 100%; }
 .ui-dropdown-menu .tui-connection-model { padding-left: var(--space-6); }
-.phone-layout .ui-dropdown-trigger, .phone-layout .ui-dropdown-menu .recent-item, .phone-layout .ui-seg-btn { min-height: 44px; }
+.phone-layout .ui-dropdown-trigger:not(.sr-only), .phone-layout .ui-dropdown-menu .recent-item, .phone-layout .ui-seg-btn { min-height: 44px; }
 
 .panel-search-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3); margin: 0; }
 .panel-search-row .panel-search-input { flex: 1; min-width: 0; width: 0; margin: 0; min-height: var(--control-height); padding: var(--space-2); font: inherit; font-size: var(--font-caption); }
@@ -3230,7 +3233,7 @@ button.browser-item {
 .tree-entry-menu > .ui-dropdown-trigger[aria-expanded="true"] { opacity: 1; }
 .tree-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 @media (hover: none) {
-  .tree-entry-menu > .ui-dropdown-trigger { opacity: 1; min-width: 44px; min-height: 44px; }
+  .tree-entry-menu > .ui-dropdown-trigger:not(.sr-only) { opacity: 1; min-width: 44px; min-height: 44px; }
 }
 .ui-action-menu-context { display: contents; }
 
@@ -3279,7 +3282,7 @@ button.browser-item {
    A flex strip's intrinsic height otherwise excludes the native scroll track.
    Include its shared one-pixel bottom border in the reserved space. */
 .editor-file-tabs { --editor-tab-height: 35px; flex: none; padding: 0 8px; height: calc(var(--editor-tab-height) + 11px); min-height: calc(var(--editor-tab-height) + 11px); }
-.phone-layout .editor-file-tabs { --editor-tab-height: 44px; }
+.phone-layout .editor-file-tabs { --editor-tab-height: calc(var(--control-height) + 1px); }
 .editor-file-tab { flex: none; height: var(--editor-tab-height); gap: 2px; padding: 0 4px 0 0; }
 .btn.tab-select { display: flex; align-items: center; gap: 6px; min-width: 0; align-self: stretch; padding: 0 10px; border: 0; border-radius: 6px 0 0 0; background: transparent; color: inherit; }
 .tab-select .tab-name { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -10613,7 +10613,7 @@ async fn pending_wheel_intent_reaches_complete_measured_width_in_both_modes() {
                     .open_file
                     .set(Some("pending-width.txt".into()));
                 state.workspace.content.set(source.into());
-                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:500px;height:320px">{editor_view(state)}</div> }
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:500px;height:320px">{editor_view(state)}</div><openwebide_frontend::components::StatusBar health=RwSignal::new(None).read_only() on_toggle_terminal=|| {} /> }
             }
         });
         let actions = EditorActions::new(mounted.state.workspace);
@@ -10626,9 +10626,11 @@ async fn pending_wheel_intent_reaches_complete_measured_width_in_both_modes() {
         })
         .await;
         assert!(actions.measured_rows().is_none());
+        let output = mounted.element(".statusbar .status-btn");
+        let before = output.get_bounding_client_rect().x();
         assert_eq!(
             mounted
-                .element(".editor-footer .ui-loading-status")
+                .element(".statusbar .ui-loading-status")
                 .text_content()
                 .as_deref(),
             Some("Preparing syntax…")
@@ -10662,12 +10664,21 @@ async fn pending_wheel_intent_reaches_complete_measured_width_in_both_modes() {
         wait_until("syntax progress finishes", || {
             mounted
                 .root
-                .query_selector(".editor-footer .ui-loading-status")
+                .query_selector(".statusbar .ui-loading-status")
                 .unwrap()
                 .is_none()
         })
         .await;
         assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
+        assert!(
+            (output.get_bounding_client_rect().x() - before).abs() <= 0.25,
+            "{mode:?}: completing syntax must not shift the status controls"
+        );
+        let slot = mounted.element(".status-preparation");
+        assert!(
+            slot.next_element_sibling().is_none(),
+            "syntax progress is last"
+        );
         let complete = fullNativeDimensions(&input, &source);
         let complete_width = fullSourcePaintWidth(&input, &source);
         assert!(
@@ -14144,6 +14155,26 @@ async fn overflowing_file_tabs_keep_height_scroll_and_nodes_stable_in_both_modes
                 Some(if dirty { "false" } else { "true" })
             );
         }
+        mounted.root.class_list().add_1("phone-layout").unwrap();
+        settle().await;
+        let trigger = first
+            .parent_element()
+            .unwrap()
+            .query_selector(".ui-dropdown-trigger.sr-only")
+            .unwrap()
+            .unwrap();
+        assert!(
+            trigger.get_bounding_client_rect().height() <= 1.0,
+            "{mode:?}: hidden tab menus must not acquire touch-target height"
+        );
+        assert!(
+            tabs.scroll_height() <= tabs.client_height(),
+            "{mode:?}: phone tab menus must not create vertical overflow: scroll={} client={} height={} tab_height={}",
+            tabs.scroll_height(),
+            tabs.client_height(),
+            tabs.get_bounding_client_rect().height(),
+            first.get_bounding_client_rect().height()
+        );
     }
 }
 

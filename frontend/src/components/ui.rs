@@ -12,11 +12,11 @@ pub fn LogoMark(#[prop(default = "")] class: &'static str) -> impl IntoView {
 
 /// Compact, accessible progress for an operation with no percentage to report.
 #[component]
-pub fn LoadingStatus(label: &'static str) -> impl IntoView {
+pub fn LoadingStatus(label: &'static str, #[prop(default = false)] compact: bool) -> impl IntoView {
     view! {
         <span class="ui-loading-status" role="status">
             <span class="ui-spinner" aria-hidden="true" />
-            <span>{label}</span>
+            <span class:sr-only=compact>{label}</span>
         </span>
     }
 }

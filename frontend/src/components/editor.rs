@@ -3640,10 +3640,6 @@ pub fn Editor(
                 <super::editor_chrome::EditorFooter><div class="editor-footer">
                     <Button class="editor-cursor-status" size=ButtonSize::Sm variant=ButtonVariant::Ghost on_click=Callback::new(move |_| open_go.run(()))>{move || { let (line, column, count) = cursor_status.get(); format!("Ln {line}, Col {column}{}", if count == 0 { String::new() } else { format!(" · {count} selected") }) }}</Button>
 
-                    <Show when=move || editor_actions.syntax_preparation_pending()>
-                        <super::ui::LoadingStatus label="Preparing syntax…" />
-                    </Show>
-
                     <super::dropdown::Dropdown aria_label="Indentation settings" menu_role="dialog" above=true trigger_class="btn ghost sm" label=move || { let indentation = editor_actions.rules().indentation; format!("{}: {}", if indentation.style == openwebide_core::editor::IndentStyle::Tabs { "Tabs" } else { "Spaces" }, indentation.width()) }>
                         <super::editor_options::IndentationControls value=Signal::derive(move || editor_actions.rules().indentation) disabled=read_only on_change=Callback::new(move |indentation| editor_actions.set_indentation(indentation)) />
                         <span class="editor-rules-source" title=move || editor_actions.rules().source.unwrap_or_else(|| "Detected from this file, with editor defaults as fallback".into())>{move || if editor_actions.rules().source.is_some() { "EditorConfig" } else { "Detected / defaults" }}</span>

@@ -192,8 +192,10 @@ history. Bracket navigation and its decorations use the same contexts, including
 interpolation code and separate embedded bodies.
 
 Editing retains bounded structural fallbacks when a parser is unavailable.
-The editor status bar shows “Preparing syntax…” while the current file is being
-prepared and removes it when colors or terminal plain fallback are ready.
+A compact spinner occupies a reserved final slot in the status bar while the
+current file is being prepared. Its “Preparing syntax…” tooltip and accessible
+label disappear with the spinner when colors or terminal plain fallback are ready;
+the existing status controls keep their positions.
 Syntax colors stay plain until grammar preparation succeeds; unsupported files
 never receive guessed code colors. Edit highlighting uses the same cached
 providers, with extensible highlight selectors and parser-protected literal/comment

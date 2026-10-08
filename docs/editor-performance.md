@@ -2083,3 +2083,20 @@ module-load event before preparation; the same assets then loaded in an
 instrumented worker and passed two fresh direct checks with all protocol
 assertions retained. This does not close the reliable-CI or runtime completion
 gates; worker load failures now report an explicit error rather than a null value.
+
+The separate near-limit geometry matrix passes in 13.84 seconds. A subsequent
+status-line placement check passes in both modes (0.72 seconds): the preparation
+spinner uses a fixed final slot, and the Output button retains its exact position
+when preparation finishes.
+
+Linux CI for `6db638b` passes the backend/native, Windows bridge, Docker/HTTPS
+and production frontend checks, but its ordinary UI run exposes a touch-capability
+file-tab overflow (`scroll=61`, `client=36`). Local Chrome touch emulation
+reproduces the same 61-pixel overflow. Touch/phone dropdown sizing must exclude
+visually hidden context-menu triggers, and phone tab rows must include their
+border around 44-pixel controls. The regression now checks those hidden triggers
+and actual vertical overflow in both layouts and workspace modes.
+
+The touch-emulated regression passes after the exclusions and phone row-border
+correction (0.07 seconds), including hidden-trigger height, actual scroll extents,
+stable tab nodes and both workspace modes.
