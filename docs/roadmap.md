@@ -178,8 +178,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   tables still copy on edit. Complete-native replacement compares borrowed,
   newline-normalized source characters and maps edit boundaries directly to source
   bytes; duplicate composition commits reuse that comparison. Complete-value
-  comparison still scans unchanged prefix/suffix characters. History snapshots
-  share immutable steps and transaction payloads rather than copying retained edits,
+  comparison now skips borrowed raw byte chunks in unchanged prefixes/suffixes,
+  normalizing CR/LF boundaries without allocating a native source copy. Comparison
+  remains linear. History snapshots share immutable steps and transaction payloads
+  rather than copying retained edits,
   and document/composition snapshots share saved-text baselines. Cancellation now
   borrows preview/restored source and shares restored text with matching UI destinations. Admission now skips
   untouched complete rows; long boundary rows still scan, and storage still shifts

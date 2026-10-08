@@ -58,6 +58,32 @@ viewport memory bounds. Comparison remains linear in unchanged text. Full record
 [browser before](editor-performance/browser-source-change-before.csv),
 [browser after](editor-performance/browser-source-change-after.csv).
 
+## Complete native-input comparison
+
+Complete textarea replacements and duplicate composition commits compare borrowed
+byte chunks between CR/LF normalization boundaries. Forward and reverse chunks
+retain complete UTF-8 characters and keep CRLF pairs together. The shared input
+facade returns original source byte offsets without constructing normalized copies.
+The benchmark checks an exact middle insertion and repeats comparison 100 times;
+document construction and candidate allocation stay outside the timed operation.
+
+Consecutive runs on this machine (2026-10-07):
+
+| Source bytes | Ending | Native before / after (ms) | Chrome WASM before / after (ms) |
+| --- | --- | --- | --- |
+| 2,047,212 | LF | 278.608 / 73.755 | 493.465 / 116.835 |
+| 2,097,144 | CRLF | 276.221 / 106.637 | 496.785 / 143.945 |
+| 16,377,737 | LF | 2235.934 / 592.272 | 3975.460 / 983.465 |
+| 16,777,194 | CRLF | 2299.756 / 925.233 | 4016.480 / 1150.195 |
+
+These observations do not establish event-to-paint latency or memory bounds.
+Comparison remains linear; native text generation and source/selection publication
+are separate costs. The workload now emits 57 records (75 with storage candidates).
+Full records: [native before](editor-performance/native-input-before.csv),
+[native after](editor-performance/native-input-after.csv),
+[browser before](editor-performance/browser-input-before.csv),
+[browser after](editor-performance/browser-input-after.csv).
+
 ## Incremental coordinates and shared projections
 
 The document now maintains logical-line and raw/native UTF-16 prefixes across edit

@@ -43,9 +43,7 @@ impl DoubleEndedIterator for TextareaCharacters<'_> {
 
 /// Compare complete native text without materializing normalized source copies.
 pub fn textarea_value_matches(source: &str, value: &str) -> bool {
-    TextareaCharacters::new(source)
-        .map(|(_, ch)| ch)
-        .eq(value.chars())
+    matching_textarea_bytes(source, value, false) == (source.len(), value.len())
 }
 
 pub(super) fn textarea_text(source: &str) -> String {
@@ -56,30 +54,105 @@ pub(super) fn textarea_text(source: &str) -> String {
     text
 }
 
-fn textarea_change(source: &str, value: &str) -> Option<(Range<usize>, Range<usize>)> {
-    let (mut source_start, mut value_start) = (0, 0);
-    for ((range, old), (offset, new)) in TextareaCharacters::new(source).zip(value.char_indices()) {
-        if old != new {
+// Raw chunks are safe only when they contain complete characters and no source
+// normalization. A reverse chunk must also avoid splitting a CRLF pair.
+fn matching_textarea_chunk(source: &str, value: &str, reverse: bool) -> usize {
+    let mut length = source.len().min(value.len()).min(64);
+    if reverse {
+        if let Some(carriage) = source.as_bytes()[source.len() - length..]
+            .iter()
+            .rposition(|byte| *byte == b'\r')
+        {
+            length -= carriage + 1;
+        }
+        if source.as_bytes().get(source.len() - length) == Some(&b'\n')
+            && source
+                .as_bytes()
+                .get(source.len().saturating_sub(length + 1))
+                == Some(&b'\r')
+        {
+            length = length.saturating_sub(1);
+        }
+    } else if let Some(carriage) = source.as_bytes()[..length]
+        .iter()
+        .position(|byte| *byte == b'\r')
+    {
+        length = carriage;
+    }
+    let start = |text: &str, length| if reverse { text.len() - length } else { length };
+    while !source.is_char_boundary(start(source, length))
+        || !value.is_char_boundary(start(value, length))
+    {
+        length -= 1;
+    }
+    let slice = |text: &str| {
+        if reverse {
+            text.len() - length..text.len()
+        } else {
+            0..length
+        }
+    };
+    let source_range = slice(source);
+    let source_chunk = &source[source_range.clone()];
+    if source_chunk != &value[slice(value)] {
+        return 0;
+    }
+    length
+}
+
+fn matching_textarea_bytes(source: &str, value: &str, reverse: bool) -> (usize, usize) {
+    let mut source_chars = TextareaCharacters::new(source);
+    let mut value_chars = value.chars();
+    let (mut source_bytes, mut value_bytes) = (0, 0);
+    loop {
+        let old = source_chars.0.as_str();
+        let new = value_chars.as_str();
+        if old.is_empty() || new.is_empty() {
             break;
         }
-        source_start = range.end;
-        value_start = offset + new.len_utf8();
+        let chunk = matching_textarea_chunk(old, new, reverse);
+        if chunk > 0 {
+            let remaining = |text: &str| {
+                if reverse {
+                    0..text.len() - chunk
+                } else {
+                    chunk..text.len()
+                }
+            };
+            source_chars = TextareaCharacters::new(&old[remaining(old)]);
+            value_chars = new[remaining(new)].chars();
+            source_bytes += chunk;
+            value_bytes += chunk;
+            continue;
+        }
+        let pair = if reverse {
+            source_chars.next_back().zip(value_chars.next_back())
+        } else {
+            source_chars.next().zip(value_chars.next())
+        };
+        let Some(((_, old_char), new_char)) = pair else {
+            break;
+        };
+        if old_char != new_char {
+            break;
+        }
+        source_bytes += old.len() - source_chars.0.as_str().len();
+        value_bytes += new_char.len_utf8();
     }
+    (source_bytes, value_bytes)
+}
+
+fn textarea_change(source: &str, value: &str) -> Option<(Range<usize>, Range<usize>)> {
+    let (source_start, value_start) = matching_textarea_bytes(source, value, false);
     if source_start == source.len() && value_start == value.len() {
         return None;
     }
-    let (mut source_end, mut value_end) = (source.len(), value.len());
-    for ((range, old), (offset, new)) in TextareaCharacters::new(&source[source_start..])
-        .rev()
-        .zip(value[value_start..].char_indices().rev())
-    {
-        if old != new {
-            break;
-        }
-        source_end = source_start + range.start;
-        value_end = value_start + offset;
-    }
-    Some((source_start..source_end, value_start..value_end))
+    let (source_suffix, value_suffix) =
+        matching_textarea_bytes(&source[source_start..], &value[value_start..], true);
+    Some((
+        source_start..source.len() - source_suffix,
+        value_start..value.len() - value_suffix,
+    ))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -526,6 +599,59 @@ mod tests {
                             "source={source:?}, value={value:?}"
                         );
                         assert_eq!(textarea_value_matches(source, &value), normalized == value);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chunked_textarea_changes_preserve_unicode_and_crlf_at_chunk_edges() {
+        for length in [0, 1, 60, 61, 62, 63, 64, 65, 66, 67, 127, 128, 129] {
+            for ending in ["", "\n", "\r\n", "\r", "\r\r\n"] {
+                let source = format!(
+                    "{}文😀{ending}{}😀文{ending}",
+                    "x".repeat(length),
+                    "y".repeat(length)
+                );
+                let normalized = source.replace("\r\n", "\n").replace('\r', "\n");
+                let document = Document::new(&source);
+                let boundaries: Vec<_> = normalized
+                    .char_indices()
+                    .map(|(at, _)| at)
+                    .filter(|at| *at <= 2 || at.abs_diff(length) <= 8 || normalized.len() - at <= 8)
+                    .chain([normalized.len()])
+                    .collect();
+                for (index, &start) in boundaries.iter().enumerate() {
+                    for &end in &boundaries[index..] {
+                        for inserted in ["", "文", "😀", "\n", "\r\n"] {
+                            let mut value = normalized.clone();
+                            value.replace_range(start..end, inserted);
+                            let expected = text_change(&normalized, &value).map(|change| {
+                                let map = |offset| {
+                                    super::super::textarea_to_byte(
+                                        &source,
+                                        normalized[..offset].encode_utf16().count(),
+                                    )
+                                };
+                                Edit::replace(
+                                    map(change.range.start)..map(change.range.end),
+                                    native_inserted_text(
+                                        &source,
+                                        &value[change.range.start..change.new_end],
+                                    ),
+                                )
+                            });
+                            assert_eq!(
+                                document.native_replacement(&value),
+                                expected,
+                                "source={source:?}, value={value:?}"
+                            );
+                            assert_eq!(
+                                textarea_value_matches(&source, &value),
+                                normalized == value
+                            );
+                        }
                     }
                 }
             }

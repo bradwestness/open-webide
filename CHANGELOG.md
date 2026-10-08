@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Compare complete native editor input in borrowed byte chunks, falling back to character normalization at CR/LF and Unicode edges. Keep minimal source edits, duplicate composition detection and LF/CRLF behavior shared across workspace adapters.
+
 - Validate embedded-language range points through the parser’s incremental source-row index instead of rebuilding whole-file line starts. Share point mapping with parser edits and preserve invalid-range and cancellation fallbacks.
 
 - Stream grammar paint segments from ordered protected regions, embedded scopes and semantic spans, removing the full boundary set/vector allocation while preserving disjoint paint and duplicate-edge handling.

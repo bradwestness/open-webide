@@ -55,6 +55,34 @@ pub fn measure(clock: impl Fn() -> f64) -> Vec<Measurement> {
                 }
             });
         }
+        for (label, native_source) in [
+            ("native_replacement_lf_100", source.replace("\r\n", "\n")),
+            ("native_replacement_crlf_100", source.clone()),
+        ] {
+            let mut position = native_source.len() / 2;
+            while !native_source.is_char_boundary(position) {
+                position -= 1;
+            }
+            // The source offset must not split a normalized CRLF pair.
+            if native_source[..position].ends_with('\r')
+                && native_source[position..].starts_with('\n')
+            {
+                position -= 1;
+            }
+            let native_position = native_source[..position].replace("\r\n", "\n").len();
+            let mut value = native_source.replace("\r\n", "\n");
+            value.insert(native_position, '🦀');
+            let document = Document::new(native_source);
+            assert_eq!(
+                document.native_replacement(&value),
+                Some(Edit::replace(position..position, "🦀"))
+            );
+            time(&mut records, &clock, label, document.text().len(), || {
+                for _ in 0..100 {
+                    black_box(document.native_replacement(black_box(&value)));
+                }
+            });
+        }
         let mut doc = Document::new(source.clone());
         time(
             &mut records,
@@ -430,7 +458,7 @@ mod native {
     fn shared_storage_workloads() {
         let start = std::time::Instant::now();
         let records = super::measure(|| start.elapsed().as_secs_f64() * 1000.0);
-        let expected = if cfg!(feature = "candidates") { 69 } else { 51 };
+        let expected = if cfg!(feature = "candidates") { 75 } else { 57 };
         assert_eq!(records.len(), expected);
         assert!(
             records
