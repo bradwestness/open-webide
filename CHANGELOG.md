@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Stream grammar paint segments from ordered protected regions, embedded scopes and semantic spans, removing the full boundary set/vector allocation while preserving disjoint paint and duplicate-edge handling.
+
 - Compare shared editor source changes in byte chunks and adjust only the differing edges to UTF-8 boundaries. Preserve minimal edit spans across typing, folds, parser updates and worker deltas; record native and browser before/after measurements.
 
 - Reuse indexed raw row boundaries outside a validated lexical source-change span. Preserve multiline state propagation, LF/CRLF normalization, terminal-row handling and cooperative batch budgets while scanning only intersecting rows for newline boundaries.

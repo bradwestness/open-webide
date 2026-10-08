@@ -87,7 +87,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   edits retain disabled-guide tables across indentation settings. Smaller-file guide
   updates scan changed rows and adjacent blank runs, retaining the table when values
   are unchanged. Changed guide values still copy retained columns; setting changes
-  rebuild the table. Warm semantic list assembly, boundary construction,
+  rebuild the table. Grammar paint now streams ordered span boundaries without
+  allocating a full boundary set/vector. Warm semantic list assembly and
   paint-table iteration and shifted suffix metadata still visit the file.
   Structural metadata now transfers changed list spans against a validated ticket,
   avoiding complete wire copies for retained records. Lexical fallback/context assembly, list

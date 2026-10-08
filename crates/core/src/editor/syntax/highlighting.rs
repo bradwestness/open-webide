@@ -4,11 +4,47 @@ use crate::editor::structure::RegionKind;
 use crate::highlight::{
     Language, Token, TokenKind, TokenRow, TokenRows, highlight_lines, share_token_rows,
 };
-use std::{
-    collections::{BTreeSet, HashMap},
-    ops::Range,
-    sync::Arc,
-};
+use std::{collections::HashMap, ops::Range, sync::Arc};
+
+/// Merge validated ordered span endpoints into disjoint paint segments.
+/// Protected regions, embedded scopes and semantic spans each have disjoint ranges.
+fn paint_segments(
+    protected: impl Iterator<Item = usize>,
+    scopes: impl Iterator<Item = usize>,
+    semantic: impl Iterator<Item = usize>,
+    length: usize,
+) -> impl Iterator<Item = Range<usize>> {
+    let mut protected = protected.peekable();
+    let mut scopes = scopes.peekable();
+    let mut semantic = semantic.peekable();
+    let mut source = [0, length].into_iter().peekable();
+    let boundaries = std::iter::from_fn(move || {
+        let end = [
+            protected.peek().copied(),
+            scopes.peek().copied(),
+            semantic.peek().copied(),
+            source.peek().copied(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()?;
+        while protected.peek() == Some(&end) {
+            protected.next();
+        }
+        while scopes.peek() == Some(&end) {
+            scopes.next();
+        }
+        while semantic.peek() == Some(&end) {
+            semantic.next();
+        }
+        while source.peek() == Some(&end) {
+            source.next();
+        }
+        Some(end)
+    });
+    let mut previous = None;
+    boundaries.filter_map(move |end| previous.replace(end).map(|start| start..end))
+}
 
 struct PaintedPiece {
     language: Language,
@@ -188,17 +224,20 @@ impl SyntaxDocument {
         {
             return None;
         }
-        let mut boundaries = BTreeSet::from([0, self.text.len()]);
-        for (range, _, _) in &context.protected {
-            boundaries.extend([range.start, range.end]);
-        }
-        for (range, _) in &context.scopes {
-            boundaries.extend([range.start, range.end]);
-        }
-        for (range, _) in &semantic {
-            boundaries.extend([range.start, range.end]);
-        }
-        let boundaries: Vec<_> = boundaries.into_iter().collect();
+        let segments = paint_segments(
+            context
+                .protected
+                .iter()
+                .flat_map(|(range, _, _)| [range.start, range.end]),
+            context
+                .scopes
+                .iter()
+                .flat_map(|(range, _)| [range.start, range.end]),
+            semantic
+                .iter()
+                .flat_map(|(range, _)| [range.start, range.end]),
+            self.text.len(),
+        );
         let mut previous = self.paint.borrow_mut();
         // Only a source-identity match permits the parser's exact change span
         // to validate retained paint. Updates without paint can leave an older
@@ -232,11 +271,8 @@ impl SyntaxDocument {
         };
         let mut protected = 0;
         let mut selected = 0;
-        for range in boundaries.windows(2) {
-            let (start, end) = (range[0], range[1]);
-            if start == end {
-                continue;
-            }
+        for range in segments {
+            let (start, end) = (range.start, range.end);
             while context
                 .protected
                 .get(protected)
@@ -361,6 +397,59 @@ impl SyntaxDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn streamed_paint_segments_match_unique_boundaries_across_ordered_span_lists() {
+        use std::collections::BTreeSet;
+        let cases = [
+            vec![],
+            vec![0],
+            vec![0, 0],
+            vec![1, 2],
+            vec![0, 2, 2, 4],
+            vec![1, 3, 5, 8],
+            vec![0, 8],
+        ];
+        for protected in &cases {
+            for scopes in &cases {
+                for semantic in &cases {
+                    let expected = protected
+                        .iter()
+                        .chain(scopes)
+                        .chain(semantic)
+                        .copied()
+                        .chain([0, 8])
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    let expected = expected
+                        .windows(2)
+                        .map(|pair| pair[0]..pair[1])
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        paint_segments(
+                            protected.iter().copied(),
+                            scopes.iter().copied(),
+                            semantic.iter().copied(),
+                            8
+                        )
+                        .collect::<Vec<_>>(),
+                        expected
+                    );
+                }
+            }
+        }
+        assert!(
+            paint_segments(
+                std::iter::empty(),
+                std::iter::empty(),
+                std::iter::empty(),
+                0
+            )
+            .next()
+            .is_none()
+        );
+    }
+
     #[test]
     fn retained_row_matching_rebuilds_changed_truncated_and_extended_parts() {
         let piece = |text: &str| {

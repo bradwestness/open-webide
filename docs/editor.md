@@ -958,7 +958,9 @@ reuse mismatching text or context. Language and newline-normalization changes
 invalidate reuse. The shared worker preparation uses the same job with per-row
 cancellation. Published rows use immutable shared token slices, so lexical reuse
 retains existing token strings without copying their text or token arrays. Parser
-paint and validated worker replies use the same row representation; the painter
+paint streams the ordered protected/embedded/semantic span boundaries without
+building a complete boundary set or vector. Duplicate edges merge before paint.
+Parser paint and validated worker replies use the same row representation; the painter
 reads those rows without materializing a second token table. Row metadata and
 handle tables still visit changed source, and source-change comparison still scans
 unchanged prefix/suffix text. Shared change comparison uses byte chunks and
