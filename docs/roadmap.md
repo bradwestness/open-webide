@@ -37,238 +37,80 @@ including Markdown gutters on changed blocks/items/rows and inline prose differe
 Find, pending-edit review and agent editor
 context intact. Editing must work without a host language server in both modes.
 
-The shared Rust document/transaction engine, grouped undo/redo, per-file/project
-history, indentation/EditorConfig controls, block-aware Enter and paired typing
-are in place. Line movement/duplication/deletion, snippet duplication, line/block
-comments, explicit indentation-matching paste, selected-line reindent, folding,
-reading/navigation and Find/Replace use the same engine. See [editor controls](editor.md). Continue with:
+The everyday editing baseline is implemented. The goal remains open until the
+performance, input/device and verification requirements below are finished.
+Completed implementation details belong in [editor controls](editor.md),
+[performance evidence](editor-performance.md) and the changelog; this section
+tracks the remaining work rather than every optimization already shipped.
 
-- **Reliable edits and history:** build on grouped transactions and per-document history
-  with caret/selection/scroll restoration now retained across file, project and view
-  switches. Explicit EditorConfig newline,
-  line-ending and trailing-whitespace save policies are undoable. Release-app
-  Chromium composition commit/cancel and undo/redo now verify Unicode and LF/CRLF
-  in both modes, with pending syntax and bounded native windows. Finish physical
-  input-method/clipboard verification without rewriting unrelated text.
-- **Syntax-aware editing:** shared parsers, source-bound preparation and the
-  Rust/WASM worker are in place; see [syntax behavior](editor.md#syntax-and-language-behavior).
-  Pending worker paint now borrows source rows and retains scoped styled frames.
-  Cold horizontal and wrapped paint reuse the height/width probe’s source anchors;
-  identical pending/plain rows retain dimensions and glyph anchors after syntax resolves.
-  Cropped plain/token paint retains the complete source's grapheme-safe text-run
-  boundaries, including short crops, with streamed segmentation that stops after
-  the requested window. Unwrapped source-monotonic rows now prepare
-  extents and anchors in at most 16 KiB probes, retaining complete paint runs
-  and validating every overlap glyph. Dense overlap targets build one bounded
-  coordinate table per probe; ordinary viewport queries retain sparse indexes.
-  Unsupported boundaries and failed proofs
-  use complete measurement. Continuation probes and indexed plain viewport
-  slices resume segmentation at proven original run boundaries. Eligible styled
-  viewport slices now reuse retained paragraph run boundaries with exact immutable
-  source/token/guide and environment ownership. Styled rows without completed
-  geometry now retain bounded original-run tables and share them with paragraph
-  preparation; the first build still scans the row, subsequent slices reuse it.
-  Over-limit run tables retain the original scan. Cropped ranges retain token
-  wrappers, including italic comments.
-  Prepared grammar rows retain colors beyond the lexical fallback's 10 KB cutoff,
-  within unchanged source/work admission. Tabbed/wrapped/bidi preparation,
-  over-limit styled viewport prefix segmentation and initial native shaping remain.
-  Changed paragraphs now replay validated unchanged probe prefixes with matching
-  source, paint runs and styles; the first changed probe retains fresh overlap
-  checks. Unchanged suffix probes now replay only after exact incoming overlap,
-  measured origin, dimensions, source offsets and paint runs reconnect; retained
-  rectangle allocations remain shared. Shifted suffixes and remaining long-row
-  latency remain. Global overflow probes now preserve fractional phase separately
-  from large integer CSS lengths; the styled rounding counterexample matches complete
-  geometry in both adapters. See the [candidate check](editor-performance.md#exact-origin-suffix-candidate-check).
-  Cold probes briefly await the selected font, with bounded fallback and fresh ownership checks.
-  In-flight jobs now retain their original font/layout environment so matching
-  trusted font notifications can retain current work; unknown, changed and stale
-  environments still refresh. Initial native layout remains expensive, and the
-  near-limit Linux readiness timeout still needs reliable CI verification.
-  The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)
-  records why Rust shaping and canvas widths cannot replace current DOM geometry directly.
-  Advance diagnostics confirm accumulation drift and missing font/tab integration;
-  higher-precision sums still do not establish exact browser geometry.
-  Pointer gestures flush pending source paint before resolving current glyph
-  coordinates, including cold bounded native windows during analysis updates.
-  Terminal lexical paint prepares in cooperative, source-owned batches; worker and
-  fallback updates reuse exact source/context rows and share their immutable token
-  allocations. Worker replies reference validated unchanged token rows and publish
-  source replacement spans in both directions, with a bounded full-snapshot resync
-  when a worker base is unavailable. Consecutive unchanged token rows transfer as
-  validated runs; replies and warm queries retain the facade's source snapshot.
-  Tab-width changes share unchanged structure and token rows while recomputing folds.
-  Parser folds and editing contexts share disjoint retained subtrees inside nested
-  containers, shifted positions and visit limits. Multiline containers and transparent
-  wrappers use fresh extraction. Document-dependent classifiers and external owners
-  use fresh extraction; interpolation contexts revalidate ancestor classifications,
-  and folds recheck closing-line text.
-  Grammar paint reuses exact source/classification pieces and unchanged token-row
-  allocations. Streaming row assembly retains unchanged piece-list allocations
-  instead of building temporary lists for the complete file.
-  Color classifiers reuse retained descendants while refreshing roots
-  with external parent roles; document-dependent custom selectors remain fresh.
-  Grammar paint now shares the parser’s source-change span for matching retained bases
-  instead of recomputing it or comparing unchanged piece/row bytes again; skipped paint
-  versions use the complete retained-source comparison.
-  Parser edit and embedded-language validation positions now query incremental
-  logical-line coordinates without rebuilding temporary line starts; grammar paint
-  and parser fold validation read the same row boundaries. Shared fold assembly
-  borrows those indexed rows for grammar-backed files.
-  Parser and document indexes share changed-row
-  reconstruction and suffix rebasing. Indentation guides query indexed source rows
-  and share cached immutable tables; above the structural byte limit, same-row-count
-  edits retain disabled-guide tables across indentation settings. Smaller-file guide
-  updates scan changed rows and adjacent blank runs, retaining the table when values
-  are unchanged. Changed guide values still copy retained columns; setting changes
-  rebuild the table. Grammar paint now streams ordered span boundaries without
-  allocating a full boundary set/vector. Warm semantic list assembly and
-  paint-table iteration and shifted suffix metadata still visit the file.
-  Structural metadata now transfers changed list spans against a validated ticket,
-  avoiding complete wire copies for retained records. Lexical fallback/context assembly, list
-  reconstruction/validation and changed-source lexical row-table construction still visit the whole file.
-  Identical lexical source with matching language and newline normalization now
-  shares complete immutable context/token tables without advancing row batches.
-  Changed lexical source reuses indexed prefix/suffix row boundaries outside one
-  validated UTF-8 replacement span, preserving incoming-state checks and terminal
-  row handling. Sequential unchanged-row queries retain exact prior row positions,
-  recovering by indexed lookup after changed rows instead of searching every row.
-  Source-change comparison and changed-source table assembly still
-  traverse the source; rows intersecting the span retain raw-byte validation.
-  Cooperative lexical rendering now uses a 4 ms elapsed budget with a 64-batch
-  hard cap, retaining task yields and conservative clock fallback instead of a
-  frame wait after every eight cheap batches.
-  Shared rules resolution is memoized even when config reads fail, preventing
-  fallback source detection on every preparation ownership check. Source,
-  defaults, loaded rules and file/project changes invalidate the cached result.
-  Shared change comparison now uses byte chunks and UTF-8 edge adjustment, with
-  native/WASM before-after measurements; unchanged text still needs comparison.
-  Parser fallback metadata and lexical folding now scan borrowed source without
-  creating temporary source snapshots; owned contexts share their scan/query policy.
-  Worker/fallback request scopes share the active editor source across repeated
-  pending queries and tab-width changes. Lexical jobs, parser preparation and
-  validated worker results retain that immutable source; workers retain resolved
-  request strings directly. Borrowed external parser entry points still create snapshots;
-  the editor facade and worker use shared entry points.
-  Retained scopes validate source revision and immutable allocation ownership
-  without scanning bytes. External scopes and changed-revision source reuse still
-  require byte comparisons; transport serialization still visits complete source.
-  Finish those incremental paths, larger retained-container reuse and remaining source snapshot
-  ownership,
-  uncached initial/cold shaping, bidirectional visual-run windows, fine long-row paint
-  and incremental measurement. Language formatting remains in Code intelligence.
-- **Bounded native input:** ready unwrapped larger fine-pointer editors bind scoped
-  surrounding text to the textarea, with full-source selections and source-owned
-  scrolling before full row measurements finish, using validated complete-native
-  dimensions and a scoped plain/styled frame. Cold transitions retain source
-  extents and reject stale frames/native text, invalid dimensions, wrapping and active composition.
-  Cold layout shares exact repeated paint dimensions after matching representative samples;
-  distinct or conflicting rows still require fresh measurement. Browser contracts verify
-  each cold probe independently of font/layout retries and await styled tokens plus
-  current source hit geometry and pointer-adapter readiness for token-click checks.
-  Initial bounded neutral unwrapped frames use the shared document index before lexical
-  completion and browser frame callbacks. Held-frame contracts cover bounded native input,
-  source columns and line-end clicks in both modes; identical frames revalidate without
-  reinstalling DOM paint. Unsupported cold viewports restore complete native input,
-  and active composition retains its installed mapping. Complete short replacements
-  release previous window bindings and restore current native dimensions.
-  Finish initial styled/large-row input, remaining cold wrapped and touch pointer selection, caret ownership and
-  source extents, then verify physical Chrome/Edge PWA input methods. Reduce
-  full-source access in remaining input paths. Ownership checks, ordinary typing
-  selection dispatch and motion scheduling now borrow source; motion queues retain
-  document identity instead of another source copy. Selection overlays retain the scoped
-  projection and borrow current source for visual caret measurements instead of copying
-  the file on selection/layout changes. Active-line and bracket tasks retain guarded
-  coordinates instead of source snapshots; indexed native columns avoid scanning
-  preceding rows, and non-bracket cursor movement skips bracket preparation. Pointer gestures now borrow current
-  source and retain document identity, rejecting replacement documents even at the
-  same revision. Rectangular gestures retain source-version identity and tab geometry;
-  column queries reuse indexed logical rows instead of rebuilding the file's row table.
-  Native selection restoration, composition completion, clipboard cursor checks and
-  fallback rule detection borrow source. Native value restoration uses the projection’s
-  normalized text directly; gutter digits query the source-row index without rescanning
-  source or shrinking for hidden folds. Release-app Chromium checks cover highlighted token/line-end clicks,
-  far-right blank space and held pointer movement in Rust/C#/JSON and scrolled
-  bounded input in both modes. Click/drag hits share measured-boundary validation
-  and row-padding normalization. Expanded LF checks cover upper/lower row padding
-  and painted caret coordinates.
-  The recorded click-past-line-end regression is reproduced in the release-app probe;
-  standalone newline boundaries now retain the final token’s measured caret.
-  The user verified the fix in the localhost PWA; broader physical IME/clipboard
-  and touch verification remains. Composition baselines share source text,
-  line indexes and prepared projections; edits detach the changed version and
-  cancellation restores the original allocations. Commands, clipboard edits,
-  search replacements and composition completion move their text into shared state
-  and return selections without retaining a second publication copy. Active content,
-  retained file buffers, project snapshots and Find scopes now share immutable
-  document source. Native input, composition completion and recovery hydration
-  publish shared handles; external write/recovery transfers retain owned strings.
-  Document initialization shares host text, and projection provenance also validates
-  the document version when multiple documents share one allocation. Reduce remaining
-  diff shaping, serialization and native-text materialization. Cold row probes,
-  cropped paint and visual motion now validate DOM text through the shared borrowed
-  native comparison without temporary normalized source copies.
-  Unfolded projections share immutable document
-  source, including LF native text; folded views reserve visible bytes and move
-  assembled strings into shared storage. Unused projection caches release source
-  before edits, while retained views and composition baselines detach on change.
-  Native normalization uses one pass; normalization eligibility and uniform-row
-  checks query existing indexed UTF-16/display-break spans, with constant-time
-  unfolded queries and visible-row aggregation for folds. Bounded windows inspect
-  their own slices. Unfolded projections share document
-  coordinate tables; retained views detach on edits, and folded/bounded views own
-  their visible coordinates. Unfolded visible-row tables prepare lazily and share
-  the document index; changed batches update affected rows and shifted suffixes,
-  with bounded growth headroom and capacity release after major deletions.
-  Folded/bounded visible rows still assemble independently, retained row/coordinate
-  tables still copy on edit. Complete-native replacement compares borrowed,
-  newline-normalized source characters and maps edit boundaries directly to source
-  bytes; duplicate composition commits reuse that comparison. Complete-value
-  comparison now skips borrowed raw byte chunks in unchanged prefixes/suffixes,
-  normalizing CR/LF boundaries without allocating a native source copy. Comparison
-  remains linear. History snapshots share immutable steps and transaction payloads
-  rather than copying retained edits,
-  and document/composition snapshots share saved-text baselines. Cancellation now
-  borrows preview/restored source and shares restored text with matching UI destinations. Admission now skips
-  untouched complete rows; long boundary rows still scan, and storage still shifts
-  suffix bytes and coordinates.
-  See [viewport preparation](editor.md#preparation-and-viewport-rendering).
-- **Editor performance verification:** input, cold paint, wrapped layout and
-  process-memory stalls remain. Cold-probe traces separate rendering, DOM installation,
-  row layout and source geometry; use those measurements, then repeat admitted byte,
-  row-count and long-line boundary workloads in both modes, including Linux Chrome
-  PSS and the unresponsive wrapped cases. Fresh Linux Chromium 154 runs complete
-  all sixteen wrapped/unwrapped boundary cases with PSS observations, but long-line
-  cold paint/input still take seconds. Isolated traces attributed row-count input
-  to frame waits and repeated rules detection; twelve repeated samples after those
-  fixes show 230–250 ms input paint, with cold paint still around 2–3 seconds.
-  The [retained paragraph mutation check](editor-performance.md#retained-paragraph-mutation-check)
-  verifies that a DOM cache alone still causes multi-second Unicode updates, even
-  with the current grapheme-run markup. Unwrapped paragraph preparation now uses
-  bounded probes with original paint-run boundaries, local DOM coordinates,
-  exact overlap validation. Tabbed rows retain complete measurement because local
-  overlap alone does not prove their final rounded extent. Browser contracts
-  compare complete extents and retained anchors through the 1 MiB row boundary;
-  font/feature/whitespace settings and failed-proof fallback share both modes.
-  Finish tabbed/wrapped/bidi preparation, initial native shaping and incremental reuse;
-  node retention alone still does not prove incremental shaping.
-  Release probes now require actual near-1-MiB String styling through load,
-  scrolling and input in both modes. Repeated Linux samples confirm multi-second
-  cold paint and roughly 1.7-second beginning edits. A bit-exact DOM-call batching
-  experiment does not materially improve those timings and is not shipped.
-  Continue reducing actual preparation/layout work and repeat after fixing it. Broader startup scroll latency and
-  initial-shaping samples remain unverified despite bounded steady-state paint.
-  See [recorded measurements](editor-performance.md).
-- **Selections and files:** finish real-device input/IME/clipboard verification
-  for multiple cursors, broader permission/error regression coverage and native folder
-  permission/recovery checks. Held-write contracts cover permission failures and
-  account/folder/bridge/project changes in both adapters, plus background tab saves
-  and newer-edit history. Native local permission revocation still needs device
-  verification. Shared selection, tab/buffer and database recovery
-  behavior is documented in [editor controls](editor.md); the disposable recovery
-  check covers both modes but uses no native local folder handle. Coordinate
-  draft/reload recovery with Offline & error-state recovery below.
+**Implemented baseline** (shared local/remote behavior, with automated coverage):
+
+| Area | Available now |
+| --- | --- |
+| Editing and history | Tab/space and indent/outdent; block-aware Enter; paired typing/deletion; grouped undo/redo; line move/duplicate/delete; comments; selected-line reindent; indentation-matching paste; EditorConfig save policies. |
+| Structure and languages | Syntax highlighting, parser-backed folding, bracket matching and structural navigation; extensible Rust/WASM language support including Rust, TypeScript/TSX, Python, JavaScript/JSX, Java, C#, C++, PHP, Shell, C, Go, HTML and CSS. |
+| Navigation and review | Find/Replace; line numbers; horizontal scrolling and linked split scrolling; Edit/Inline/Split diffs; supported previews and Markdown change gutters/word differences; pending-edit review and agent context. |
+| Tabs, appearance and recovery | Tab context actions; five Monaspace families; texture healing and ligature toggles enabled by default; retained caret/selection/scroll and database-backed editor recovery. Real folder-permission recovery still needs device verification. |
+| Selection and browser input | Multiple/rectangular selections and clipboard transactions; scoped native windows for eligible unwrapped views; automated Chromium composition and pointer checks. The recorded line-end caret bug is fixed and user-verified in the localhost PWA. |
+| Preparation and ownership | Rust/WASM worker and cooperative fallback; retained source/token/structure allocations; bounded eligible unwrapped paragraph probes, exact overlap validation and conservative complete-layout fallback. Matching trusted font notifications retain current in-flight work. |
+
+**Remaining implementation**:
+
+- [ ] **Cold startup and native input:** avoid initial full-source shaping for
+  styled/large-row files. Finish cold wrapped input, touch pointer selection,
+  source-owned caret/selection and complete document extents. Preserve composition
+  mappings and complete-native fallback where a bounded view cannot be proved.
+- [ ] **Tabbed, wrapped and bidirectional layout:** finish bounded preparation,
+  bidirectional visual-run windows, fine long-row paint and incremental glyph
+  measurement. Current tabbed/wrapped/bidi paths still use complete preparation;
+  retained DOM nodes, canvas widths and approximate Rust advances do not establish
+  exact browser geometry.
+- [ ] **Incremental paragraph updates:** finish shifted suffix reuse and avoid
+  repeated prefix segmentation for over-limit styled run tables. Initial run-table
+  construction and unsupported-boundary fallbacks still scan complete rows.
+- [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
+  warm semantic list assembly, paint-table iteration, shifted suffix metadata,
+  lexical fallback/context assembly and changed-source lexical row-table
+  reconstruction/validation. Source-change comparison still traverses retained
+  text; intersecting lexical rows retain raw-byte/incoming-state validation.
+- [ ] **Source ownership and storage:** finish remaining external parser snapshots,
+  changed-revision source comparisons, transport serialization, diff shaping and
+  native-text materialization. Folded/bounded projection tables still assemble
+  independently; retained row/coordinate tables copy on edits, changed guide values
+  copy retained columns, and storage shifts suffix bytes/coordinates. Long boundary
+  rows still scan for admission. Revisit measured storage candidates when the
+  viewport/worker access pattern supports the change, preserving exact coordinates,
+  immutable retained views and cancellation behavior.
+
+**Remaining completion gates**:
+
+- [ ] **Responsiveness and memory:** remove the remaining input, cold-paint, wrapped
+  layout and process-memory stalls. Repeat admitted byte, row-count and long-line
+  boundary workloads in both modes, including formerly unresponsive wrapped cases
+  and Linux Chrome PSS. Require actual near-1-MiB String styling through load,
+  scrolling and input, plus repeated startup-scroll, initial-shaping and beginning
+  edit samples. Existing multi-second results do not satisfy this gate.
+- [ ] **Exact geometry and fallbacks:** retain complete-renderer extent/anchor/hit
+  comparisons, font/feature/whitespace matrices, Unicode/caret mapping and failed-proof
+  fallback contracts. Improvements must preserve source/account/project ownership,
+  pending edits, themes, supported previews, agent context and both adapter contracts.
+- [ ] **Reliable CI and release/PWA checks:** pass the complete native/WASI/WASM,
+  platform, browser and release-app checks reliably. The near-limit Linux readiness
+  timeout remains open; a successful local run or one green CI run is insufficient.
+  Current checkpoints and measured results are in [performance evidence](editor-performance.md).
+- [ ] **Physical Chrome/Edge PWA input:** verify real input-method commit/cancel,
+  Unicode and LF/CRLF undo/redo, multiple-cursor clipboard behavior and touch input
+  without rewriting unrelated text. Automated CDP composition is supporting evidence,
+  not physical input-method verification.
+- [ ] **Folder permissions and recovery:** expand permission/error regressions and
+  verify real local directory-handle permission loss/regrant and reload recovery.
+  Existing held-write contracts cover failures and stale account/folder/bridge/project
+  results, background saves and newer edits; the disposable recovery check has no
+  native local folder handle. Coordinate with Offline & error-state recovery below.
+- [ ] **Accessibility and integration:** verify keyboard focus/Tab escape, assistive
+  technology, touch, theme integration and PWA loading across the completed editor,
+  including the cold/fallback paths. Evaluate whether the current projected native
+  input and source-paint surface adequately supports the richer multiple-selection view.
 
 **Rust/WebAssembly architecture:** keep the editor in Rust/Leptos compiled to WASM;
 do not embed CodeMirror, Monaco or another substantial JavaScript editor client.
