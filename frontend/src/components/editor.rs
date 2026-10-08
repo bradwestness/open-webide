@@ -1050,7 +1050,7 @@ pub(super) fn sync_highlight_scroll(
 
 #[component]
 fn LargeTextViewer(
-    content: ReadSignal<String>,
+    content: ReadSignal<crate::state::workspace::EditorText>,
     limit: openwebide_core::editor::EditorLimit,
     #[prop(default = None)] old: Option<String>,
 ) -> impl IntoView {
@@ -1094,7 +1094,7 @@ fn HighlightOverlay(
     actions: EditorActions,
     paint_request: RwSignal<Option<EditorPaint>>,
     paint_epoch: RwSignal<u64>,
-    content: ReadSignal<String>,
+    content: ReadSignal<crate::state::workspace::EditorText>,
     open_file: ReadSignal<Option<String>>,
     node_ref: NodeRef<leptos::html::Div>,
     textarea_ref: NodeRef<leptos::html::Textarea>,
@@ -2128,7 +2128,7 @@ pub fn Editor(
         Some(FileDiff {
             path: open_file,
             old,
-            new,
+            new: new.into(),
             old_unavailable: false,
             backup_path: None,
         })
@@ -2352,8 +2352,10 @@ pub fn Editor(
         workspace.pending_epoch.track();
         action_error.set(None);
     });
-    let search_scope = RwSignal::new(None::<(String, std::ops::Range<usize>)>);
-    let scope_candidate = RwSignal::new(None::<(String, std::ops::Range<usize>)>);
+    let search_scope =
+        RwSignal::new(None::<(crate::state::workspace::EditorText, std::ops::Range<usize>)>);
+    let scope_candidate =
+        RwSignal::new(None::<(crate::state::workspace::EditorText, std::ops::Range<usize>)>);
 
     let go_open = RwSignal::new(false);
     let go_query = RwSignal::new(String::new());
@@ -2480,7 +2482,7 @@ pub fn Editor(
     let find_source = Memo::new(move |_| {
         pending_diff
             .get()
-            .map_or_else(|| content.get(), |diff| diff.new)
+            .map_or_else(|| content.get(), |diff| diff.new.into())
     });
     let search_result = Memo::new(move |_| {
         let source = find_source.get();
@@ -3094,7 +3096,7 @@ pub fn Editor(
                     }
                     if let Some(diff) = pending_diff.get() {
                         if let Some(limit) = openwebide_core::editor::editor_limit(&diff.new).or_else(|| diff.old.as_deref().and_then(openwebide_core::editor::editor_limit)) {
-                            let source = RwSignal::new(diff.new);
+                            let source = RwSignal::new(crate::state::workspace::EditorText::from(diff.new));
                             return view! { <LargeTextViewer content=source.read_only() limit=limit old=diff.old /> }.into_any();
                         }
                         let metadata = workspace.open_file.get().and_then(|path| workspace.persisted_edits.with(|edits| edits.get(&path).and_then(|edit| edit.file.clone())));

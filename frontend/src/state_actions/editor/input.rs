@@ -60,7 +60,7 @@ impl EditorNativeContext {
                     .editor_documents
                     .with_untracked(|documents| {
                         documents.get(&self.key).is_some_and(|document| {
-                            document.text() == source
+                            document.matches_text(source)
                                 && document.revision() == self.revision
                                 && document.selections() == self.selections
                                 && same_projection(&document.projection(), &self.original)
@@ -225,7 +225,7 @@ impl EditorActions {
             self.workspace.editor_documents.with_untracked(|documents| {
                 let document = documents
                     .get(&key)
-                    .filter(|document| document.text() == source)?;
+                    .filter(|document| document.matches_text(source))?;
                 if document.is_composing() != self.is_composing() {
                     return None;
                 }

@@ -26,7 +26,7 @@ mod tests {
             workspace.open_file.set(Some("same.rs".into()));
             workspace
                 .content
-                .set("fn main() { 文😀(); }\r\n".repeat(1000));
+                .set("fn main() { 文😀(); }\r\n".repeat(1000).into());
             let actions = EditorActions::new(workspace);
             let first = actions.syntax_scope().unwrap();
             let second = actions.syntax_scope().unwrap();
@@ -42,7 +42,7 @@ mod tests {
             assert!(!actions.syntax_scope_current(&first));
             assert!(actions.syntax_scope_current(&changed));
             assert_eq!(first.source_revision, changed.source_revision);
-            workspace.content.set(first.source.to_string());
+            workspace.content.set(first.source.to_string().into());
             assert!(!actions.syntax_scope_current(&changed));
             let refreshed = actions.syntax_scope().unwrap();
             assert!(Arc::ptr_eq(&first.source, &refreshed.source));

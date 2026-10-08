@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share immutable editor source between the Rust document, active view, retained file buffers, project snapshots and Find scopes. Publish edit/composition results as shared handles, preserve older views, and keep owned strings at write/recovery transfer boundaries. Validate projection provenance by both immutable source and document version, including fresh documents initialized from the same allocation.
+
 - Add server-scoped All tools, Selected tools and Chat only controls with estimated per-tool schema cost and model-context share. Persist selections, filter shared local/remote/projectless requests and child agents, and reject unadvertised calls before execution. Count delegation during planning and shorten tool descriptions while preserving parameter schemas and approval rules.
 
 - Reuse indexed line-ending summaries for native normalization and row-height eligibility, avoiding full projection-text scans in unfolded and folded editor views.

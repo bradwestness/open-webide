@@ -21,7 +21,7 @@ fn mount_diff(diff: FileDiff) -> Mounted {
                 .insert((1, backup.clone()), "original bytes".into());
         }
         state.workspace.open_file.set(Some(diff.path.clone()));
-        state.workspace.content.set(diff.new.clone());
+        state.workspace.content.set(diff.new.clone().into());
         let edit = PersistedEdit {
             file: None,
             project_id: 1,
@@ -769,7 +769,7 @@ async fn interrupted_delete_listing_does_not_mutate_files() {
                 .borrow_mut()
                 .insert((1, edit.path.clone()), edit.clone());
             state.workspace.open_file.set(Some(edit.path.clone()));
-            state.workspace.content.set(edit.diff.new.clone());
+            state.workspace.content.set(edit.diff.new.clone().into());
             state.workspace.set_persisted_edits(1, vec![edit]);
             editor_view(state)
         });

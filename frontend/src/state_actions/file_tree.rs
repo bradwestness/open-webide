@@ -349,7 +349,7 @@ impl FileTreeActions {
             }
             self.workspace.media_url.set(None);
             self.workspace.open_file.set(None);
-            self.workspace.content.set(String::new());
+            self.workspace.content.set(String::new().into());
             self.workspace.dirty.set(false);
         }
     }

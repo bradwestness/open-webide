@@ -144,12 +144,12 @@ impl ReviewActions {
                             match reviewed.current_bytes()? {
                                 None => {
                                     workspace.open_file.set(None);
-                                    workspace.content.set(String::new());
+                                    workspace.content.set(String::new().into());
                                 }
                                 Some(bytes) => {
                                     workspace
                                         .content
-                                        .set(String::from_utf8_lossy(&bytes).into_owned());
+                                        .set(String::from_utf8_lossy(&bytes).into_owned().into());
                                     workspace.dirty.set(false);
                                 }
                             }

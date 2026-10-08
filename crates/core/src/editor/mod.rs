@@ -270,14 +270,18 @@ impl Document {
     }
 
     pub fn new(text: impl Into<String>) -> Self {
-        let text = text.into();
+        Self::from_shared_text(std::sync::Arc::new(text.into()))
+    }
+
+    /// Construct from an immutable host snapshot without copying its source.
+    pub fn from_shared_text(text: std::sync::Arc<String>) -> Self {
         Self {
             identity: std::sync::Arc::new(()),
             saved: std::sync::Arc::from(text.as_str()),
             editor_limits: false,
             line_index: std::sync::Arc::new(index::LineIndex::new(&text)),
             projection: ProjectionCache::default(),
-            text: std::sync::Arc::new(text),
+            text,
             selections: vec![Selection::caret(0)],
             history: Vec::new(),
             history_cursor: 0,
@@ -288,6 +292,17 @@ impl Document {
             composition: None,
             motion_columns: None,
         }
+    }
+
+    /// Shared/borrowed views can validate identical source without scanning it;
+    /// external strings retain complete byte equality validation.
+    pub fn matches_text(&self, text: &str) -> bool {
+        std::ptr::eq(self.text.as_str(), text) || self.text.as_str() == text
+    }
+
+    /// Retain this exact immutable source version; edits detach retained views.
+    pub fn shared_text(&self) -> std::sync::Arc<String> {
+        self.text.clone()
     }
 
     /// Admit an interactive document before allocating per-line metadata.
@@ -340,7 +355,14 @@ impl Document {
     pub fn projection(&self) -> FoldProjection {
         self.projection
             .0
-            .get_or_init(|| FoldProjection::for_document(&self.text, &self.folds, &self.line_index))
+            .get_or_init(|| {
+                FoldProjection::for_document(
+                    &self.text,
+                    &self.identity,
+                    &self.folds,
+                    &self.line_index,
+                )
+            })
             .clone()
     }
 

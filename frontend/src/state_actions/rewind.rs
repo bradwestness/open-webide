@@ -115,7 +115,7 @@ pub fn actions(
                                     if let Some(path) = workspace.open_file.get_untracked() {
                                         if plan.files.iter().any(|file| file.path == path && file.before.is_none() && file.binary_before.is_none() && file.backup_path.is_none()) {
                                             workspace.open_file.set(None);
-                                            workspace.content.set(String::new());
+                                            workspace.content.set(String::new().into());
                                         } else {
                                             request_open.run(path);
                                         }

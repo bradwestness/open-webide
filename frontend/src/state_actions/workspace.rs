@@ -423,7 +423,7 @@ impl WorkspaceActions {
                 workspace.editor_loading.set(false);
                 match result {
                     Ok(content) => {
-                        workspace.content.set(content);
+                        workspace.content.set(content.into());
                         workspace.retain_editor_buffer(true);
                     }
                     Err(error) => ui.toast.set(Some(error.to_string())),
@@ -488,7 +488,7 @@ impl WorkspaceActions {
                     .editor_scroll
                     .update(|positions| positions.retain(|(id, _), _| *id != project_id));
                 workspace.open_file.set(None);
-                workspace.content.set(String::new());
+                workspace.content.set(String::new().into());
                 workspace.dirty.set(false);
             }
             workspace.retain_editor_buffer(read_only.get_untracked());
@@ -566,7 +566,7 @@ impl WorkspaceActions {
                 if !workspace.dirty.get_untracked() && workspace.content.get_untracked() == baseline
                 {
                     match result {
-                        Ok(content) => workspace.content.set(content),
+                        Ok(content) => workspace.content.set(content.into()),
                         Err(error) => ui.toast.set(Some(error.to_string())),
                     }
                 }
@@ -672,7 +672,7 @@ impl WorkspaceActions {
                         revoke_object_url(workspace.media_url.get_untracked());
                         workspace.media_url.set(None);
                         workspace.open_file.set(None);
-                        workspace.content.set(String::new());
+                        workspace.content.set(String::new().into());
                         workspace.dirty.set(false);
                         read_only.set(false);
                     }
@@ -1048,15 +1048,15 @@ impl WorkspaceActions {
                             return false;
                         }
                         if decision == EditDecision::Accepted {
-                            snapshot.content.clone_from(&edit.diff.new);
+                            snapshot.content = edit.diff.new.clone().into();
                         } else {
                             match &action {
                                 crate::pending::RejectAction::Restore(previous) => {
-                                    snapshot.content.clone_from(previous);
+                                    snapshot.content = previous.clone().into();
                                 }
                                 crate::pending::RejectAction::RestoreFromBackup(_) => {
                                     if let Some(content) = &restored_content {
-                                        snapshot.content.clone_from(content);
+                                        snapshot.content = content.clone().into();
                                     } else {
                                         snapshot.open_file = None;
                                     }

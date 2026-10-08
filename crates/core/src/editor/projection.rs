@@ -30,6 +30,7 @@ pub enum ProjectionError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoldProjection {
     text: Arc<String>,
+    identity: Arc<()>,
     textarea_text: Arc<String>,
     source_len: usize,
     source_range: Range<usize>,
@@ -64,11 +65,12 @@ impl FoldProjection {
         folds: &FoldState,
         index: &super::index::LineIndex,
     ) -> Self {
-        Self::build(source, folds, index, None)
+        Self::build(source, folds, index, None, Arc::new(()))
     }
 
     pub(super) fn for_document(
         source: &Arc<String>,
+        identity: &Arc<()>,
         folds: &FoldState,
         index: &super::index::LineIndex,
     ) -> Self {
@@ -77,7 +79,7 @@ impl FoldProjection {
             .iter()
             .all(|range| folds.collapsed_at(range.start_line).is_none())
             .then(|| source.clone());
-        Self::build(source, folds, index, shared)
+        Self::build(source, folds, index, shared, identity.clone())
     }
 
     fn build(
@@ -85,6 +87,7 @@ impl FoldProjection {
         folds: &FoldState,
         index: &super::index::LineIndex,
         shared: Option<Arc<String>>,
+        identity: Arc<()>,
     ) -> Self {
         let shared_lines = shared.as_ref().map(|_| index.visible_rows());
         let logical = &index.rows;
@@ -168,6 +171,7 @@ impl FoldProjection {
         };
         Self {
             text,
+            identity,
             textarea_text,
             uniform_rows,
             coordinates: coordinates.map_or_else(|| index.coordinates.clone(), shared_coordinates),
@@ -182,9 +186,9 @@ impl FoldProjection {
     pub fn text(&self) -> &str {
         &self.text
     }
-    /// Exact immutable text provenance, including empty strings with no buffer.
+    /// Exact immutable text and document-version provenance, including empty text.
     pub fn shares_text_version(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.text, &other.text)
+        Arc::ptr_eq(&self.text, &other.text) && Arc::ptr_eq(&self.identity, &other.identity)
     }
     pub fn textarea_text(&self) -> &str {
         &self.textarea_text
@@ -290,6 +294,7 @@ impl FoldProjection {
             .collect::<Vec<_>>();
         Ok(Self {
             text,
+            identity: self.identity.clone(),
             textarea_text,
             source_len: self.source_len,
             source_range,
@@ -1380,6 +1385,34 @@ mod tests {
                     &document.projection().coordinates
                 ));
             }
+        }
+    }
+
+    #[test]
+    fn shared_host_text_retains_snapshots_and_rejects_fresh_document_provenance() {
+        use crate::editor::{Document, Edit};
+        for text in ["", "文😀\r\nbody\n"] {
+            let source = Arc::new(text.to_string());
+            let mut document = Document::from_shared_text(source.clone());
+            let first = document.projection();
+            assert!(Arc::ptr_eq(&source, &document.shared_text()));
+            assert!(first.shares_text_version(&document.clone().projection()));
+            let replacement = Document::from_shared_text(source.clone()).projection();
+            assert!(Arc::ptr_eq(&first.text, &replacement.text));
+            assert!(!first.shares_text_version(&replacement));
+            document
+                .apply(
+                    vec![Edit::replace(0..0, "new\n")],
+                    vec![Selection::caret(4)],
+                    None,
+                )
+                .unwrap();
+            assert_eq!(source.as_str(), text);
+            assert_eq!(first.text(), text);
+            assert!(!Arc::ptr_eq(&source, &document.shared_text()));
+            assert!(document.undo());
+            assert_eq!(document.text(), text);
+            assert_eq!(source.as_str(), text);
         }
     }
 

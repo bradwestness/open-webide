@@ -1,5 +1,6 @@
 //! Shared editor facade. DOM adapters provide text/selection/events; editing policy
 //! lives in the Rust document engine without filesystem-mode branches.
+use crate::state::workspace::EditorText;
 use leptos::prelude::*;
 use openwebide_core::editor::{Document, Edit, EditError, Indentation, Selection};
 
@@ -175,14 +176,14 @@ impl EditorActions {
             .try_update(|documents| {
                 let document = self.document(documents, key.clone());
                 document.prepare_save(rules)?;
-                Ok(Some(document.text().to_string()))
+                Ok(Some(EditorText::from(document.shared_text())))
             })
             .unwrap_or(Ok(None));
         if let Ok(Some(text)) = &result {
             self.workspace.content.set(text.clone());
             self.publish_dirty(key);
         }
-        result
+        result.map(|text| text.map(Into::into))
     }
 
     pub fn begin_composition(self) {
@@ -256,7 +257,7 @@ impl EditorActions {
                         && snapshot.content == preview
                         && (self.key().as_ref() != Some(&owner.key) || current_read)
                     {
-                        restored.text().clone_into(&mut snapshot.content);
+                        snapshot.content = restored.shared_text().into();
                         snapshot.dirty = restored.is_dirty();
                     }
                 });
@@ -264,7 +265,9 @@ impl EditorActions {
                     && self.key().as_ref() == Some(&owner.key)
                     && self.source_matches(preview)
                 {
-                    self.workspace.content.set(restored.text().to_owned());
+                    self.workspace
+                        .content
+                        .set(EditorText::from(restored.shared_text()));
                     self.workspace.dirty.set(restored.is_dirty());
                 }
             });
@@ -293,7 +296,7 @@ impl EditorActions {
                 let outcome = document.end_composition();
                 Some((
                     outcome,
-                    document.text().to_string(),
+                    EditorText::from(document.shared_text()),
                     document.selections()[0],
                     document.is_dirty(),
                 ))
@@ -468,11 +471,11 @@ impl EditorActions {
         let document = documents.entry(key).or_insert_with(|| {
             self.workspace
                 .content
-                .with_untracked(|text| Document::new(text.clone()))
+                .with_untracked(|text| Document::from_shared_text(text.shared()))
         });
         self.workspace.content.with_untracked(|text| {
-            if document.text() != text {
-                *document = Document::new(text.clone());
+            if !document.matches_text(text) {
+                *document = Document::from_shared_text(text.shared());
             }
         });
         document.enforce_editor_limits();
@@ -597,7 +600,7 @@ impl EditorActions {
             self.workspace.editor_documents.with_untracked(|documents| {
                 documents
                     .get(&key)
-                    .filter(|document| document.text() == source)
+                    .filter(|document| document.matches_text(source))
                     .map(|document| document.native_selection(selection))
             })
         });
@@ -612,7 +615,7 @@ impl EditorActions {
         self.workspace.editor_documents.with_untracked(|documents| {
             documents
                 .get(&key)
-                .filter(|document| document.text() == text)
+                .filter(|document| document.matches_text(text))
                 .and_then(|document| document.selections().first().copied())
         })
     }
@@ -624,7 +627,7 @@ impl EditorActions {
         self.workspace.editor_documents.with_untracked(|documents| {
             documents
                 .get(&key)
-                .filter(|document| document.text() == text)
+                .filter(|document| document.matches_text(text))
                 .map(|document| document.selections().to_vec())
                 .unwrap_or_default()
         })
@@ -651,7 +654,7 @@ impl EditorActions {
         self.workspace.editor_documents.with_untracked(|documents| {
             documents
                 .get(&key)
-                .filter(|document| document.text() == source)
+                .filter(|document| document.matches_text(source))
                 .and_then(|document| document.visual_caret(index, identity))
         })
     }
@@ -1016,7 +1019,7 @@ impl EditorActions {
                     self.workspace.editor_documents.with_untracked(|documents| {
                         documents
                             .get(&key)
-                            .filter(|document| document.text() == source)
+                            .filter(|document| document.matches_text(source))
                             .map(|document| document.line_column(selection.head))
                     })
                 })
@@ -1070,7 +1073,7 @@ impl EditorActions {
                     return Ok(None);
                 }
                 Ok(Some((
-                    document.text().to_string(),
+                    EditorText::from(document.shared_text()),
                     document.selections()[0],
                 )))
             })
@@ -1128,7 +1131,7 @@ impl EditorActions {
     }
 
     pub fn source_len(self) -> usize {
-        self.workspace.content.with_untracked(String::len)
+        self.workspace.content.with_untracked(|text| text.len())
     }
 
     pub fn selection_count(self) -> usize {
@@ -1139,13 +1142,13 @@ impl EditorActions {
             self.workspace.editor_documents.with_untracked(|documents| {
                 documents
                     .get(&key)
-                    .filter(|document| document.text() == source)
+                    .filter(|document| document.matches_text(source))
                     .map_or(0, |document| document.selections().len())
             })
         })
     }
 
-    pub fn source(self) -> String {
+    pub fn source(self) -> EditorText {
         self.workspace.content.get_untracked()
     }
 
@@ -1214,7 +1217,7 @@ impl EditorActions {
             self.workspace.editor_documents.with_untracked(|documents| {
                 documents
                     .get(&key)
-                    .filter(|document| document.text() == text)
+                    .filter(|document| document.matches_text(text))
                     .map(Document::projection)
             })
         })
@@ -1226,7 +1229,7 @@ impl EditorActions {
             self.workspace.editor_documents.with_untracked(|documents| {
                 documents
                     .get(&key)
-                    .filter(|document| document.text() == text)
+                    .filter(|document| document.matches_text(text))
                     .map(|document| document.fold_state().clone())
             })
         })
@@ -1435,7 +1438,10 @@ impl EditorActions {
             .try_update(|documents| {
                 let document = self.document(documents, key.clone());
                 document.insert_native_text(text, group)?;
-                Ok((document.text().to_string(), document.selections()[0]))
+                Ok((
+                    EditorText::from(document.shared_text()),
+                    document.selections()[0],
+                ))
             })
             .unwrap_or(Err(EditError::InvalidSelection));
         match result {
@@ -1533,7 +1539,7 @@ impl EditorActions {
                 if outcome.is_err() {
                     document.cancel_composition();
                 }
-                Some((outcome, document.text().to_string()))
+                Some((outcome, EditorText::from(document.shared_text())))
             })
             .flatten();
         if let Some((outcome, text)) = result {
@@ -1672,7 +1678,7 @@ impl EditorActions {
                     }
                 }
                 Ok(Some((
-                    document.text().to_string(),
+                    EditorText::from(document.shared_text()),
                     document.selections()[0],
                 )))
             })
@@ -1738,7 +1744,7 @@ impl EditorActions {
                     document.replace_selections("", None)?;
                 }
                 Ok(Some((
-                    document.text().to_string(),
+                    EditorText::from(document.shared_text()),
                     document.selections()[0],
                 )))
             })
@@ -1783,7 +1789,7 @@ impl EditorActions {
                     rules.line_ending,
                 )?;
                 Ok(Some((
-                    document.text().to_string(),
+                    EditorText::from(document.shared_text()),
                     document.selections()[0],
                 )))
             })
@@ -1795,7 +1801,7 @@ impl EditorActions {
     fn publish_edit<E>(
         self,
         key: (i64, String),
-        result: Result<Option<(String, Selection)>, E>,
+        result: Result<Option<(EditorText, Selection)>, E>,
     ) -> Result<Option<Selection>, E> {
         result.map(|result| {
             result.map(|(text, selection)| {
@@ -1812,5 +1818,60 @@ impl EditorActions {
             .editor_documents
             .with_untracked(|documents| documents.get(&key).is_some_and(Document::is_dirty));
         self.workspace.dirty.set(dirty);
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn publication_shares_document_buffer_and_project_source_and_preserves_retained_views() {
+        Owner::new().with(|| {
+            let workspace = crate::state::workspace::WorkspaceState::new();
+            workspace.active_project.set(Some(1));
+            workspace.open_file.set(Some("source.rs".into()));
+            workspace.content.set("文😀\r\nbody\n".into());
+            let actions = EditorActions::new(workspace);
+            actions.record_selection(Selection::caret(0)).unwrap();
+            let source = actions.source();
+            let document_source = workspace.editor_documents.with_untracked(|documents| {
+                documents
+                    .get(&(1, "source.rs".into()))
+                    .unwrap()
+                    .shared_text()
+            });
+            assert!(Arc::ptr_eq(&source.shared(), &document_source));
+            workspace.retain_editor_buffer(false);
+            let buffer = workspace
+                .editor_buffers
+                .get_untracked()
+                .remove(&(1, "source.rs".into()))
+                .unwrap();
+            let snapshot = workspace.active_snapshot();
+            assert!(Arc::ptr_eq(&source.shared(), &buffer.content.shared()));
+            assert!(Arc::ptr_eq(&source.shared(), &snapshot.content.shared()));
+            actions
+                .command(
+                    EditorCommand::TypeCharacter('x'),
+                    Selection::caret(0),
+                    Indentation::default(),
+                )
+                .unwrap();
+            let edited = actions.source();
+            let document_source = workspace.editor_documents.with_untracked(|documents| {
+                documents
+                    .get(&(1, "source.rs".into()))
+                    .unwrap()
+                    .shared_text()
+            });
+            assert!(Arc::ptr_eq(&edited.shared(), &document_source));
+            assert!(!Arc::ptr_eq(&source.shared(), &edited.shared()));
+            assert_eq!(source, "文😀\r\nbody\n");
+            assert_eq!(buffer.content, source);
+            assert_eq!(snapshot.content, source);
+            assert_eq!(edited, "x文😀\r\nbody\n");
+        });
     }
 }

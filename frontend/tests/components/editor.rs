@@ -10,7 +10,7 @@ fn mount_editor(content: String) -> Mounted {
     mount_test(move |state| {
         state.seed_project();
         state.workspace.open_file.set(Some("fixture.rs".into()));
-        state.workspace.content.set(content);
+        state.workspace.content.set(content.into());
         editor_view(state)
     })
 }
@@ -617,7 +617,7 @@ async fn column_gestures_reject_source_scope_and_document_replacements_in_both_m
                     .state
                     .workspace
                     .content
-                    .set(source.replace("xy", "AB")),
+                    .set(source.replace("xy", "AB").into()),
                 1 => mounted
                     .state
                     .workspace
@@ -797,7 +797,7 @@ async fn prepared_source_extents_ignore_native_dimensions_and_reject_stale_scope
                     .editor_preferences
                     .update(|preferences| preferences.word_wrap = wrap);
                 state.workspace.open_file.set(Some("extents.txt".into()));
-                state.workspace.content.set(initial);
+                state.workspace.content.set(initial.into());
                 mounted_actions.set(Some(EditorActions::new(state.workspace)));
                 view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:240px">{editor_view(state)}</div> }
             });
@@ -888,7 +888,11 @@ async fn prepared_source_extents_ignore_native_dimensions_and_reject_stale_scope
                 "physical browser limits must remain a validation gate"
             );
             let replacement = source.replace(&wide, "tiny");
-            mounted.state.workspace.content.set(replacement.clone());
+            mounted
+                .state
+                .workspace
+                .content
+                .set(replacement.clone().into());
             wait_until("shrunk source width/height", || {
                 actions.measured_rows().is_some_and(|measured| {
                     measured.rows.width().is_some_and(|width| width < 500.0)
@@ -946,7 +950,7 @@ async fn highlighted_token_clicks_preserve_columns_and_line_ends_in_both_modes()
                     .projects
                     .update(|projects| projects[0].mode = mode);
                 state.workspace.open_file.set(Some("click.rs".into()));
-                state.workspace.content.set(fixture);
+                state.workspace.content.set(fixture.into());
                 view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:640px;height:280px">{editor_view(state)}</div> }
             });
             wait_until("styled token frame before highlighted clicks", || {
@@ -1191,7 +1195,7 @@ async fn stationary_selection_drag_scrolls_and_stops_in_both_modes() {
                 .editor_preferences
                 .update(|preferences| preferences.word_wrap = false);
             state.workspace.open_file.set(Some("drag.txt".into()));
-            state.workspace.content.set(content);
+            state.workspace.content.set(content.into());
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:260px">{editor_view(state)}</div> }
         });
         frame().await;
@@ -1293,7 +1297,7 @@ async fn primary_caret_and_selection_follow_source_motion_and_scroll_in_both_mod
                     .editor_preferences
                     .update(|preferences| preferences.word_wrap = wrap);
                 state.workspace.open_file.set(Some("primary.txt".into()));
-                state.workspace.content.set(initial);
+                state.workspace.content.set(initial.into());
                 view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:240px">{editor_view(state)}</div> }
             });
             frame().await;
@@ -1407,7 +1411,7 @@ async fn multi_cursor_shortcuts_motion_and_paint_share_both_modes() {
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("cursors.rs".into()));
-            state.workspace.content.set(source.clone());
+            state.workspace.content.set(source.clone().into());
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:600px;height:350px">{editor_view(state)}</div> }
         });
         settle().await;
@@ -2148,7 +2152,7 @@ async fn built_in_language_parser_folds_share_local_remote_and_wasm_contracts() 
             assert_eq!(status, SyntaxStatus::Ready { incremental: false }, "{path}");
             assert!(folds.contains(&expected), "{mode:?} {path}: {folds:?}");
             let revised = source.replace("文😀", "😀文 changed").replace('\n', "\r\n");
-            mounted.state.workspace.content.set(revised.clone());
+            mounted.state.workspace.content.set(revised.clone().into());
             let (status, folds) = actions.syntax_folds(|| true).unwrap();
             assert_eq!(status, SyntaxStatus::Ready { incremental: true }, "{path}");
             let mut fresh = SyntaxDocument::new(language_from_path(path)).unwrap();
@@ -2158,7 +2162,11 @@ async fn built_in_language_parser_folds_share_local_remote_and_wasm_contracts() 
                 actions.syntax_folds(|| false).unwrap(),
                 (SyntaxStatus::Cancelled, vec![])
             );
-            mounted.state.workspace.content.set(oversized.clone());
+            mounted
+                .state
+                .workspace
+                .content
+                .set(oversized.clone().into());
             assert_eq!(
                 actions.syntax_folds(|| true).unwrap(),
                 (SyntaxStatus::TooLarge, vec![])
@@ -2329,7 +2337,7 @@ async fn html_embedded_folds_share_workspace_modes_and_discard_stale_bodies() {
             original.replace("type=module", "type=application/json"),
             format!("<script>function unfinished() {{</script>\n{original}"),
         ] {
-            mounted.state.workspace.content.set(revised.clone());
+            mounted.state.workspace.content.set(revised.clone().into());
             let (status, folds) = actions.syntax_folds(|| true).unwrap();
             assert_eq!(status, SyntaxStatus::Ready { incremental: true });
             let mut fresh = SyntaxDocument::new(Language::Html).unwrap();
@@ -2344,7 +2352,7 @@ async fn html_embedded_folds_share_workspace_modes_and_discard_stale_bodies() {
             .state
             .workspace
             .content
-            .set("<script></script>\n".repeat(65));
+            .set("<script></script>\n".repeat(65).into());
         assert_eq!(
             actions.syntax_folds(|| true).unwrap(),
             (SyntaxStatus::TooLarge, vec![])
@@ -2404,7 +2412,7 @@ async fn incremental_syntax_and_fold_provider_share_both_modes_and_account_reset
         let revised = source
             .replace("    let text", "    if true {\r\n        let text")
             .replace("    /* outer", "    }\r\n    /* outer");
-        mounted.state.workspace.content.set(revised.clone());
+        mounted.state.workspace.content.set(revised.clone().into());
         let (status, folds) = actions.syntax_folds(|| true).unwrap();
         assert_eq!(status, SyntaxStatus::Ready { incremental: true });
         let mut fresh = SyntaxDocument::new(openwebide_core::highlight::Language::Rust).unwrap();
@@ -2428,11 +2436,10 @@ async fn incremental_syntax_and_fold_provider_share_both_modes_and_account_reset
             actions.syntax_folds(|| true).unwrap().0,
             SyntaxStatus::Ready { incremental: false }
         );
-        mounted
-            .state
-            .workspace
-            .content
-            .set("x".repeat(openwebide_core::editor::MAX_STRUCTURE_BYTES + 1));
+        mounted.state.workspace.content.set(
+            "x".repeat(openwebide_core::editor::MAX_STRUCTURE_BYTES + 1)
+                .into(),
+        );
         assert_eq!(
             actions.syntax_folds(|| true).unwrap(),
             (SyntaxStatus::TooLarge, vec![])
@@ -2471,7 +2478,7 @@ async fn caret_and_scroll_restore_across_files_projects_and_views_in_both_modes(
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("position.rs".into()));
-            state.workspace.content.set(content);
+            state.workspace.content.set(content.into());
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:500px;height:250px">{editor_view(state)}</div> }
         });
         settle().await;
@@ -2553,7 +2560,7 @@ async fn caret_and_scroll_restore_across_files_projects_and_views_in_both_modes(
             .workspace
             .open_file
             .set(Some("position.rs".into()));
-        mounted.state.workspace.content.set(source);
+        mounted.state.workspace.content.set(source.into());
         settle().await;
         let second: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
@@ -2827,7 +2834,7 @@ async fn markdown_preview_gutters_share_git_and_pending_changes_in_both_modes() 
         let changelog =
             "## Changed\n\n- Keep this item.\n- Make previews **clear**.\n- Keep this too.\n";
         let revised = changelog.replace("clear", "compact");
-        mounted.state.workspace.content.set(revised.clone());
+        mounted.state.workspace.content.set(revised.clone().into());
         mounted.state.git.head_content.set(Some(HeadContent {
             project_id: Some(1),
             path: "README.md".into(),
@@ -2994,7 +3001,7 @@ async fn measure_highlight_bursts() {
         let mounted = mount_test(move |state| {
             state.seed_project();
             state.workspace.open_file.set(Some("fixture.rs".into()));
-            state.workspace.content.set(initial);
+            state.workspace.content.set(initial.into());
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:700px;height:400px">{editor_view(state)}</div> }
         });
         settle().await;
@@ -3539,11 +3546,10 @@ async fn numbered_views_scroll_horizontally_with_compact_gutters_and_linked_spli
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("wide.rs".into()));
-            state.workspace.content.set(format!(
-                "{}needle\n{}",
-                "x".repeat(800),
-                "short\n".repeat(40)
-            ));
+            state
+                .workspace
+                .content
+                .set(format!("{}needle\n{}", "x".repeat(800), "short\n".repeat(40)).into());
             state.git.head_content.set(Some(HeadContent {
                 project_id: Some(1),
                 path: "wide.rs".into(),
@@ -3652,7 +3658,11 @@ async fn numbered_views_scroll_horizontally_with_compact_gutters_and_linked_spli
                 < 2.0
         );
         mounted.click_text("Edit");
-        mounted.state.workspace.content.set("short\n".repeat(1_000));
+        mounted
+            .state
+            .workspace
+            .content
+            .set("short\n".repeat(1_000).into());
         settle().await;
         frame().await;
         let textarea = mounted.element(".editor-textarea");
@@ -3679,7 +3689,7 @@ async fn edit_scrollbars_stay_above_paint_and_outside_gutter_in_both_modes() {
             state
                 .workspace
                 .content
-                .set(format!("{}\n", "x".repeat(800)).repeat(100));
+                .set(format!("{}\n", "x".repeat(800)).repeat(100).into());
             view! { <style>{include_str!("../../styles.css")}</style><div class="editor-fixture" style="display:flex;width:500px;height:250px">{editor_view(state)}</div> }
         });
         settle().await;
@@ -3824,7 +3834,7 @@ async fn editor_scroll_surface_preserves_wheel_native_navigation_and_scope_in_bo
                     ..Default::default()
                 });
                 state.workspace.open_file.set(Some("scroll.txt".into()));
-                state.workspace.content.set(source);
+                state.workspace.content.set(source.into());
                 view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:500px;height:400px">{editor_view(state)}</div> }
             });
             wait_until("document scroll surface", || {
@@ -4590,7 +4600,7 @@ async fn fold_controls_preserve_scrolled_viewport_with_a_distant_caret_in_both_m
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("fold-scroll.rs".into()));
-            state.workspace.content.set(source.clone());
+            state.workspace.content.set(source.clone().into());
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:280px">{editor_view(state)}</div> }
         });
         wait_until("initial fold paint", || {
@@ -5190,7 +5200,7 @@ async fn deferred_decorations_reject_replaced_source_selection_and_scope_in_both
                     .state
                     .workspace
                     .content
-                    .set(source.replace("call", "work")),
+                    .set(source.replace("call", "work").into()),
                 2 => mounted
                     .state
                     .workspace
@@ -5537,7 +5547,7 @@ async fn editor_navigation_status_and_decorations_share_source_coordinates_in_bo
             .state
             .workspace
             .content
-            .set(format!("header\n{}\n", "x".repeat(1100)));
+            .set(format!("header\n{}\n", "x".repeat(1100)).into());
         settle().await;
         frame().await;
         let textarea: web_sys::HtmlTextAreaElement =
@@ -5751,7 +5761,7 @@ async fn wrapping_whitespace_fold_geometry_and_navigation_share_both_modes() {
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("wrapped.rs".into()));
-            state.workspace.content.set(source.clone());
+            state.workspace.content.set(source.clone().into());
             state.settings.editor_preferences.update(|preferences| {
                 preferences.word_wrap = true;
                 preferences.show_whitespace = true;
@@ -7477,7 +7487,7 @@ async fn wrapped_multi_cursor_arrows_follow_measured_rows_in_both_modes() {
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("visual.rs".into()));
-            state.workspace.content.set(source.clone());
+            state.workspace.content.set(source.clone().into());
             state
                 .settings
                 .editor_preferences
@@ -7656,7 +7666,7 @@ async fn pending_paint_motion_preserves_key_order_and_flushes_before_edits_in_bo
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("queued.rs".into()));
-            state.workspace.content.set(source.clone());
+            state.workspace.content.set(source.clone().into());
             state
                 .settings
                 .editor_preferences
@@ -7917,7 +7927,7 @@ async fn literal_contexts_and_paint_preserve_heredocs_and_nested_interpolation_i
         for &(path, source, literal, code) in LITERAL_CASES {
             let source = source.replace('\n', "\r\n");
             mounted.state.workspace.open_file.set(Some(path.into()));
-            mounted.state.workspace.content.set(source.clone());
+            mounted.state.workspace.content.set(source.clone().into());
             let structure = actions.syntax_structure(|| true).unwrap();
             assert!(
                 !structure.is_code(source.find(literal).unwrap()),
@@ -7972,7 +7982,7 @@ async fn long_wrapped_lines_move_cursors_without_measuring_the_entire_line_in_bo
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("long.txt".into()));
-            state.workspace.content.set(source.clone());
+            state.workspace.content.set(source.clone().into());
             state
                 .settings
                 .editor_preferences
@@ -8114,7 +8124,7 @@ async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_
                         .projects
                         .update(|projects| projects[0].mode = mode);
                     state.workspace.open_file.set(Some("fallback.rs".into()));
-                    state.workspace.content.set(source.clone());
+                    state.workspace.content.set(source.clone().into());
                     if terminal {
                         state.workspace.editor_worker_active.set(true);
                         state.workspace.editor_preparation.set(Some(
@@ -8210,7 +8220,7 @@ async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_
                 mounted.state.workspace.editor_worker_active.set(false);
             }
             let revised = source.replacen("inside words", "inside revised words", 1);
-            mounted.state.workspace.content.set(revised.clone());
+            mounted.state.workspace.content.set(revised.clone().into());
             wait_until("one-row edit reuses converged lexical context", || {
                 mounted
                     .state
@@ -8275,7 +8285,7 @@ async fn cooperative_terminal_lexical_paint_preserves_context_and_rejects_stale_
                 .state
                 .workspace
                 .content
-                .set(format!("{source}\nold pending"));
+                .set(format!("{source}\nold pending").into());
             wait_until("replacement starts pending fallback", || {
                 actions.syntax_is_pending()
             })
@@ -8378,7 +8388,7 @@ async fn syntax_consumers_share_immutable_preparation_and_invalidate_it_in_both_
             assert_eq!(actions.source(), source);
         }
         let revised = source.replace("文😀", "😀 changed");
-        mounted.state.workspace.content.set(revised.clone());
+        mounted.state.workspace.content.set(revised.clone().into());
         let next = actions.syntax_structure(|| true).unwrap();
         assert!(!std::sync::Arc::ptr_eq(&first, &next));
         assert!(first.matches_source(source));
@@ -8585,7 +8595,7 @@ async fn pending_worker_paints_requested_source_rows_without_full_file_lexical_t
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("cold-paint.rs".into()));
-            state.workspace.content.set(source);
+            state.workspace.content.set(source.into());
             EditorActions::new(state.workspace).install_syntax_transport(installed);
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:500px;height:300px">{editor_view(state)}</div> }
         });
@@ -8983,7 +8993,7 @@ async fn worker_preparation_coalesces_edits_rejects_stale_scopes_and_falls_back_
                 .state
                 .workspace
                 .content
-                .set(format!("fn latest_{update}() {{\r\n call(\"文😀\");\r\n}}"));
+                .set(format!("fn latest_{update}() {{\r\n call(\"文😀\");\r\n}}").into());
             settle().await;
         }
         assert_eq!(transport.calls.get(), 1);
@@ -9028,7 +9038,7 @@ async fn worker_preparation_coalesces_edits_rejects_stale_scopes_and_falls_back_
                 .state
                 .workspace
                 .content
-                .set(format!("fn changed_{change}() {{\n call();\n}}"));
+                .set(format!("fn changed_{change}() {{\n call();\n}}").into());
             wait_until("request before scope change", || {
                 !transport.pending.borrow().is_empty()
             })
@@ -9195,7 +9205,7 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
                 .with_untracked(|cache| cache.is_empty())
         );
         let revised = source.replace("42", "7");
-        mounted.state.workspace.content.set(revised.clone());
+        mounted.state.workspace.content.set(revised.clone().into());
         assert!(actions.syntax_highlights().is_none());
         wait_until("revised lexical request", || {
             !transport.pending.borrow().is_empty()
@@ -9281,7 +9291,11 @@ async fn lexical_worker_paint_is_cached_lossless_and_source_guarded_in_both_mode
         assert!(
             actions
                 .syntax_folds(|| {
-                    mounted.state.workspace.content.set(revised.clone() + " ");
+                    mounted
+                        .state
+                        .workspace
+                        .content
+                        .set((revised.clone() + " ").into());
                     false
                 })
                 .is_none(),
@@ -9332,7 +9346,7 @@ async fn worker_source_resync_is_bounded_and_rejects_superseded_ownership_in_bot
         })
         .await;
         let revised = source.replace("42", "7");
-        mounted.state.workspace.content.set(revised.clone());
+        mounted.state.workspace.content.set(revised.clone().into());
         wait_until("delta after worker eviction", || {
             !transport.pending.borrow().is_empty()
         })
@@ -9358,7 +9372,7 @@ async fn worker_source_resync_is_bounded_and_rejects_superseded_ownership_in_bot
         .await;
         assert!(mounted.state.workspace.editor_worker_active.get_untracked());
         let second = revised.replace("7", "8");
-        mounted.state.workspace.content.set(second.clone());
+        mounted.state.workspace.content.set(second.clone().into());
         wait_until("second delta", || !transport.pending.borrow().is_empty()).await;
         transport.service.borrow_mut().clear();
         transport.respond(true);
@@ -9367,7 +9381,7 @@ async fn worker_source_resync_is_bounded_and_rejects_superseded_ownership_in_bot
         })
         .await;
         let newest = second.replace("8", "9");
-        mounted.state.workspace.content.set(newest.clone());
+        mounted.state.workspace.content.set(newest.clone().into());
         match changed_scope {
             0 => mounted
                 .state
@@ -9421,7 +9435,7 @@ async fn worker_source_resync_is_bounded_and_rejects_superseded_ownership_in_bot
             .state
             .workspace
             .content
-            .set(newest.replace("9", "10"));
+            .set(newest.replace("9", "10").into());
         wait_until("last delta", || !transport.pending.borrow().is_empty()).await;
         transport.service.borrow_mut().clear();
         transport.respond(true);
@@ -9472,7 +9486,7 @@ async fn unwrapped_viewport_bounds_paint_and_maps_scrolled_unicode_carets_in_bot
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("viewport.txt".into()));
-            state.workspace.content.set(text);
+            state.workspace.content.set(text.into());
             state
                 .settings
                 .editor_preferences
@@ -9690,7 +9704,7 @@ async fn large_file_viewer_bounds_pages_without_constructing_documents_in_both_m
                         .projects
                         .update(|projects| projects[0].mode = mode);
                     state.workspace.open_file.set(Some("large.txt".into()));
-                    state.workspace.content.set(source);
+                    state.workspace.content.set(source.into());
                     editor_view(state)
                 }
             });
@@ -9847,7 +9861,7 @@ async fn composition_replicas_obey_editor_admission_before_preview_in_both_modes
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("near-limit.txt".into()));
-            state.workspace.content.set(initial);
+            state.workspace.content.set(initial.into());
             // Exercise facade input policy without measuring a 1 MiB DOM row.
             view! { <div>"Composition admission"</div> }
         });
@@ -9896,7 +9910,7 @@ async fn oversized_change_review_retains_before_and_after_pages_in_both_modes() 
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("review.txt".into()));
             let text = "😀".repeat(MAX_EDITOR_LINE_BYTES / 4 + 1);
-            state.workspace.content.set(text.clone());
+            state.workspace.content.set(text.clone().into());
             state.workspace.pending_edits.update(|edits| {
                 edits.insert(
                     "review.txt".into(),
@@ -10016,7 +10030,7 @@ async fn wrapped_row_windows_keep_exact_heights_carets_and_offscreen_cursors_in_
                     .workspace
                     .open_file
                     .set(Some("wrapped-window.txt".into()));
-                state.workspace.content.set(source);
+                state.workspace.content.set(source.into());
                 state
                     .settings
                     .editor_preferences
@@ -10245,7 +10259,7 @@ async fn cold_unwrapped_native_windows_preserve_extents_pointer_and_edits_in_bot
                     .workspace
                     .open_file
                     .set(Some("cold-native.txt".into()));
-                state.workspace.content.set(source);
+                state.workspace.content.set(source.into());
                 captured.set(Some(EditorActions::new(state.workspace)));
                 view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
             }
@@ -10426,7 +10440,7 @@ async fn pending_terminal_fallback_paints_bounded_unwrapped_input_in_both_modes(
                     .workspace
                     .open_file
                     .set(Some("initial-fallback.rs".into()));
-                state.workspace.content.set(source);
+                state.workspace.content.set(source.into());
                 slot.set(Some(EditorActions::new(state.workspace)));
                 view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:500px;height:320px">{editor_view(state)}</div> }
             }
@@ -10604,7 +10618,7 @@ async fn cold_wrapped_preparation_keeps_input_visible_and_rejects_superseded_bat
                     .workspace
                     .open_file
                     .set(Some("cold-window.txt".into()));
-                state.workspace.content.set(source);
+                state.workspace.content.set(source.into());
                 state
                     .settings
                     .editor_preferences
@@ -10790,7 +10804,7 @@ async fn cold_repeated_wrapped_rows_share_layout_and_preserve_far_edits_in_both_
                     .workspace
                     .open_file
                     .set(Some("cold-repeated.txt".into()));
-                state.workspace.content.set(source);
+                state.workspace.content.set(source.into());
                 state
                     .settings
                     .editor_preferences
@@ -10881,7 +10895,7 @@ async fn localized_wrapped_edits_reuse_exact_row_heights_in_both_modes() {
                     .projects
                     .update(|projects| projects[0].mode = mode);
                 state.workspace.open_file.set(Some("row-reuse.txt".into()));
-                state.workspace.content.set(source);
+                state.workspace.content.set(source.into());
                 state
                     .settings
                     .editor_preferences
@@ -11187,7 +11201,10 @@ async fn cold_neighborhoods_flush_arrows_before_native_edits_composition_and_cli
     let second = (row.len() + 7) * 9_000;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         for operation in 0..4 {
-            let mut eager: Option<(String, Vec<openwebide_core::editor::Selection>)> = None;
+            let mut eager: Option<(
+                openwebide_frontend::state::workspace::EditorText,
+                Vec<openwebide_core::editor::Selection>,
+            )> = None;
             for cold in [false, true] {
                 let mounted = mount_test({
                     let source = source.clone();
@@ -11198,7 +11215,7 @@ async fn cold_neighborhoods_flush_arrows_before_native_edits_composition_and_cli
                             .projects
                             .update(|projects| projects[0].mode = mode);
                         state.workspace.open_file.set(Some("cold-edits.txt".into()));
-                        state.workspace.content.set(source);
+                        state.workspace.content.set(source.into());
                         state
                             .settings
                             .editor_preferences
@@ -11345,7 +11362,7 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("window.txt".into()));
-            state.workspace.content.set(source.clone());
+            state.workspace.content.set(source.clone().into());
             state
                 .settings
                 .editor_preferences
@@ -11574,7 +11591,7 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
         mounted.click("button[aria-label='Close find']");
         let bidi = format!("{}א", "LTR words ".repeat(10_000));
         let audit = audit_source.call0(&wasm_bindgen::JsValue::NULL).unwrap();
-        mounted.state.workspace.content.set(bidi.clone());
+        mounted.state.workspace.content.set(bidi.clone().into());
         wait_until(
             "wrapped bidi source uses complete paragraph geometry",
             || {
@@ -11670,7 +11687,7 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("horizontal.txt".into()));
-            state.workspace.content.set(source.clone());
+            state.workspace.content.set(source.clone().into());
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
         });
         wait_until("horizontal fragment ready", || {
@@ -11893,7 +11910,7 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
         );
         mounted.click("button[aria-label='Close find']");
         let bidi = format!("{}א", "LTR words ".repeat(10_000));
-        mounted.state.workspace.content.set(bidi.clone());
+        mounted.state.workspace.content.set(bidi.clone().into());
         wait_until(
             "bidirectional paragraph keeps complete source paint",
             || {
@@ -11937,7 +11954,7 @@ async fn repeated_fragment_windows_reuse_validated_paint_and_font_changes_remeas
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("cached.txt".into()));
-            state.workspace.content.set(source.clone());
+            state.workspace.content.set(source.clone().into());
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
         });
         wait_until("cached horizontal paint", || {
@@ -12055,11 +12072,11 @@ async fn repeated_fragment_windows_reuse_validated_paint_and_font_changes_remeas
         .await;
         settle().await;
         let before_source = count();
-        mounted
-            .state
-            .workspace
-            .content
-            .update(|source| source.replace_range(0..3, "界"));
+        mounted.state.workspace.content.update(|source| {
+            let mut replacement = source.to_string();
+            replacement.replace_range(0..3, "界");
+            *source = replacement.into();
+        });
         wait_until("source replacement rejects retained paint", || {
             mounted
                 .root
@@ -12109,7 +12126,7 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
                         .projects
                         .update(|projects| projects[0].mode = mode);
                     state.workspace.open_file.set(Some("scope.txt".into()));
-                    state.workspace.content.set(source);
+                    state.workspace.content.set(source.into());
                     *action_slot.borrow_mut() = Some(EditorActions::new(state.workspace));
                     view! { <div/> }
                 }
@@ -12389,7 +12406,7 @@ fn cold_geometry_cannot_populate_a_new_paint_scope_in_either_mode() {
                     .state
                     .workspace
                     .content
-                    .set(format!("changed {source}")),
+                    .set(format!("changed {source}").into()),
                 1 => mounted
                     .state
                     .workspace
@@ -12536,7 +12553,7 @@ async fn source_slice_measurement_failure_restores_full_source_in_both_modes() {
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("slice.txt".into()));
-            state.workspace.content.set(source.clone());
+            state.workspace.content.set(source.clone().into());
             state
                 .settings
                 .editor_preferences
@@ -12717,7 +12734,7 @@ async fn cold_font_loading_waits_boundedly_and_rejects_old_jobs_in_both_modes() 
                 state
                     .workspace
                     .content
-                    .set("initial words 文😀\r\n".repeat(400));
+                    .set("initial words 文😀\r\n".repeat(400).into());
                 view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:300px">{editor_view(state)}</div> }
             });
             let actions = openwebide_frontend::state_actions::editor::EditorActions::new(
@@ -12748,7 +12765,7 @@ async fn cold_font_loading_waits_boundedly_and_rejects_old_jobs_in_both_modes() 
                     .state
                     .workspace
                     .content
-                    .set("replacement words 文😀\r\n".repeat(400));
+                    .set("replacement words 文😀\r\n".repeat(400).into());
             }
             if outcome != "timeout" {
                 js_sys::Reflect::get(&audit.0, &"complete".into())
@@ -12982,7 +12999,7 @@ async fn bounded_native_declarations_keep_global_offsets_and_full_selection_edit
                         .workspace
                         .open_file
                         .set(Some("native-context.txt".into()));
-                    state.workspace.content.set(source.clone());
+                    state.workspace.content.set(source.clone().into());
                     let mut document = Document::new(source);
                     document.set_selections(vec![selection]).unwrap();
                     state.workspace.editor_documents.update(|documents| {
@@ -13108,7 +13125,7 @@ async fn bounded_native_declarations_validate_fold_origins_and_full_input_retent
                     .workspace
                     .open_file
                     .set(Some("native-context.txt".into()));
-                state.workspace.content.set(source.clone());
+                state.workspace.content.set(source.clone().into());
                 let mut document = Document::new(source);
                 document.set_selections(vec![Selection::caret(at)]).unwrap();
                 document.set_fold_ranges(vec![
@@ -13488,7 +13505,8 @@ async fn switching_loaded_font_families_invalidates_source_layout_in_both_modes(
             state.workspace.content.set(
                 "!= => === 文😀
 "
-                .repeat(160),
+                .repeat(160)
+                .into(),
             );
             state
                 .settings
@@ -13791,11 +13809,8 @@ async fn file_tab_context_actions_share_tree_actions_and_guard_bulk_closes_in_bo
             3
         );
         mounted.state.workspace.editor_buffers.update(|buffers| {
-            buffers
-                .get_mut(&(1, "b.txt".into()))
-                .unwrap()
-                .content
-                .push('!');
+            let buffer = buffers.get_mut(&(1, "b.txt".into())).unwrap();
+            buffer.content = format!("{}!", buffer.content).into();
         });
         confirmation.action.run(());
         assert_eq!(
@@ -13878,7 +13893,7 @@ async fn bounded_native_context_replaces_complete_selections_and_preserves_histo
                     .projects
                     .update(|projects| projects[0].mode = mode);
                 state.workspace.open_file.set(Some("context.txt".into()));
-                state.workspace.content.set(source.clone());
+                state.workspace.content.set(source.clone().into());
                 let actions = EditorActions::new(state.workspace);
                 actions.record_selection(selected).unwrap();
                 captured.set(Some(actions));
@@ -13944,8 +13959,8 @@ async fn bounded_native_context_rejects_stale_source_selection_and_owner_scopes_
     };
     use openwebide_frontend::state_actions::editor::EditorActions;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
-        for changed in 0..10 {
-            let original = if changed == 9 {
+        for changed in 0..12 {
+            let original = if matches!(changed, 9 | 11) {
                 String::new()
             } else {
                 "α🦀 row\r\n".repeat(3000)
@@ -13960,7 +13975,7 @@ async fn bounded_native_context_rejects_stale_source_selection_and_owner_scopes_
                     .projects
                     .update(|projects| projects[0].mode = mode);
                 state.workspace.open_file.set(Some("scope.txt".into()));
-                state.workspace.content.set(source.clone());
+                state.workspace.content.set(source.clone().into());
                 let actions = EditorActions::new(state.workspace);
                 actions
                     .record_selection(Selection::caret(source.len()))
@@ -13971,7 +13986,11 @@ async fn bounded_native_context_rejects_stale_source_selection_and_owner_scopes_
             let actions = slot.get().unwrap();
             let context = actions.native_context().unwrap();
             match changed {
-                0 => mounted.state.workspace.content.set(format!("{original}x")),
+                0 => mounted
+                    .state
+                    .workspace
+                    .content
+                    .set(format!("{original}x").into()),
                 1 => actions.record_selection(Selection::caret(0)).unwrap(),
                 2 => mounted
                     .state
@@ -14004,6 +14023,19 @@ async fn bounded_native_context_rejects_stale_source_selection_and_owner_scopes_
                             .set_selections(vec![Selection::caret(original.len())])
                             .unwrap();
                         documents.insert((1, "scope.txt".into()), replacement);
+                    }),
+                10 | 11 => mounted
+                    .state
+                    .workspace
+                    .editor_documents
+                    .update(|documents| {
+                        let key = (1, "scope.txt".into());
+                        let text = documents.get(&key).unwrap().shared_text();
+                        let mut replacement = Document::from_shared_text(text);
+                        replacement
+                            .set_selections(vec![Selection::caret(original.len())])
+                            .unwrap();
+                        documents.insert(key, replacement);
                     }),
                 _ => {
                     mounted
@@ -14074,7 +14106,7 @@ async fn bounded_native_context_multicursor_replay_and_failures_share_source_con
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("multiple.txt".into()));
-            state.workspace.content.set(source.clone());
+            state.workspace.content.set(source.clone().into());
             let actions = EditorActions::new(state.workspace);
             actions.record_selection(selected[0]).unwrap();
             state.workspace.editor_documents.update(|documents| {
@@ -14173,7 +14205,7 @@ async fn bounded_native_context_keeps_composition_values_through_clipped_replace
                     .workspace
                     .open_file
                     .set(Some("composition.txt".into()));
-                state.workspace.content.set(source.clone());
+                state.workspace.content.set(source.clone().into());
                 let actions = EditorActions::new(state.workspace);
                 actions.record_selection(selected).unwrap();
                 captured.set(Some(actions));
@@ -14262,7 +14294,7 @@ async fn prepared_editor_binds_native_windows_and_edits_full_source_in_both_mode
                     .editor_preferences
                     .update(|preferences| preferences.word_wrap = wrap);
                 state.workspace.open_file.set(Some("window.txt".into()));
-                state.workspace.content.set(source);
+                state.workspace.content.set(source.into());
                 let commands = super::support::command_actions(state.clone());
                 view! { <button class="capture-window" on:click=move |_| commands.run.run(openwebide_frontend::commands::Command::CaptureEditor)>"Capture"</button><style>{include_str!("../../styles.css")}</style><div style="display:flex;width:520px;height:280px">{editor_view(state)}</div> }
             });
@@ -14381,7 +14413,7 @@ async fn bound_editor_composition_keeps_native_ownership_across_provider_metadat
                 .projects
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("ime-window.txt".into()));
-            state.workspace.content.set(source);
+            state.workspace.content.set(source.into());
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:520px;height:280px">{editor_view(state)}</div> }
         });
         let input: web_sys::HtmlTextAreaElement =

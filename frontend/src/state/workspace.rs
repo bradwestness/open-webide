@@ -1,7 +1,84 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use leptos::prelude::*;
 use openwebide_core::{EditDecision, FileDiff, FileEntry, PersistedEdit, SearchHit};
+
+/// Immutable editor source shared by documents, buffers and project snapshots.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EditorText(Arc<String>);
+
+impl EditorText {
+    pub fn shared(&self) -> Arc<String> {
+        self.0.clone()
+    }
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+impl std::ops::Deref for EditorText {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+impl std::fmt::Display for EditorText {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self)
+    }
+}
+impl From<String> for EditorText {
+    fn from(text: String) -> Self {
+        Self(Arc::new(text))
+    }
+}
+impl From<&str> for EditorText {
+    fn from(text: &str) -> Self {
+        text.to_owned().into()
+    }
+}
+impl From<Arc<String>> for EditorText {
+    fn from(text: Arc<String>) -> Self {
+        Self(text)
+    }
+}
+impl From<EditorText> for String {
+    fn from(text: EditorText) -> Self {
+        Arc::unwrap_or_clone(text.0)
+    }
+}
+impl PartialEq<str> for EditorText {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+impl PartialEq<&str> for EditorText {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+impl PartialEq<String> for EditorText {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+impl PartialEq<EditorText> for str {
+    fn eq(&self, other: &EditorText) -> bool {
+        self == other.as_str()
+    }
+}
+impl PartialEq<EditorText> for &str {
+    fn eq(&self, other: &EditorText) -> bool {
+        *self == other.as_str()
+    }
+}
+impl PartialEq<EditorText> for String {
+    fn eq(&self, other: &EditorText) -> bool {
+        self == other.as_str()
+    }
+}
 
 /// Immutable surrounding text and its complete source selection. The full view
 /// shares existing allocations and proves provenance; only the input text is sliced.
@@ -120,7 +197,7 @@ pub struct EditorComposition {
 /// A loaded file retained independently of the currently selected document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditorBuffer {
-    pub content: String,
+    pub content: EditorText,
     pub dirty: bool,
     pub read_only: bool,
 }
@@ -178,7 +255,7 @@ struct PreparedEditorRecovery {
     buffers: HashMap<(i64, String), EditorBuffer>,
     scroll: HashMap<(i64, String), EditorScroll>,
     paths: Vec<String>,
-    content: String,
+    content: EditorText,
     dirty: bool,
     result: EditorRecoveryHydration,
 }
@@ -200,7 +277,7 @@ impl PreparedEditorRecovery {
                 buffers.insert(
                     key.clone(),
                     EditorBuffer {
-                        content: document.text().into(),
+                        content: document.shared_text().into(),
                         dirty: document.is_dirty(),
                         read_only: file.read_only,
                     },
@@ -251,7 +328,7 @@ pub struct WorkspaceSnapshot {
     pub entries: HashMap<String, Vec<FileEntry>>,
     pub expanded: HashSet<String>,
     pub open_file: Option<String>,
-    pub content: String,
+    pub content: EditorText,
     pub dirty: bool,
     pub search: Option<Vec<SearchHit>>,
     pub active_session: Option<i64>,
@@ -267,7 +344,7 @@ pub struct WorkspaceState {
     pub entries: RwSignal<HashMap<String, Vec<FileEntry>>>,
     pub expanded: RwSignal<HashSet<String>>,
     pub open_file: RwSignal<Option<String>>,
-    pub content: RwSignal<String>,
+    pub content: RwSignal<EditorText>,
     pub dirty: RwSignal<bool>,
     pub search: RwSignal<Option<Vec<SearchHit>>>,
     pub active_session: RwSignal<Option<i64>>,
@@ -336,7 +413,7 @@ impl WorkspaceState {
             let open_file = open_file.get()?;
             pending_edits.with(|pending| pending.get(&open_file).cloned())
         });
-        let content = RwSignal::new(String::new());
+        let content = RwSignal::new(EditorText::default());
         let pending_epoch = RwSignal::new(0);
         let editor_read_revision = RwSignal::new(0);
         let editor_fold_revision = RwSignal::new(0);
@@ -539,7 +616,7 @@ impl WorkspaceState {
                 if let Some((text, dirty)) = &source {
                     if let Some(document) = documents
                         .get(&key)
-                        .filter(|document| document.text() == text)
+                        .filter(|document| document.matches_text(text))
                     {
                         return Ok(Some(document.recovery()));
                     }
@@ -551,7 +628,7 @@ impl WorkspaceState {
                     if openwebide_core::editor::editor_limit(text).is_some() {
                         return Ok(None);
                     }
-                    return Ok(Some(Document::new(text.clone()).recovery()));
+                    return Ok(Some(Document::from_shared_text(text.shared()).recovery()));
                 }
                 Ok(documents.get(&key).map(Document::recovery))
             })?;

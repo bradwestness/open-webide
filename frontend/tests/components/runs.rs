@@ -1176,7 +1176,14 @@ async fn completed_snapshots_refresh_db_state_without_resurrecting_resolved_edit
     close(&mounted);
 }
 
-async fn replay_during_resolution(rejected: bool, seen_live: bool) -> (String, bool, bool) {
+async fn replay_during_resolution(
+    rejected: bool,
+    seen_live: bool,
+) -> (
+    openwebide_frontend::state::workspace::EditorText,
+    bool,
+    bool,
+) {
     use openwebide_core::{EditDecision, FileDiff, PersistedEdit};
     let fake = Rc::new(FakeTransport::default());
     let transport = fake.clone();

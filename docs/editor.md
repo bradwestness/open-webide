@@ -451,10 +451,13 @@ source instead of cloning complete file values. Native selection mapping lives i
 the shared input facade; the DOM adapter supplies UTF-16 positions and reads its
 value only when an unbound folded view needs validation. Ordinary typing keys do not
 capture a source snapshot in selection dispatch. Commands, clipboard edits and
-search replacements move their publication text into shared workspace state and
-return selections; composition completion likewise publishes its text without
-retaining another result copy. Document/composition snapshots share source storage,
-while workspace publication still retains an owned complete source String.
+search replacements publish the document's immutable source handle and return
+selections; native input and composition completion publish the same handle.
+Active content, retained file buffers, project snapshots and Find scopes share
+immutable editor text. Hydration and document initialization share source too;
+edits detach retained versions before mutation. Write and recovery transfers
+retain their existing owned-string contracts. Matching borrowed source validates
+pointer/length first, with complete byte equality for external text.
 Ordinary transactions validate borrowed proposed pieces before mutating the existing
 String, including grouped undo/redo. Growth reserves at most 64 KiB of headroom
 above the transaction's peak size, rather than doubling a large buffer. Affected row contexts are merged so multiple
@@ -465,11 +468,11 @@ until providers refresh. Admission reuses indexed break counts for unchanged com
 rows in already admitted sources, scanning inserted text and joining boundary rows.
 Non-admitted source retains the full scan and its error order. The index adds a break
 prefix and oversized-row flag per logical row; suffix updates still shift those
-prefixes. Publishing buffers,
-projections and IME paths still materialize full Strings. The native textarea still owns
+prefixes. Parser/lexer snapshots, Git diff shaping, serialization and normalized
+native text still materialize source Strings. The native textarea still owns
 the complete projected source during initial cold preparation and on touch devices;
-prepared fine-pointer editors retain surrounding text instead. Full source
-publication and retained source versions still prevent complete viewport memory bounds.
+prepared fine-pointer editors retain surrounding text instead. Remaining source
+materialization and retained versions still prevent complete viewport memory bounds.
 
 ## Document coordinates and caches
 
@@ -594,8 +597,9 @@ and fixed-row eligibility query indexed UTF-16/display-break spans; full unfolde
 and folded views combine only visible rows. Bounded windows inspect their own
 small slices. CR/LF normalization uses one pass with a source-size capacity bound. Unused projection caches release their source before edits;
 retained views and composition baselines remain immutable through copy-on-write.
-Projection provenance compares immutable allocations, including empty text whose
-String buffer pointer cannot distinguish document replacements.
+Projection provenance compares immutable allocations and document-version
+markers, rejecting fresh documents initialized from the same source allocation.
+Empty String buffer pointers likewise cannot distinguish replacements.
 Retained paint visibility and source-pointer readiness are separate states; the
 editor exposes `data-editor-pointer-ready` for browser checks and diagnostics.
 Preparing a view does not change document identity. Short-line queries and warm

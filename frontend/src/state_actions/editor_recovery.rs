@@ -819,7 +819,7 @@ impl RecoveryContext {
                         crate::state::editor_recovery::RecoveryFileReview {
                             path,
                             disk,
-                            draft: self.workspace.content.get_untracked(),
+                            draft: self.workspace.content.get_untracked().into(),
                             read_only: self.read_only.get_untracked(),
                         },
                     ));
@@ -881,7 +881,7 @@ impl RecoveryContext {
                         key.clone(),
                         crate::state::workspace::RecoveryOverwrite {
                             disk,
-                            draft: self.workspace.content.get_untracked(),
+                            draft: self.workspace.content.get_untracked().into(),
                         },
                     );
                 });

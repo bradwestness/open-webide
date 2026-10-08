@@ -42,6 +42,6 @@ pub fn GitPane(
     <super::dropdown::ActionMenu aria_label="Diff actions">            <button role="menuitem" class="ui-dropdown-item recent-item btn" disabled=move || workspace.open_file.get().is_none() || git.status.get().is_none() on:click=move |_| on_load_git_diff.run(())>"Refresh diff"</button>
                 <button role="menuitem" class="ui-dropdown-item recent-item btn" disabled=move || !git.can_revert(workspace.active_project.get(), workspace.open_file.get().as_deref()) on:click=move |_| on_discard_git_diff.run(())>"Revert file"</button></super::dropdown::ActionMenu>
             </div>
-            {move || git.head_diff(workspace.active_project.get(), workspace.open_file.get(), workspace.content.get()).map(super::editor::render_inline_diff)}
+            {move || git.head_diff(workspace.active_project.get(), workspace.open_file.get(), workspace.content.get().into()).map(super::editor::render_inline_diff)}
         </div> }
 }

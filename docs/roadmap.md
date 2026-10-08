@@ -143,8 +143,13 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   line indexes and prepared projections; edits detach the changed version and
   cancellation restores the original allocations. Commands, clipboard edits,
   search replacements and composition completion move their text into shared state
-  and return selections without retaining a second publication copy. Reduce remaining
-  buffer/projection publication. Unfolded projections share immutable document
+  and return selections without retaining a second publication copy. Active content,
+  retained file buffers, project snapshots and Find scopes now share immutable
+  document source. Native input, composition completion and recovery hydration
+  publish shared handles; external write/recovery transfers retain owned strings.
+  Document initialization shares host text, and projection provenance also validates
+  the document version when multiple documents share one allocation. Reduce remaining
+  parser/lexer, diff, serialization and native-text materialization. Unfolded projections share immutable document
   source, including LF native text; folded views reserve visible bytes and move
   assembled strings into shared storage. Unused projection caches release source
   before edits, while retained views and composition baselines detach on change.
@@ -157,13 +162,13 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   the document index; changed batches update affected rows and shifted suffixes,
   with bounded growth headroom and capacity release after major deletions.
   Folded/bounded visible rows still assemble independently, retained row/coordinate
-  tables still copy on edit, and active-buffer publication still copies source. Complete-native replacement compares borrowed,
+  tables still copy on edit. Complete-native replacement compares borrowed,
   newline-normalized source characters and maps edit boundaries directly to source
   bytes; duplicate composition commits reuse that comparison. Complete-value
   comparison still scans unchanged prefix/suffix characters. History snapshots
   share immutable steps and transaction payloads rather than copying retained edits,
   and document/composition snapshots share saved-text baselines. Cancellation now
-  borrows preview/restored source and copies only matching UI destinations. Admission now skips
+  borrows preview/restored source and shares restored text with matching UI destinations. Admission now skips
   untouched complete rows; long boundary rows still scan, and storage still shifts
   suffix bytes and coordinates.
   See [viewport preparation](editor.md#preparation-and-viewport-rendering).
