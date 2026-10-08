@@ -97,13 +97,25 @@ impl SyntaxPreparations<String> {
             self.remove(&request.document);
             return control_reply(SyntaxStatus::Cancelled);
         }
+        let change = match &request.source {
+            SyntaxSource::Full(_) => None,
+            SyntaxSource::Replace { start, end, text } => Some(crate::editor::TextChange {
+                range: *start..*end,
+                new_end: start.checked_add(text.len())?,
+            }),
+        };
         let source = request.source.resolve(base_source)?;
-        let (mut status, prepared) = self.prepare_shared(
+        let resolved_change = previous
+            .as_ref()
+            .zip(change.as_ref())
+            .map(|((_, analysis), change)| (analysis.source_snapshot(), change));
+        let (mut status, prepared) = self.prepare_resolved(
             request.document.clone(),
             request.language,
             std::sync::Arc::new(source),
             request.tab_width,
             should_continue,
+            resolved_change,
         );
         let analysis = prepared.as_ref().and_then(|value| {
             value
@@ -285,6 +297,70 @@ mod tests {
                         .1
                         .is_some()
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn resolved_nonminimal_replacements_match_fresh_analysis_for_all_languages() {
+        for &(path, body, _) in crate::editor::syntax_contracts::LANGUAGE_CASES {
+            for ending in ["\n", "\r\n"] {
+                let source = format!("{body}{ending}{}", ending.repeat(300));
+                let replacement = format!("{ending}{}", body.replace("文😀", "🦀 changed"));
+                let revised = format!("{replacement}{}", &source[body.len()..]);
+                let language = crate::highlight::language_from_path(path);
+                let mut service = SyntaxPreparations::default();
+                let initial = SyntaxRequest::new(42, path.into(), language, &source, 4, None);
+                let response = service
+                    .handle_message(&serde_json::to_string(&initial).unwrap(), || true)
+                    .unwrap();
+                let retained = SyntaxReply::receive(&response, 42, &source)
+                    .unwrap()
+                    .1
+                    .unwrap();
+                let mut update = SyntaxRequest::new(
+                    43,
+                    path.into(),
+                    language,
+                    &revised,
+                    4,
+                    Some((42, &retained)),
+                );
+                update.source = SyntaxSource::Replace {
+                    start: 0,
+                    end: body.len(),
+                    text: replacement,
+                };
+                let response = service
+                    .handle_message(&serde_json::to_string(&update).unwrap(), || true)
+                    .unwrap();
+                let result =
+                    SyntaxReply::receive_reusing(&response, 43, &revised, Some((42, &retained)))
+                        .unwrap()
+                        .1
+                        .unwrap();
+                let mut fresh = SyntaxPreparations::default();
+                let expected = fresh
+                    .prepare(path.to_owned(), language, &revised, 4, || true)
+                    .1
+                    .unwrap();
+                assert_eq!(result.folds(), expected.folds(), "{path} {ending:?}");
+                assert_eq!(
+                    result.highlights(),
+                    expected.highlights(),
+                    "{path} {ending:?}"
+                );
+                assert_eq!(
+                    result
+                        .structure()
+                        .map(|value| serde_json::to_value(value.transfer_data()).unwrap()),
+                    expected
+                        .structure()
+                        .map(|value| serde_json::to_value(value.transfer_data()).unwrap()),
+                    "{path} {ending:?}"
+                );
+                assert_eq!(retained.source(), source);
+                assert_eq!(result.source(), revised);
             }
         }
     }

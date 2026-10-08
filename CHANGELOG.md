@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse validated worker replacement spans during shared syntax parsing when the
+  exact retained source base matches, preserving complete comparison fallback,
+  cancellation, source limits and stale-base resynchronization.
+
 - Look up sparse editor paragraph anchors within each measured glyph range,
   avoiding repeated whole-line anchor scans while preserving exact geometry and
   terminal-anchor behavior.

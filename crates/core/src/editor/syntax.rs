@@ -133,7 +133,7 @@ impl SyntaxDocument {
     }
 
     pub fn update(&mut self, text: &str, should_continue: impl FnMut() -> bool) -> SyntaxStatus {
-        self.update_source(text, should_continue, || Arc::new(text.to_owned()))
+        self.update_source(text, should_continue, || Arc::new(text.to_owned()), None)
     }
 
     fn update_source(
@@ -141,6 +141,7 @@ impl SyntaxDocument {
         text: &str,
         mut should_continue: impl FnMut() -> bool,
         source: impl FnOnce() -> Arc<String>,
+        resolved_change: Option<(&Arc<String>, &super::TextChange)>,
     ) -> SyntaxStatus {
         if text.len() > MAX_STRUCTURE_BYTES {
             self.clear();
@@ -150,7 +151,16 @@ impl SyntaxDocument {
             self.clear();
             return SyntaxStatus::Cancelled;
         }
-        if self.ready && (std::ptr::eq(self.text.as_str(), text) || self.text.as_str() == text) {
+        // Only the resolver can supply a change, and it owns the exact base used
+        // to construct this source. An equal-content but distinct base is insufficient.
+        let resolved_change = resolved_change
+            .filter(|(base, _)| self.ready && Arc::ptr_eq(base, &self.text))
+            .map(|(_, change)| change);
+        let unchanged = resolved_change.map_or_else(
+            || std::ptr::eq(self.text.as_str(), text) || self.text.as_str() == text,
+            |change| change.range.is_empty() && change.new_end == change.range.start,
+        );
+        if self.ready && unchanged {
             return SyntaxStatus::Ready { incremental: true };
         }
         self.prepared = None;
@@ -159,7 +169,17 @@ impl SyntaxDocument {
             self.ready = true;
             return SyntaxStatus::Ready { incremental: false };
         };
-        let edit = match input_edit(&self.text, text, Some(&mut self.source_lines)) {
+        let edit_result = if let Some(change) = resolved_change {
+            input_edit_change(
+                &self.text,
+                text,
+                Some(&mut self.source_lines),
+                change.clone(),
+            )
+        } else {
+            input_edit(&self.text, text, Some(&mut self.source_lines))
+        };
+        let edit = match edit_result {
             Ok(edit) => edit,
             Err(status) => {
                 self.clear();
@@ -215,9 +235,13 @@ impl SyntaxDocument {
         tab_width: usize,
         should_continue: impl FnMut() -> bool,
     ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
-        self.prepare_source(text, tab_width, should_continue, || {
-            Arc::new(text.to_owned())
-        })
+        self.prepare_source(
+            text,
+            tab_width,
+            should_continue,
+            || Arc::new(text.to_owned()),
+            None,
+        )
     }
 
     /// Retain a host's immutable source through parsing and all prepared consumers.
@@ -227,7 +251,18 @@ impl SyntaxDocument {
         tab_width: usize,
         should_continue: impl FnMut() -> bool,
     ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
-        self.prepare_source(&text, tab_width, should_continue, || text.clone())
+        self.prepare_source(&text, tab_width, should_continue, || text.clone(), None)
+    }
+
+    /// Internal resolver path; a mismatched cached base uses complete comparison.
+    fn prepare_resolved(
+        &mut self,
+        text: Arc<String>,
+        tab_width: usize,
+        should_continue: impl FnMut() -> bool,
+        change: Option<(&Arc<String>, &super::TextChange)>,
+    ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
+        self.prepare_source(&text, tab_width, should_continue, || text.clone(), change)
     }
 
     fn prepare_source(
@@ -236,13 +271,14 @@ impl SyntaxDocument {
         tab_width: usize,
         should_continue: impl FnMut() -> bool,
         source: impl FnOnce() -> Arc<String>,
+        resolved_change: Option<(&Arc<String>, &super::TextChange)>,
     ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
         if preparation_exceeds_limits(text) {
             self.clear();
             return (SyntaxStatus::TooLarge, None);
         }
         let mut should_continue = should_continue;
-        let status = self.update_source(text, &mut should_continue, source);
+        let status = self.update_source(text, &mut should_continue, source, resolved_change);
         if !matches!(status, SyntaxStatus::Ready { .. }) {
             return (status, None);
         }
@@ -700,6 +736,15 @@ fn input_edit(
         range: 0..0,
         new_end: 0,
     });
+    input_edit_change(old, new, source_lines, change)
+}
+
+fn input_edit_change(
+    old: &str,
+    new: &str,
+    source_lines: Option<&mut Vec<super::lines::Line>>,
+    change: super::TextChange,
+) -> Result<InputEdit, SyntaxStatus> {
     let start = change.range.start;
     let old_end = change.range.end;
     let new_end = change.new_end;
@@ -1479,6 +1524,46 @@ mod tests {
             );
             let (_, restored) = syntax.prepare_shared(source.clone(), 4, || true);
             assert!(Arc::ptr_eq(&source, restored.unwrap().source_snapshot()));
+        }
+    }
+
+    #[test]
+    fn resolved_parser_spans_require_the_exact_cached_base() {
+        let original = Arc::new("fn main() { let value = \"文😀\"; }\r\n".to_owned());
+        let revised = Arc::new(original.replace("value", "updated_value"));
+        let broad = crate::editor::TextChange {
+            range: 0..original.len(),
+            new_end: revised.len(),
+        };
+        let minimal = crate::editor::text_change(&original, &revised).unwrap();
+        for exact_base in [true, false] {
+            let mut syntax = SyntaxDocument::new(Language::Rust).unwrap();
+            let (_, retained) = syntax.prepare_shared(original.clone(), 4, || true);
+            let retained = retained.unwrap();
+            let base = if exact_base {
+                original.clone()
+            } else {
+                Arc::new(original.as_ref().clone())
+            };
+            assert_eq!(
+                syntax.update_source(&revised, || true, || revised.clone(), Some((&base, &broad))),
+                SyntaxStatus::Ready { incremental: true }
+            );
+            let edit = syntax.paint.borrow().source_change.unwrap();
+            let expected = if exact_base { &broad } else { &minimal };
+            assert_eq!(edit.start_byte, expected.range.start);
+            assert_eq!(edit.old_end_byte, expected.range.end);
+            assert_eq!(edit.new_end_byte, expected.new_end);
+            let (_, updated) = syntax.prepare_shared(revised.clone(), 4, || true);
+            let updated = updated.unwrap();
+            let mut fresh = SyntaxDocument::new(Language::Rust).unwrap();
+            let (_, complete) = fresh.prepare_shared(revised.clone(), 4, || true);
+            let complete = complete.unwrap();
+            assert_eq!(updated.folds(), complete.folds());
+            assert_eq!(updated.highlights(), complete.highlights());
+            assert!(Arc::ptr_eq(updated.source_snapshot(), &revised));
+            assert!(Arc::ptr_eq(retained.source_snapshot(), &original));
+            assert_eq!(retained.source(), original.as_str());
         }
     }
 

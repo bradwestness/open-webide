@@ -77,7 +77,9 @@ tracks the remaining work rather than every optimization already shipped.
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   lexical fallback/context assembly and changed-source lexical row-table
   reconstruction/validation. Source-change comparison still traverses retained
-  text; intersecting lexical rows retain raw-byte/incoming-state validation.
+  text; resolved worker parser replacements now reuse their validated spans only
+  for the exact retained base allocation. Intersecting lexical rows retain
+  raw-byte/incoming-state validation.
 - [ ] **Source ownership and storage:** finish remaining external parser snapshots,
   changed-revision source comparisons, transport serialization, diff shaping and
   native-text materialization. Folded/bounded projection tables still assemble
