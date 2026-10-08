@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Use the explicit boundary-size readiness budget for the debug-WASM paragraph font matrix, retaining exact geometry assertions, the whole-run deadline and ordinary short UI timeouts.
+
 - Reuse validated unchanged probe prefixes within edited long paragraphs, preserving exact source/run/style ownership and fresh continuation checks. Bound retained measurements and reject stale account, project, font and layout scopes.
 
 - Build grapheme/native coordinates once per bounded paragraph probe instead of repeatedly segmenting sparse checkpoint prefixes for every overlap glyph. Retain every exact DOM glyph measurement, validation and fallback.

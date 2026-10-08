@@ -11968,34 +11968,38 @@ async fn bounded_paragraph_geometry_preserves_fonts_features_and_whitespace_in_b
                     });
                 settle().await;
                 let scope = std::cell::RefCell::new(None);
-                wait_until("font-owned paragraph measurements", || {
-                    mounted
-                        .state
-                        .workspace
-                        .editor_row_cache
-                        .with_untracked(|cache| {
-                            cache.as_ref().is_some_and(|cache| {
-                                let ready = cache.paint.whitespace == whitespace
-                                    && cache.paint.prepared_source
-                                    && cache.paint.metrics.contains(font.name())
-                                    && cache.paint.font_epoch
-                                        == mounted
-                                            .state
-                                            .workspace
-                                            .editor_font_epoch
-                                            .get_untracked()
-                                    && mounted
-                                        .root
-                                        .query_selector(".editor-code.highlight-ready")
-                                        .unwrap()
-                                        .is_some();
-                                if ready {
-                                    *scope.borrow_mut() = Some(cache.paint.clone());
-                                }
-                                ready
+                super::support::wait_until_with_timeout(
+                    "font-owned paragraph measurements",
+                    30_000,
+                    || {
+                        mounted
+                            .state
+                            .workspace
+                            .editor_row_cache
+                            .with_untracked(|cache| {
+                                cache.as_ref().is_some_and(|cache| {
+                                    let ready = cache.paint.whitespace == whitespace
+                                        && cache.paint.prepared_source
+                                        && cache.paint.metrics.contains(font.name())
+                                        && cache.paint.font_epoch
+                                            == mounted
+                                                .state
+                                                .workspace
+                                                .editor_font_epoch
+                                                .get_untracked()
+                                        && mounted
+                                            .root
+                                            .query_selector(".editor-code.highlight-ready")
+                                            .unwrap()
+                                            .is_some();
+                                    if ready {
+                                        *scope.borrow_mut() = Some(cache.paint.clone());
+                                    }
+                                    ready
+                                })
                             })
-                        })
-                })
+                    },
+                )
                 .await;
                 let scope = scope.into_inner().unwrap();
                 let input: web_sys::HtmlTextAreaElement =

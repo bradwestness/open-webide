@@ -1296,3 +1296,19 @@ bash tools/measure-editor-view-linux.sh --cases long-line --repeat 3
 bash tools/measure-editor-view-linux.sh --cases long-line --repeat 3 --input-position end
 bash tools/measure-editor-view-linux.sh --cases long-line --repeat 1 --input-position end --trace
 ```
+
+
+### Font-matrix readiness budget
+
+The docs-only `f4937a6` CI run failed its isolated font matrix after 3.63 s:
+`Timed out waiting for font-owned paragraph measurements`. All other jobs passed;
+the preceding implementation run was entirely green. This is the debug-WASM
+matrix of two long styled paragraphs, not a production latency assertion. Its
+ownership/preparation wait now uses the same explicit 30-second boundary-size
+budget as the near-1-MiB oracle. Source/font ownership and every exact geometry
+comparison remain unchanged. The 300-second whole-run deadline and ordinary
+3-second short UI readiness checks remain. Release measurements above continue
+to expose unresolved latency independently of this correctness budget.
+
+Two fresh isolated browser runs pass the unchanged full font/feature/whitespace
+matrix in 17.20 and 16.75 s overall; strict frontend Clippy passes.
