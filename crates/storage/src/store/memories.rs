@@ -287,9 +287,7 @@ mod tests {
                     &MemoryCommand::SetEnabled { enabled: true },
                 ] {
                     assert!(matches!(
-                        store
-                            .session_memory_command(user, next, command, 4)
-                            .await,
+                        store.session_memory_command(user, next, command, 4).await,
                         Err(StorageError::InvalidRequest(_))
                     ));
                 }

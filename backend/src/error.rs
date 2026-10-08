@@ -217,7 +217,10 @@ mod tests {
         for (error, status) in [
             (StorageError::Db("db failed".into()), 500),
             (StorageError::InvalidValue("invalid row".into()), 500),
-            (StorageError::InvalidRequest("Project memory is disabled".into()), 400),
+            (
+                StorageError::InvalidRequest("Project memory is disabled".into()),
+                400,
+            ),
             (StorageError::NotFound("missing".into()), 404),
             (StorageError::Conflict("duplicate".into()), 409),
         ] {
