@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Retain relative fallback contexts for unchanged embedded syntax bodies across
+  source edits and coordinate shifts; rescan changed/new bodies without retaining
+  extra source snapshots or bracket tables.
+
 - Guide custom cron editing with five labeled fields, range hints, an expression preview, and full-expression paste.
 
 - Use shared form controls and Repeating/One time/Cron tabs in scheduled tasks; keep Cancel available and support existing, new-per-run, or latest active session targets. Resolve automatic targets when due using user defaults, and retain generated sessions and run links.

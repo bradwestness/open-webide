@@ -77,10 +77,28 @@ pub fn preparation_exceeds_limits(text: &str) -> bool {
             >= 50_000
 }
 
+/// Relative fallback metadata needs neither source snapshots nor unused bracket
+/// tables. Validated unchanged embedded bodies retain it across coordinate shifts.
+#[derive(Default)]
+struct FallbackContexts {
+    opaque_starts: Vec<usize>,
+    protected: Vec<(ByteRange<usize>, bool, RegionKind)>,
+}
+impl FallbackContexts {
+    fn scan(text: &str, language: Language) -> Self {
+        let lexical = Structure::scan(text, language).unwrap_or_default();
+        Self {
+            opaque_starts: lexical.opaque_starts,
+            protected: lexical.protected,
+        }
+    }
+}
+
 struct EmbeddedSyntax {
     provider: SyntaxProvider,
     tree: Option<Tree>,
     range: Range,
+    fallback: std::cell::RefCell<Option<Arc<FallbackContexts>>>,
     folds: std::cell::RefCell<folds::ParsedFolds>,
     contexts: std::cell::RefCell<contexts::ParsedContexts>,
     highlights: std::cell::RefCell<highlights::ParsedHighlights>,
@@ -282,7 +300,7 @@ impl SyntaxDocument {
         if !self.ready || self.provider.is_none() {
             return None;
         }
-        let fallback = Structure::scan(&self.text, self.language).unwrap_or_default();
+        let fallback = FallbackContexts::scan(&self.text, self.language);
         let mut opaque_starts = fallback.opaque_starts;
         let mut baseline = fallback.protected;
         let scopes: Vec<_> = self
@@ -301,20 +319,27 @@ impl SyntaxDocument {
         opaque_starts.retain(|position| {
             !embedded_scope_after(&scopes, *position).is_some_and(|body| body.contains(position))
         });
-        for (body, language) in &scopes {
-            let fallback = Structure::scan(&self.text[body.clone()], *language).unwrap_or_default();
+        for body in &self.embedded {
+            let start = body.range.start_byte;
+            let end = body.range.end_byte;
+            let fallback = body
+                .fallback
+                .borrow_mut()
+                .get_or_insert_with(|| {
+                    Arc::new(FallbackContexts::scan(
+                        &self.text[start..end],
+                        body.provider.language,
+                    ))
+                })
+                .clone();
             opaque_starts.extend(
                 fallback
                     .opaque_starts
-                    .into_iter()
-                    .map(|position| position + body.start),
+                    .iter()
+                    .map(|position| position + start),
             );
-            baseline.extend(fallback.protected.into_iter().map(|(range, closed, kind)| {
-                (
-                    (range.start + body.start)..(range.end + body.start),
-                    closed,
-                    kind,
-                )
+            baseline.extend(fallback.protected.iter().map(|(range, closed, kind)| {
+                ((range.start + start)..(range.end + start), *closed, *kind)
             }));
         }
         let mut visited = 0;
@@ -692,6 +717,53 @@ fn input_edit_change(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unchanged_embedded_fallbacks_survive_edits_and_coordinate_shifts() {
+        for ending in ["\n", "\r\n"] {
+            let source = (0..1_000)
+                .map(|index| {
+                    format!("Paragraph {index}: **文😀** and `code` \"literal\".{ending}{ending}")
+                })
+                .collect::<String>();
+            let changed = source.replacen("Paragraph 500:", "Changed paragraph 500:", 1);
+            let inserted = format!("New **paragraph** and `text`.{ending}{ending}{changed}");
+            let mut document = SyntaxDocument::new(Language::Markdown).unwrap();
+            assert!(matches!(
+                document.prepare(&source, 4, || true).0,
+                SyntaxStatus::Ready { .. }
+            ));
+            for (source, expected_new) in [(&changed, 1), (&inserted, 1), (&changed, 0)] {
+                let retained: Vec<_> = document
+                    .embedded
+                    .iter()
+                    .map(|body| body.fallback.borrow().as_ref().unwrap().clone())
+                    .collect();
+                let (status, actual) = document.prepare(source, 4, || true);
+                assert_eq!(status, SyntaxStatus::Ready { incremental: true });
+                let new_contexts = document
+                    .embedded
+                    .iter()
+                    .filter(|body| {
+                        let fallback = body.fallback.borrow();
+                        !retained
+                            .iter()
+                            .any(|previous| Arc::ptr_eq(previous, fallback.as_ref().unwrap()))
+                    })
+                    .count();
+                assert_eq!(
+                    new_contexts, expected_new,
+                    "only changed/new bodies scan fallback source"
+                );
+                let mut fresh = SyntaxDocument::new(Language::Markdown).unwrap();
+                let (_, expected) = fresh.prepare(source, 4, || true);
+                assert_eq!(
+                    serde_json::to_value(actual.unwrap().transfer_data()).unwrap(),
+                    serde_json::to_value(expected.unwrap().transfer_data()).unwrap()
+                );
+            }
+        }
+    }
 
     #[test]
     fn ordered_scope_lookup_matches_full_scan_at_every_boundary() {

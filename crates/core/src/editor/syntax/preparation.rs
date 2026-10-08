@@ -313,6 +313,7 @@ impl SyntaxWork {
                         provider,
                         tree: None,
                         range,
+                        fallback: std::cell::RefCell::default(),
                         folds: std::cell::RefCell::default(),
                         contexts: std::cell::RefCell::default(),
                         highlights: std::cell::RefCell::default(),
@@ -322,6 +323,9 @@ impl SyntaxWork {
                     tree.edit(&self.edit);
                 }
                 body.range = range;
+                // Only exact unchanged-body matches retain fallback metadata.
+                // An intersecting/replacement body must rescan its own source.
+                body.fallback.get_mut().take();
                 let parser_index = if let Some(index) = document
                     .embedded_parsers
                     .iter()

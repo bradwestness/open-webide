@@ -2267,3 +2267,29 @@ publication are still synchronous and unbounded by a time slice.
 Checkpoint b1dc2b4 completed CI run 37845943338 with all five jobs green, including
 the browser suite and release worker. Reliability remains a completion gate for
 subsequent editor changes; the b930042 and b16d7b4 runs are still in progress.
+
+### Retained embedded fallback contexts (2026-10-08)
+
+Unchanged embedded bodies now retain relative fallback protected ranges and
+opaque-start positions alongside their validated syntax trees. Prefix bodies
+keep the allocation directly; shifted suffix bodies map it from their new byte
+start when assembling the source-bound result. Intersecting/replacement bodies
+clear the cache before parsing and scan their own source again. The cache stores
+only context metadata, with no additional source snapshot or unused bracket table.
+The outer fallback scan and final list assembly still run on every changed source.
+
+A 1,000-paragraph Unicode Markdown regression covers both LF and CRLF. A middle
+paragraph edit allocates one new fallback cache, prefix insertion allocates only
+its new body, and prefix deletion allocates none. Each revision must match fresh
+source, structure, paint and fold publication exactly. Existing synchronous and
+yielding message contracts exercise the same core preparation implementation.
+All 480 core tests, strict core/WASM frontend linting and the release build passed.
+The completed release worker passed its normal grammar/delta/fallback checks and
+1,189 forced scheduler yields with exact fresh/incremental publication equality.
+The combined 43444fa scheduled-task/assistance base passed 481 core tests and
+strict core linting with this change applied.
+
+Full CI completed successfully for b1dc2b4, b930042, b16d7b4 and e39c8b7. These
+checkpoints provide repeated baseline evidence; the changed implementation still
+needs its own full CI run, and completion requires the remaining performance,
+geometry, device/input, recovery and accessibility work.
