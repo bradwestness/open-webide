@@ -141,9 +141,16 @@ async fn local_git_badges_and_all_actions_share_verified_bridge_repository() {
     assert_eq!(
         mounted
             .element(".git-badge-modified")
-            .text_content()
-            .unwrap(),
-        "M"
+            .get_attribute("title")
+            .as_deref(),
+        Some("Modified")
+    );
+    assert!(
+        mounted
+            .element(".git-badge-modified")
+            .query_selector("svg")
+            .unwrap()
+            .is_some()
     );
     let git = slot.borrow().unwrap();
     let repo = git.repository(Some(1)).await.unwrap();

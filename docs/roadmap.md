@@ -59,7 +59,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   boundaries, including short crops, with streamed segmentation that stops after
   the requested window. Unwrapped source-monotonic rows now prepare exact
   extents and anchors in at most 16 KiB probes, retaining complete paint runs
-  and validating every overlap glyph. Unsupported boundaries and failed proofs
+  and validating every overlap glyph. Dense overlap targets build one bounded
+  coordinate table per probe; ordinary viewport queries retain sparse indexes.
+  Unsupported boundaries and failed proofs
   use complete measurement. Continuation probes and indexed plain viewport
   slices resume segmentation at proven original run boundaries. Tabbed/wrapped/bidi
   preparation, styled viewport prefix segmentation, initial native shaping and

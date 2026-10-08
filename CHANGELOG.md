@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Build grapheme/native coordinates once per bounded paragraph probe instead of repeatedly segmenting sparse checkpoint prefixes for every overlap glyph. Retain every exact DOM glyph measurement, validation and fallback.
+
 - Make built-in language parser contracts independent of runner scheduling with a scoped test clock; verify deadline cancellation separately while retaining the production parser budget.
 
 - Resume editor text segmentation at proven original paint-run boundaries for continuation probes and indexed plain viewport slices, preserving the original shaping spans without repeatedly scanning the unused prefix.

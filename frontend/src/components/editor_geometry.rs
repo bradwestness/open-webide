@@ -58,6 +58,22 @@ impl TextNodes {
     }
 }
 
+fn range_rectangle(
+    range: &web_sys::Range,
+    nodes: &TextNodes,
+    start: usize,
+    end: usize,
+) -> Option<web_sys::DomRect> {
+    let (start_node, start_at) = nodes.position(u32::try_from(start).ok()?)?;
+    let (end_node, end_at) = nodes.position(u32::try_from(end).ok()?)?;
+    range.set_start(start_node, start_at).ok()?;
+    range.set_end(end_node, end_at).ok()?;
+    let rects = range.get_client_rects()?;
+    (0..rects.length())
+        .filter_map(|index| rects.item(index))
+        .find(|rect| rect.height() > 0.0)
+}
+
 struct Glyphs<'a> {
     body: &'a str,
     index: VisualLineIndex,
@@ -85,18 +101,12 @@ impl<'a> Glyphs<'a> {
         if self.measured.len() >= MAX_VISUAL_CARETS {
             return None;
         }
-        let (start_node, start_at) = self
-            .nodes
-            .position(u32::try_from(self.at(index)?.1).ok()?)?;
-        let (end_node, end_at) = self
-            .nodes
-            .position(u32::try_from(self.at(index + 1)?.1).ok()?)?;
-        self.range.set_start(start_node, start_at).ok()?;
-        self.range.set_end(end_node, end_at).ok()?;
-        let rects = self.range.get_client_rects()?;
-        let rect = (0..rects.length())
-            .filter_map(|index| rects.item(index))
-            .find(|rect| rect.height() > 0.0)?;
+        let rect = range_rectangle(
+            &self.range,
+            &self.nodes,
+            self.at(index)?.1,
+            self.at(index + 1)?.1,
+        )?;
         self.measured.insert(index, rect.clone());
         Some(rect)
     }
@@ -198,11 +208,19 @@ pub(super) fn paragraph_rectangles(
         return None;
     }
     let bounds = row.get_bounding_client_rect();
-    let mut glyphs = Glyphs::new(row, body, None)?;
+    // Continuation probes are bounded, and their overlap targets are dense.
+    // Build coordinates once instead of repeatedly segmenting each sparse
+    // checkpoint's prefix; keep general viewport queries on the sparse index.
+    let offsets = openwebide_core::editor::visual_line_offsets(body).ok()?;
+    let nodes = TextNodes::new(row)?;
+    let range = document().create_range().ok()?;
     targets
         .iter()
         .map(|glyph| {
-            let rect = glyphs.rect(glyph.checked_sub(glyph_start)?)?;
+            let local = glyph.checked_sub(glyph_start)?;
+            let start = offsets.get(local)?.1;
+            let end = offsets.get(local.checked_add(1)?)?.1;
+            let rect = range_rectangle(&range, &nodes, start, end)?;
             Some(openwebide_core::editor::GlyphRectangle {
                 glyph: *glyph,
                 left: rect.left() - bounds.left(),

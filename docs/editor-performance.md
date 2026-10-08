@@ -1135,3 +1135,47 @@ final overflow 1234.4/1211.3 ms (local/remote). These diagnostic totals identify
 layout/geometry as the next input bottleneck; they do not include initial native
 shaping, and instrumented end-to-end timings are not substituted into the table.
 [Raw diagnostic records](editor-performance/aligned-paint-runs-linux-trace.jsonl).
+
+
+## Dense coordinates within bounded continuation probes
+
+Each continuation probe now builds its byte/native-UTF-16 coordinate table once.
+Every requested overlap glyph still receives an exact DOM range measurement;
+complete-source extents, anchor tolerances, stale-result guards and fallback
+conditions are unchanged. Ordinary sparse viewport queries retain their sparse
+index. This transient dense table is limited to the existing 16 KiB probe.
+
+The complete-row geometry contracts pass for both adapters, the near-1-MiB
+Unicode row and all five Monaspace families/features. Injected inconsistent
+geometry still falls back. The current-head browser suite and strict frontend
+Clippy checks pass. The Git file status contract now checks the accessible
+Modified title and SVG icon introduced by the concurrent navigation checkpoint.
+
+Three release repetitions per adapter on the same Linux/Chromium setup
+(2026-10-08):
+
+| Mode | Cold paint median / range (ms) | Input paint median / range (ms) | Scroll paint median (ms) | Peak Chrome PSS median (KiB) | Largest task median (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Local | 9119 / 9024–9417 | 1810 / 1799–1830 | 31 | 835999 | 3348 |
+| Remote | 9141 / 9116–9182 | 1826 / 1815–1840 | 29 | 844624 | 3386 |
+
+These samples include the concurrently committed navigation changes at
+`cc8c2ae`; they are not an isolated same-checkout comparison against the previous
+table. Local cases grant no native folder handle. The recorded `appModule`
+identifies the measured release, including the uncommitted coordinate change.
+Long-line input and initial shaping remain outside interactive latency targets.
+Tabbed/wrapped/bidirectional preparation, incremental changed-paragraph reuse
+and remaining physical-input verification are still open.
+
+[Raw repeated measurements](editor-performance/dense-probe-coordinates-linux.jsonl).
+
+A separate instrumented repetition retains all exact range calls and records no
+complete-row fallback or trace truncation. Input preparation uses 71 batches per
+adapter. Render/layout/geometry-plus-final-overflow totals (ms):
+
+- Local: 11.8 / 697.7 / 909.5.
+- Remote: 12.0 / 722.0 / 906.9.
+
+Two layouts per continuation probe remain a substantial cost. These diagnostic
+totals exclude initial native shaping and are separate from the uninstrumented
+latency table. [Raw diagnostic records](editor-performance/dense-probe-coordinates-linux-trace.jsonl).
