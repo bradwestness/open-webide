@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Compare shared editor source changes in byte chunks and adjust only the differing edges to UTF-8 boundaries. Preserve minimal edit spans across typing, folds, parser updates and worker deltas; record native and browser before/after measurements.
+
 - Reuse indexed raw row boundaries outside a validated lexical source-change span. Preserve multiline state propagation, LF/CRLF normalization, terminal-row handling and cooperative batch budgets while scanning only intersecting rows for newline boundaries.
 
 - Keep the clickable chat context meter at the shared compact button size on desktop, preserving larger phone touch targets.

@@ -110,23 +110,42 @@ pub fn text_change(old: &str, new: &str) -> Option<TextChange> {
     if old == new {
         return None;
     }
-    let start = old
-        .chars()
-        .zip(new.chars())
+    let mut start = matching_chunks(
+        old.as_bytes().as_chunks::<64>().0.iter(),
+        new.as_bytes().as_chunks::<64>().0.iter(),
+    );
+    start += old.as_bytes()[start..]
+        .iter()
+        .zip(&new.as_bytes()[start..])
         .take_while(|(a, b)| a == b)
-        .map(|(ch, _)| ch.len_utf8())
-        .sum::<usize>();
-    let suffix = old[start..]
-        .chars()
+        .count();
+    while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut suffix = matching_chunks(
+        old.as_bytes()[start..].as_rchunks::<64>().1.iter().rev(),
+        new.as_bytes()[start..].as_rchunks::<64>().1.iter().rev(),
+    );
+    suffix += old.as_bytes()[start..old.len() - suffix]
+        .iter()
         .rev()
-        .zip(new[start..].chars().rev())
+        .zip(new.as_bytes()[start..new.len() - suffix].iter().rev())
         .take_while(|(a, b)| a == b)
-        .map(|(ch, _)| ch.len_utf8())
-        .sum::<usize>();
+        .count();
+    while !old.is_char_boundary(old.len() - suffix) || !new.is_char_boundary(new.len() - suffix) {
+        suffix -= 1;
+    }
     Some(TextChange {
         range: start..old.len() - suffix,
         new_end: new.len() - suffix,
     })
+}
+
+fn matching_chunks<'a>(
+    old: impl Iterator<Item = &'a [u8; 64]>,
+    new: impl Iterator<Item = &'a [u8; 64]>,
+) -> usize {
+    old.zip(new).take_while(|(a, b)| a == b).count() * 64
 }
 
 /// A directional selection: its head is the moving caret.
@@ -888,6 +907,48 @@ pub fn byte_to_textarea(text: &str, offset: usize) -> Result<usize, EditError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn chunked_text_changes_match_character_boundaries_and_minimal_spans() {
+        fn reference(old: &str, new: &str) -> Option<TextChange> {
+            if old == new {
+                return None;
+            }
+            let start = old
+                .chars()
+                .zip(new.chars())
+                .take_while(|(a, b)| a == b)
+                .map(|(ch, _)| ch.len_utf8())
+                .sum::<usize>();
+            let suffix = old[start..]
+                .chars()
+                .rev()
+                .zip(new[start..].chars().rev())
+                .take_while(|(a, b)| a == b)
+                .map(|(ch, _)| ch.len_utf8())
+                .sum::<usize>();
+            Some(TextChange {
+                range: start..old.len() - suffix,
+                new_end: new.len() - suffix,
+            })
+        }
+        let fragments = ["", "a", "α", "ѱ", "😀", "😁", "文", "\r\n", "x😀y"];
+        for prefix in [0, 1, 60, 61, 62, 63, 64, 65, 66, 127, 128, 129] {
+            for suffix in [0, 1, 60, 61, 62, 63, 64, 65, 127, 128] {
+                for old in fragments {
+                    for new in fragments {
+                        let old = format!("{}{old}{}", "p".repeat(prefix), "s".repeat(suffix));
+                        let new = format!("{}{new}{}", "p".repeat(prefix), "s".repeat(suffix));
+                        assert_eq!(
+                            text_change(&old, &new),
+                            reference(&old, &new),
+                            "prefix={prefix} suffix={suffix} {old:?} {new:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn native_line_columns_match_unicode_crlf_coordinates_after_edits_and_history() {
         let source = format!("start\r\n{}[x]\r\nend", "文😀e\u{301}\t".repeat(180));

@@ -32,6 +32,29 @@ pub fn measure(clock: impl Fn() -> f64) -> Vec<Measurement> {
         while !source.is_char_boundary(at) {
             at -= 1;
         }
+        for (label, position) in [
+            ("source_change_100", at),
+            ("source_change_late_100", source.len()),
+        ] {
+            let mut changed = source.clone();
+            changed.insert_str(position, "changed");
+            let expected = openwebide_core::editor::TextChange {
+                range: position..position,
+                new_end: position + 7,
+            };
+            assert_eq!(
+                openwebide_core::editor::text_change(&source, &changed),
+                Some(expected)
+            );
+            time(&mut records, &clock, label, source.len(), || {
+                for _ in 0..100 {
+                    black_box(openwebide_core::editor::text_change(
+                        black_box(&source),
+                        black_box(&changed),
+                    ));
+                }
+            });
+        }
         let mut doc = Document::new(source.clone());
         time(
             &mut records,
@@ -407,7 +430,7 @@ mod native {
     fn shared_storage_workloads() {
         let start = std::time::Instant::now();
         let records = super::measure(|| start.elapsed().as_secs_f64() * 1000.0);
-        let expected = if cfg!(feature = "candidates") { 63 } else { 45 };
+        let expected = if cfg!(feature = "candidates") { 69 } else { 51 };
         assert_eq!(records.len(), expected);
         assert!(
             records

@@ -36,6 +36,28 @@ Full records: [native CSV](editor-performance/native-storage.csv), [browser CSV]
 
 Both ropes make isolated edits and indexed queries much cheaper. In this workload, recreating the full display string makes candidate edits slower than the current document. Retain current production storage while implementing worker/viewport rendering; choose storage against the resulting access pattern rather than adding a mirrored rope alongside a full string. Whole-source reference conversions remain in the comparison; production document queries use the incremental index described below.
 
+## Source-change comparison
+
+The shared minimal-edit comparison now compares 64-byte chunks before adjusting
+only differing edges to UTF-8 character boundaries. The same helper serves native
+input, transactions, fold updates, parser edits, lexical reuse and worker deltas.
+The benchmark repeats 100 middle/late insert comparisons outside allocation and
+checks the exact resulting span. Measurements on this machine (2026-10-07):
+
+| Source | Position | Native before / after (ms) | Chrome WASM before / after (ms) |
+| --- | --- | --- | --- |
+| 2,097,144 bytes | Middle | 163.221 / 7.613 | 189.630 / 57.620 |
+| 2,097,144 bytes | End | 156.038 / 5.948 | 186.885 / 57.505 |
+| 16,777,194 bytes | Middle | 1184.709 / 53.540 | 1545.795 / 447.260 |
+| 16,777,194 bytes | End | 1198.077 / 59.841 | 1497.915 / 429.395 |
+
+These are observations from consecutive runs, not latency thresholds or proof of
+viewport memory bounds. Comparison remains linear in unchanged text. Full records:
+[native before](editor-performance/native-source-change-before.csv),
+[native after](editor-performance/native-source-change-after.csv),
+[browser before](editor-performance/browser-source-change-before.csv),
+[browser after](editor-performance/browser-source-change-after.csv).
+
 ## Incremental coordinates and shared projections
 
 The document now maintains logical-line and raw/native UTF-16 prefixes across edit

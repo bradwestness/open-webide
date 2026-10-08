@@ -961,7 +961,9 @@ retains existing token strings without copying their text or token arrays. Parse
 paint and validated worker replies use the same row representation; the painter
 reads those rows without materializing a second token table. Row metadata and
 handle tables still visit changed source, and source-change comparison still scans
-unchanged prefix/suffix text. Worker protocol v6 replies reference
+unchanged prefix/suffix text. Shared change comparison uses byte chunks and
+adjusts only differing edges to UTF-8 boundaries, retaining minimal character
+spans without decoding complete unchanged text. Worker protocol v6 replies reference
 unchanged token rows from the last published base ticket. Consecutive references
 transfer as runs, so one edit does not serialize a reference record for every
 unchanged row. The receiver checks the ticket, count, old row range, exact new row
