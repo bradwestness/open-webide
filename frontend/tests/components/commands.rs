@@ -240,13 +240,15 @@ async fn palette_panel_actions_and_direct_shortcuts_use_one_layout_facade() {
             <openwebide_frontend::components::Omnibar /><CommandDialogs/> }
         });
         settle().await;
+        let files_were_visible =
+            mounted.element(".files-visible").text_content().as_deref() == Some("true");
         mounted.click(".opener");
         settle().await;
         mounted.click("#command-files");
         settle().await;
         assert_eq!(
             mounted.element(".files-visible").text_content().as_deref(),
-            Some("false")
+            Some(if files_were_visible { "false" } else { "true" })
         );
         assert!(!mounted.state.ui.palette_open.get_untracked());
         let opener = mounted.element(".opener");
@@ -348,9 +350,10 @@ async fn inline_search_retains_input_and_closes_without_a_modal_in_every_mode() 
                 .update(|projects| projects[0].mode = mode);
             command_actions(state.clone());
             install_keyboard_shortcuts(state.chat);
+            let layout = expect_context::<LayoutState>();
             view! {
                 <style>{include_str!("../../styles.css")}</style>
-                <div class="app" style="width:100%;height:700px">
+                <div class="app" class:phone-layout=move || layout.phone.get() style="width:100%;height:700px">
                     <openwebide_frontend::components::TopBar on_open_settings=Callback::new(|()|()) on_logout=Callback::new(|()|())>
                         <openwebide_frontend::components::TabBar show_chat=false on_select=Callback::new(|_|()) on_select_chat=Callback::new(|()|()) on_close=Callback::new(|_|()) />
                     </openwebide_frontend::components::TopBar>
