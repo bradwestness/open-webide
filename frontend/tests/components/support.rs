@@ -194,7 +194,13 @@ pub async fn settle() {
 
 /// Wait for the observable result, yielding browser tasks and animation frames.
 pub async fn wait_until(description: &str, ready: impl Fn() -> bool) {
-    let deadline = js_sys::Date::now() + 3000.0;
+    wait_until_with_timeout(description, 3000, ready).await;
+}
+
+/// Boundary-size correctness checks include debug WASM and complete DOM oracles;
+/// they are not production latency thresholds. Ordinary contracts keep 3 s.
+pub async fn wait_until_with_timeout(description: &str, timeout_ms: u32, ready: impl Fn() -> bool) {
+    let deadline = js_sys::Date::now() + f64::from(timeout_ms);
     while !ready() {
         assert!(
             js_sys::Date::now() < deadline,

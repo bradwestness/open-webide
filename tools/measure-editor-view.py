@@ -183,7 +183,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
                         const batches = new WeakMap();
                         window.__openwebideEditorProbeTiming = (paint, phase, elapsedMs, units) => {
                             let record = batches.get(paint);
-                            if (phase === "render") {
+                            if (phase === "render" || phase === "paragraph-render") {
                                 record = null;
                                 if (editorViewMeasurement.batches.length < 256) {
                                     record = {at: performance.now(), phase: editorViewMeasurement.phase,

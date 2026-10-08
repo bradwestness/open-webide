@@ -128,6 +128,51 @@ pub struct EditorRowSourceSlice {
     pub reaches_end: bool,
 }
 impl EditorActions {
+    pub fn paragraph_measurements(
+        paint: &EditorRowPaint,
+        row: usize,
+    ) -> Option<openwebide_core::editor::ParagraphMeasurementPlan<'_>> {
+        use openwebide_core::editor::{ParagraphMeasurementPlan, visual_text_run_ranges};
+        let body = paint.projection.line_body(row)?;
+        // A local tab overlap can agree while the complete paragraph's rounded
+        // extent differs. Retain complete preparation until the adapter proves
+        // the global tab grid as well as the local continuation.
+        if body.as_bytes().contains(&b'\t') {
+            return None;
+        }
+        let index = paint.projection.visual_line_index(row)?;
+        let row = paint_row(paint, row)?;
+        if let Some(plain) = row.plain {
+            return (plain == body)
+                .then(|| ParagraphMeasurementPlan::new(body, index))
+                .flatten();
+        }
+        let mut runs = Vec::new();
+        let mut offset = 0;
+        for (at, token) in row.tokens.iter().enumerate() {
+            let text = if row.normalize_cr && at + 1 == row.tokens.len() {
+                token.text.strip_suffix('\r').unwrap_or(&token.text)
+            } else {
+                &token.text
+            };
+            if text.len() > 512 {
+                runs.extend(visual_text_run_ranges(text).map(|run| offset + run.end));
+            } else if token.kind != openwebide_core::highlight::TokenKind::Plain
+                || row.tokens.get(at + 1).is_none_or(|next| {
+                    next.kind != openwebide_core::highlight::TokenKind::Plain
+                        || next.text.len() > 512
+                })
+            {
+                runs.push(offset + text.len());
+            }
+            offset += text.len();
+        }
+        if offset != body.len() {
+            return None;
+        }
+        runs.dedup();
+        ParagraphMeasurementPlan::with_run_boundaries(body, index, runs)
+    }
     pub fn paint_window(
         self,
         row: usize,

@@ -1021,3 +1021,69 @@ docker run --rm --init --shm-size=1g --memory=10g --cpus=4 \
   --operations production-replace-data production-set-data production-replace-node \
   --timeout 60
 ```
+
+## Bounded unwrapped paragraph preparation
+
+Eligible source-monotonic unwrapped rows now use styled probes of at most 16 KiB.
+The shared editor facade supplies the original renderer's grapheme-safe paint-run
+boundaries; the core continuation plan selects overlapping probes and validates
+every overlap glyph before publishing sparse document anchors. DOM adapters
+measure actual fonts and styles, preserving the same policy in local and remote
+projects. Unsupported boundaries, tabbed/bidirectional rows and failed overlap proofs
+retain complete measurement. Wrapped rows still use the complete path.
+
+Glyph rectangles are captured near the origin to avoid large-coordinate
+precision loss. After capturing local rectangles, the adapter measures final overflow through
+normal inline layout at document coordinates. Transforming overflow or translating
+an already-rounded slice width can round differently from the original row. No estimated character
+widths or relaxed geometry tolerances are used.
+
+Browser contracts compare complete integer scroll extents and every retained
+anchor within 0.25 CSS pixels, including a near-1-MiB Unicode row, all five bundled
+Monaspace families, texture healing, ligatures, visible whitespace and italic
+comments in both workspace modes. An injected overlap failure checks complete
+measurement fallback without changing document ownership or source.
+
+This bounds the styled probe, not the entire input pipeline. Initial native
+paragraph shaping, source-prefix segmentation, tabbed/wrapped/bidirectional preparation
+and incremental reuse within changed paragraphs remain open. Production latency and PSS measurements remain separate from these correctness
+contracts.
+
+Release measurements on 2026-10-08 used Chromium 154 on Linux arm64, the existing
+measurement image with CJK/emoji fallback fonts, four CPU quotas and a 10 GiB
+container limit. Each of three repetitions per mode used a fresh browser/runtime
+and a 1,048,572-byte Unicode row. Local cases used editor recovery without a native
+folder handle. No build ran concurrently with these six samples. The raw header
+records the pre-commit checkout; `appModule` identifies the built frontend.
+
+| Mode | Cold paint median / range (ms) | Input paint median / range (ms) | Scroll paint median (ms) | Peak Chrome PSS median (KiB) | Largest task median (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Local | 11414 / 11179–12006 | 2623 / 2616–2684 | 26 | 850760 | 4052 |
+| Remote | 11856 / 11732–11943 | 2657 / 2490–2942 | 20 | 840722 | 3780 |
+
+These rows remain outside the interactive latency goal. Initial native shaping
+still causes multi-second tasks, and changed paragraphs repeat their probe work.
+Steady-state scroll paint is short, but that does not establish responsive cold
+loading or typing. Peak PSS includes the whole Chrome process tree; it is not
+Rust/WASM allocation alone.
+
+Raw records: [three repetitions per mode](editor-performance/unwrapped-paragraph-linux.jsonl).
+
+A separate instrumented repetition per mode recorded 185/177 layout probes and
+182/174 preparation batches, with no complete-row fallback and no trace truncation.
+The largest paragraph-render input was 15,914 bytes; sampled local layout calls
+peaked at 15/16.2 ms. The trace includes probe and worker diagnostics, so its
+end-to-end timings are separate from the uninstrumented table.
+[Raw diagnostic records](editor-performance/unwrapped-paragraph-linux-trace.jsonl).
+
+Reproduce after building the current frontend/backend:
+
+```bash
+bash tools/measure-editor-view-linux.sh --cases long-line --repeat 3
+bash tools/measure-editor-view-linux.sh --cases long-line --repeat 1 --trace
+```
+
+CI runs the font matrix and near-1-MiB complete-geometry oracle in separate browser
+runs, retaining the 300-second binary deadline and existing short UI readiness
+assertions. This keeps the expanding suite's aggregate duration from hiding
+individual geometry failures.

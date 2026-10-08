@@ -11666,6 +11666,219 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
 }
 
 #[wasm_bindgen_test]
+async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    let font = loadEditorFont(
+        "Neon",
+        include_bytes!("../../fonts/MonaspaceNeon-v1.400.woff2"),
+    )
+    .await
+    .unwrap();
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let unit = "文😀 words ";
+        let source = unit.repeat(1_048_576 / unit.len());
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("limit.txt".into()));
+            state.workspace.content.set(source.into());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        let scope = std::cell::RefCell::new(None);
+        super::support::wait_until_with_timeout("admitted paragraph measurements", 30_000, || {
+            mounted
+                .state
+                .workspace
+                .editor_row_cache
+                .with_untracked(|cache| {
+                    cache.as_ref().is_some_and(|cache| {
+                        let ready = mounted
+                            .root
+                            .query_selector(".editor-code.highlight-ready")
+                            .unwrap()
+                            .is_some();
+                        if ready {
+                            *scope.borrow_mut() = Some(cache.paint.clone());
+                        }
+                        ready
+                    })
+                })
+        })
+        .await;
+        let scope = scope.into_inner().unwrap();
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert!(
+            openwebide_frontend::components::bounded_paragraph_matches_complete(&input, &scope, 0)
+                .await,
+            "{mode:?} admitted paragraph geometry"
+        );
+    }
+    removeEditorFont(&font);
+}
+
+#[wasm_bindgen_test]
+async fn paragraph_overlap_failure_uses_complete_measurement_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let audit = js_sys::Function::new_no_args(r#"
+            const state = {rejected: 0, complete: 0};
+            const old = Range.prototype.getClientRects;
+            Range.prototype.getClientRects = function(...args) {
+                const node = this.startContainer;
+                const element = node.nodeType === 1 ? node : node.parentElement;
+                const row = element?.closest('.editor-height-measure .editor-source-line');
+                const rects = old.apply(this,args);
+                if (row && Number(row.dataset.sourceStart)>0 && rects.length) {
+                    state.rejected++;
+                    const rect = rects.item(0);
+                    return {length:1, item() {return new DOMRect(rect.x+1,rect.y,rect.width,rect.height);}};
+                }
+                if (row && !row.hasAttribute('data-source-start') && row.textContent.length>65536) state.complete++;
+                return rects;
+            };
+            state.restore = () => {Range.prototype.getClientRects = old;};
+            return state;
+        "#).call0(&wasm_bindgen::JsValue::NULL).unwrap();
+        let source = "word 文😀  ".repeat(10_000);
+        let expected = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("overlap.txt".into()));
+            state.workspace.content.set(source.into());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        wait_until("complete fallback after invalid paragraph overlap", || {
+            js_sys::Reflect::get(&audit, &"rejected".into())
+                .unwrap()
+                .as_f64()
+                .unwrap()
+                > 0.0
+                && js_sys::Reflect::get(&audit, &"complete".into())
+                    .unwrap()
+                    .as_f64()
+                    .unwrap()
+                    > 0.0
+                && mounted
+                    .state
+                    .workspace
+                    .editor_row_cache
+                    .get_untracked()
+                    .is_some()
+                && mounted
+                    .root
+                    .query_selector(".editor-code.highlight-ready")
+                    .unwrap()
+                    .is_some()
+        })
+        .await;
+        js_sys::Reflect::get(&audit, &"restore".into())
+            .unwrap()
+            .dyn_into::<js_sys::Function>()
+            .unwrap()
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .unwrap();
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert_editor_native_source(&input, mounted.state.workspace, &expected);
+        assert!(!mounted.state.workspace.dirty.get_untracked());
+        assert!(openwebide_frontend::viewport::editor_scroll(&input).scroll_width() > 100_000);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn bounded_paragraph_geometry_preserves_fonts_features_and_whitespace_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::EditorFont};
+    let loaded = load_all_editor_fonts().await;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let body = "alpha_beta_long_name -> != 文😀  ".repeat(2000);
+        let source = format!("let value = \"{body}\";\r\n// {body}\r\n");
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("paragraph.rs".into()));
+            state.workspace.content.set(source.into());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        for font in EditorFont::ALL {
+            for (healing, ligatures, whitespace) in [
+                (true, true, false),
+                (true, false, false),
+                (false, true, false),
+                (false, false, true),
+            ] {
+                mounted
+                    .state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| {
+                        preferences.font = font;
+                        preferences.texture_healing = healing;
+                        preferences.ligatures = ligatures;
+                        preferences.show_whitespace = whitespace;
+                    });
+                settle().await;
+                let scope = std::cell::RefCell::new(None);
+                wait_until("font-owned paragraph measurements", || {
+                    mounted
+                        .state
+                        .workspace
+                        .editor_row_cache
+                        .with_untracked(|cache| {
+                            cache.as_ref().is_some_and(|cache| {
+                                let ready = cache.paint.whitespace == whitespace
+                                    && cache.paint.prepared_source
+                                    && cache.paint.metrics.contains(font.name())
+                                    && cache.paint.font_epoch
+                                        == mounted
+                                            .state
+                                            .workspace
+                                            .editor_font_epoch
+                                            .get_untracked()
+                                    && mounted
+                                        .root
+                                        .query_selector(".editor-code.highlight-ready")
+                                        .unwrap()
+                                        .is_some();
+                                if ready {
+                                    *scope.borrow_mut() = Some(cache.paint.clone());
+                                }
+                                ready
+                            })
+                        })
+                })
+                .await;
+                let scope = scope.into_inner().unwrap();
+                let input: web_sys::HtmlTextAreaElement =
+                    mounted.element(".editor-textarea").unchecked_into();
+                for row in [0, 1] {
+                    assert!(
+                        openwebide_frontend::components::bounded_paragraph_matches_complete(
+                            &input, &scope, row
+                        )
+                        .await,
+                        "{mode:?} {font:?} row={row} healing={healing} ligatures={ligatures} whitespace={whitespace}"
+                    );
+                }
+            }
+        }
+    }
+    for font in loaded {
+        removeEditorFont(&font);
+    }
+}
+
+#[wasm_bindgen_test]
 async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_both_modes() {
     use openwebide_core::WorkspaceMode;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
@@ -11767,7 +11980,7 @@ async fn horizontal_fragments_preserve_tabs_scroll_extent_and_native_hits_in_bot
             .unwrap();
         assert!(
             cold > 65_536.0,
-            "cold horizontal probes retain exact anchors"
+            "tabbed paragraphs must retain complete preparation: {cold}"
         );
         assert!(
             paint > 0.0 && paint <= 65_536.0,
@@ -13607,10 +13820,8 @@ async fn switching_loaded_font_families_invalidates_source_layout_in_both_modes(
     removeEditorFont(&radon);
 }
 
-#[wasm_bindgen_test]
-async fn monaspace_families_and_independent_features_share_native_and_paint_metrics_in_both_modes()
-{
-    use openwebide_core::{WorkspaceMode, editor::EditorFont};
+async fn load_all_editor_fonts() -> Vec<wasm_bindgen::JsValue> {
+    use openwebide_core::editor::EditorFont;
     let mut loaded = Vec::new();
     for (font, bytes) in [
         (
@@ -13636,6 +13847,14 @@ async fn monaspace_families_and_independent_features_share_native_and_paint_metr
     ] {
         loaded.push(loadEditorFont(font.name(), bytes).await.unwrap());
     }
+    loaded
+}
+
+#[wasm_bindgen_test]
+async fn monaspace_families_and_independent_features_share_native_and_paint_metrics_in_both_modes()
+{
+    use openwebide_core::{WorkspaceMode, editor::EditorFont};
+    let loaded = load_all_editor_fonts().await;
     let source = "fn example() { let result = a != b && c <= d; }\n// 文😀 => -> ===\n";
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         let mounted = mount_test(move |state| {

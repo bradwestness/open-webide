@@ -12,7 +12,7 @@ pub struct GlyphRectangle {
     pub height: f64,
 }
 impl GlyphRectangle {
-    fn valid(self) -> bool {
+    pub(super) fn valid(self) -> bool {
         [self.left, self.top, self.width, self.height]
             .iter()
             .all(|v| v.is_finite())

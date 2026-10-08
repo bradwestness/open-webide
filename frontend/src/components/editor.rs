@@ -807,6 +807,35 @@ pub fn take_highlight_source_bytes() -> usize {
     HIGHLIGHT_SOURCE_BYTES.replace(0)
 }
 
+/// Differential browser oracle: compare bounded preparation with the complete
+/// production renderer, including every retained glyph anchor. Test-only full
+/// layout must never run in ordinary preparation.
+#[cfg(feature = "test-support")]
+pub async fn bounded_paragraph_matches_complete(
+    input: &web_sys::HtmlTextAreaElement,
+    scope: &crate::state::workspace::EditorRowPaint,
+    row: usize,
+) -> bool {
+    super::editor_rows::check_paragraph_geometry(input, scope, row, |rows, suffix, slices| {
+        highlight_html(
+            &scope.tokens,
+            scope.prepared_source,
+            &scope.guides,
+            PaintRows {
+                indices: rows,
+                projection: None,
+                source: Some(&scope.projection),
+                source_slices: slices,
+            },
+            scope.indentation,
+            scope.whitespace,
+            suffix,
+        )
+    })
+    .await
+    .unwrap_or(false)
+}
+
 /// Whitespace markers retain their original text node and therefore source offsets.
 fn paint_text_range(text: &str, range: std::ops::Range<usize>, show_whitespace: bool) -> String {
     let Some(selected) = text.get(range.clone()) else {
@@ -1317,12 +1346,17 @@ fn HighlightOverlay(
                         });
                     }
                 },
-                move |rows, suffix| {
+                move |rows, suffix, source_slices| {
                     highlight_html(
                         &prepared_tokens.1,
                         prepared_tokens.0,
                         &guides,
-                        PaintRows::measured(rows, &projection),
+                        PaintRows {
+                            indices: rows,
+                            projection: None,
+                            source: Some(&projection),
+                            source_slices,
+                        },
                         tab,
                         whitespace,
                         suffix,

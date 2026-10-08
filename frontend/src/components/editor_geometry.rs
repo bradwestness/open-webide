@@ -186,6 +186,34 @@ fn sample_geometry(
     }
 }
 
+/// Exact browser rectangles for one bounded source probe. The shared plan owns
+/// global glyph numbering, overlap requirements and geometry admission.
+pub(super) fn paragraph_rectangles(
+    row: &web_sys::Element,
+    body: &str,
+    glyph_start: usize,
+    targets: &[usize],
+) -> Option<Vec<openwebide_core::editor::GlyphRectangle>> {
+    if row.text_content()?.as_str() != body {
+        return None;
+    }
+    let bounds = row.get_bounding_client_rect();
+    let mut glyphs = Glyphs::new(row, body, None)?;
+    targets
+        .iter()
+        .map(|glyph| {
+            let rect = glyphs.rect(glyph.checked_sub(glyph_start)?)?;
+            Some(openwebide_core::editor::GlyphRectangle {
+                glyph: *glyph,
+                left: rect.left() - bounds.left(),
+                top: rect.top() - bounds.top(),
+                width: rect.width(),
+                height: rect.height(),
+            })
+        })
+        .collect()
+}
+
 /// Reuse the styled logical row already laid out by the cold height probe.
 pub(super) fn preparation_geometry(
     row: &web_sys::Element,

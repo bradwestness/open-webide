@@ -93,6 +93,180 @@ fn extent_supported(input: &web_sys::HtmlTextAreaElement, rows: &MeasuredRows) -
         .is_some_and(|extent| crate::viewport::check_editor_extent(extent.width, extent.height))
 }
 
+async fn measure_paragraph(
+    paint: &web_sys::Element,
+    scope: &crate::state::workspace::EditorRowPaint,
+    logical: usize,
+    current: &impl Fn() -> bool,
+    render: &impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
+) -> Result<Option<(f64, openwebide_core::editor::HorizontalGeometry)>, ()> {
+    let Some(mut plan) = EditorActions::paragraph_measurements(scope, logical) else {
+        return Ok(None);
+    };
+    let mut probes = 0_usize;
+    while let Some(probe) = plan.probe().cloned() {
+        let Some(targets) = plan.targets() else {
+            return Ok(None);
+        };
+        if !current() {
+            return Ok(None);
+        }
+        let Some(layout) = measure_paragraph_probe(
+            paint,
+            scope,
+            logical,
+            &probe,
+            plan.local_origin(),
+            &targets,
+            render,
+        )?
+        else {
+            return Ok(None);
+        };
+        if plan.retry_origin(&layout.rectangles) {
+            paint.set_inner_html("");
+            crate::util::yield_task().await;
+            continue;
+        }
+        if !plan.record(
+            layout.width,
+            layout.height,
+            layout.scroll_width,
+            &layout.rectangles,
+        ) {
+            return Ok(None);
+        }
+        paint.set_inner_html("");
+        probes += 1;
+        if probes.is_multiple_of(openwebide_core::editor::MAX_MEASURE_BATCHES_PER_FRAME) {
+            crate::util::yield_frame().await;
+        } else {
+            crate::util::yield_task().await;
+        }
+    }
+    Ok(plan.finish())
+}
+
+struct ParagraphLayout {
+    width: f64,
+    height: f64,
+    scroll_width: f64,
+    rectangles: Vec<openwebide_core::editor::GlyphRectangle>,
+}
+
+fn measure_paragraph_probe(
+    paint: &web_sys::Element,
+    scope: &crate::state::workspace::EditorRowPaint,
+    logical: usize,
+    probe: &openwebide_core::editor::ParagraphProbe,
+    phase: f64,
+    targets: &[usize],
+    render: &impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
+) -> Result<Option<ParagraphLayout>, ()> {
+    let body = scope.projection.line_body(logical).ok_or(())?;
+    let source_line = scope.projection.lines()[logical].source_line;
+    let timing = ProbeTiming::installed();
+    let slice = crate::state_actions::editor::EditorRowSourceSlice {
+        source_line,
+        bytes: probe.bytes.clone(),
+        native_start: probe.native_start,
+        reaches_end: probe.bytes.end == body.len(),
+    };
+    let started = timing.as_ref().map(|trace| trace.clock.now());
+    let html = render(&[source_line], false, &[slice]);
+    if let (Some(trace), Some(started)) = (&timing, started) {
+        trace.report(
+            paint,
+            "paragraph-render",
+            trace.clock.now() - started,
+            probe.bytes.len(),
+        );
+    }
+    let started = timing.as_ref().map(|trace| trace.clock.now());
+    paint.set_inner_html(&html);
+    drop(html);
+    let Some(row) = paint
+        .query_selector(".editor-source-line")
+        .map_err(|_| ())?
+    else {
+        return Ok(None);
+    };
+    // Read overflow from a zero-width unwrapped row so a short final slice is
+    // not padded to viewport width. Keep the actual viewport content width in
+    // the shared geometry, and let CSS measure ink overhang and pixel rounding.
+    let original_style = row.get_attribute("style").unwrap_or_default();
+    row.set_attribute("style", &format!("{original_style};width:0px"))
+        .map_err(|_| ())?;
+    if phase > 0.0 || probe.origin > 0.0 {
+        let gap = document().create_element("span").map_err(|_| ())?;
+        gap.set_attribute("style", &format!("display:inline-block;width:{phase}px"))
+            .map_err(|_| ())?;
+        row.insert_before(&gap, row.first_child().as_ref())
+            .map_err(|_| ())?;
+    }
+    let style = window()
+        .get_computed_style(paint)
+        .map_err(|_| ())?
+        .ok_or(())?;
+    let padding = |name| -> Result<f64, ()> {
+        style
+            .get_property_value(name)
+            .map_err(|_| ())?
+            .trim_end_matches("px")
+            .parse()
+            .map_err(|_| ())
+    };
+    let viewport_width =
+        f64::from(paint.client_width()) - padding("padding-left")? - padding("padding-right")?;
+    let bounds = row.get_bounding_client_rect();
+    if let (Some(trace), Some(started)) = (&timing, started) {
+        trace.report(
+            paint,
+            "paragraph-layout",
+            trace.clock.now() - started,
+            probe.bytes.len(),
+        );
+    }
+    let started = timing.as_ref().map(|trace| trace.clock.now());
+    let Some(mut rectangles) = super::editor_geometry::paragraph_rectangles(
+        &row,
+        &body[probe.bytes.clone()],
+        probe.glyph_start,
+        targets,
+    ) else {
+        return Ok(None);
+    };
+    for rectangle in &mut rectangles {
+        rectangle.left += probe.origin - phase;
+    }
+    // Read the final overflow at document coordinates only after capturing
+    // precise local rectangles. Inline layout and transformed overflow round
+    // differently at large coordinates; use the original inline layout path.
+    if probe.origin > 0.0 {
+        let gap = row.first_element_child().ok_or(())?;
+        gap.set_attribute(
+            "style",
+            &format!("display:inline-block;width:{}px", probe.origin),
+        )
+        .map_err(|_| ())?;
+    }
+    let source_width = f64::from(row.scroll_width());
+    if let (Some(trace), Some(started)) = (&timing, started) {
+        trace.report(
+            paint,
+            "paragraph-geometry",
+            trace.clock.now() - started,
+            targets.len(),
+        );
+    }
+    Ok(Some(ParagraphLayout {
+        width: viewport_width,
+        height: bounds.height(),
+        scroll_width: source_width.max(viewport_width.ceil()),
+        rectangles,
+    }))
+}
+
 /// Opt-in diagnostics supplied by the production measurement harness. Keep
 /// clocks and callbacks out of ordinary editor preparation.
 struct ProbeTiming {
@@ -132,7 +306,7 @@ pub(super) async fn measure_batches(
     current: impl Fn() -> bool,
     progress: impl Fn(usize),
     geometry: impl Fn(usize, openwebide_core::editor::MeasuredRowGeometry),
-    render: impl Fn(&[usize], bool) -> String,
+    render: impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
 ) -> Result<Option<MeasuredRows>, ()> {
     if !current()
         || input
@@ -207,8 +381,32 @@ pub(super) async fn measure_batches(
             .iter()
             .map(|line| line.source_line)
             .collect::<Vec<_>>();
+        let wrapped = input
+            .parent_element()
+            .is_some_and(|parent| parent.class_list().contains("editor-word-wrap"));
+        if count == 1 && !wrapped && lengths[start] > openwebide_core::editor::MAX_MEASURE_BYTES {
+            let result = measure_paragraph(&paint, &scope, start, &current, &render).await?;
+            if !current()
+                || !input.is_connected()
+                || metrics_identity(&input).as_ref() != Some(metrics)
+            {
+                return Ok(None);
+            }
+            if let Some((width, measured)) = result {
+                if !plan.record_layout(range, &[measured.height], &[width]) {
+                    return Err(());
+                }
+                geometry(
+                    start,
+                    openwebide_core::editor::MeasuredRowGeometry::Horizontal(measured),
+                );
+                progress(plan.completed());
+                paint.set_inner_html("");
+                continue;
+            }
+        }
         let started = timing.as_ref().map(|trace| trace.clock.now());
-        let html = render(&rows, end < projection.lines().len());
+        let html = render(&rows, end < projection.lines().len(), &[]);
         if let (Some(trace), Some(started)) = (&timing, started) {
             trace.report(
                 &paint,
@@ -320,6 +518,70 @@ pub(super) fn metrics_identity(input: &web_sys::HtmlTextAreaElement) -> Option<S
         style.get_property_value("font-feature-settings").ok()?,
         style.get_property_value("font-variant-ligatures").ok()?
     ))
+}
+
+#[cfg(feature = "test-support")]
+pub(super) async fn check_paragraph_geometry(
+    input: &web_sys::HtmlTextAreaElement,
+    scope: &crate::state::workspace::EditorRowPaint,
+    logical: usize,
+    render: impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
+) -> Result<bool, ()> {
+    let (_probe, paint) = styled_row_probe(input)?;
+    let Some((width, bounded)) =
+        measure_paragraph(&paint, scope, logical, &|| true, &render).await?
+    else {
+        web_sys::console::error_1(&"bounded paragraph rejected".into());
+        return Ok(false);
+    };
+    let source_line = scope.projection.lines()[logical].source_line;
+    paint.set_inner_html(&render(&[source_line], false, &[]));
+    let row = paint
+        .query_selector(".editor-source-line")
+        .map_err(|_| ())?
+        .ok_or(())?;
+    let body = scope.projection.line_body(logical).ok_or(())?;
+    let index = scope.projection.visual_line_index(logical).ok_or(())?;
+    let glyphs = index.len() - 1;
+    let bounds = row.get_bounding_client_rect();
+    let Some(openwebide_core::editor::MeasuredRowGeometry::Horizontal(complete)) =
+        super::editor_geometry::preparation_geometry(&row, body, index, &bounds, false)
+    else {
+        return Ok(false);
+    };
+    if (width - f64::from(row.scroll_width())).abs() > 0.25
+        || (bounded.height - complete.height).abs() > 0.25
+    {
+        web_sys::console::error_1(
+            &format!(
+                "paragraph extent bounded={width}/{} complete={}/{} final={:?}/{:?}",
+                bounded.height,
+                row.scroll_width(),
+                complete.height,
+                bounded.anchors(glyphs.saturating_sub(1)..glyphs),
+                complete.anchors(glyphs.saturating_sub(1)..glyphs)
+            )
+            .into(),
+        );
+        return Ok(false);
+    }
+    let a = bounded.anchors(0..glyphs).ok_or(())?;
+    let b = complete.anchors(0..glyphs).ok_or(())?;
+    if let Some((a, b)) = a
+        .iter()
+        .zip(b)
+        .find(|(a, b)| (a.left - b.left).abs() > 0.25 || (a.width - b.width).abs() > 0.25)
+    {
+        web_sys::console::error_1(&format!("paragraph anchor bounded={a:?} complete={b:?}").into());
+    }
+    Ok(a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            a.glyph == b.glyph
+                && (a.left - b.left).abs() <= 0.25
+                && (a.top - b.top).abs() <= 0.25
+                && (a.width - b.width).abs() <= 0.25
+                && (a.height - b.height).abs() <= 0.25
+        }))
 }
 
 pub(super) fn update_measurements(

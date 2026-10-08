@@ -57,8 +57,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   identical pending/plain rows retain dimensions and glyph anchors after syntax resolves.
   Cropped plain/token paint retains the complete source's grapheme-safe text-run
   boundaries, including short crops, with streamed segmentation that stops after
-  the requested window. Prefix segmentation and cold complete-paragraph shaping
-  still remain; this does not complete bounded paragraph preparation.
+  the requested window. Unwrapped source-monotonic rows now prepare exact
+  extents and anchors in at most 16 KiB probes, retaining complete paint runs
+  and validating every overlap glyph. Unsupported boundaries and failed proofs
+  use complete measurement. Tabbed/wrapped/bidi preparation, prefix segmentation,
+  initial native shaping and incremental changed-paragraph reuse remain.
   Cold probes briefly await the selected font, with bounded fallback and fresh ownership checks.
   The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)
   records why Rust shaping and canvas widths cannot replace current DOM geometry directly.
@@ -215,8 +218,14 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   fixes show 230–250 ms input paint, with cold paint still around 2–3 seconds.
   The [retained paragraph mutation check](editor-performance.md#retained-paragraph-mutation-check)
   verifies that a DOM cache alone still causes multi-second Unicode updates, even
-  with the current grapheme-run markup. Build bounded paragraph preparation rather
-  than treating node retention as proof of incremental shaping.
+  with the current grapheme-run markup. Unwrapped paragraph preparation now uses
+  bounded probes with original paint-run boundaries, local DOM coordinates,
+  exact overlap validation. Tabbed rows retain complete measurement because local
+  overlap alone does not prove their final rounded extent. Browser contracts
+  compare complete extents and retained anchors through the 1 MiB row boundary;
+  font/feature/whitespace settings and failed-proof fallback share both modes.
+  Finish tabbed/wrapped/bidi preparation, initial native shaping and incremental reuse;
+  node retention alone still does not prove incremental shaping.
   Continue profiling cold/long-line phases and repeat after fixing them. Broader startup scroll latency and
   initial-shaping samples remain unverified despite bounded steady-state paint.
   See [recorded measurements](editor-performance.md).

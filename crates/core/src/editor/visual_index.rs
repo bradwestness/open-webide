@@ -64,6 +64,10 @@ impl VisualLineIndex {
             .filter(|glyph| *glyph < self.0.end.glyph)
             .chain(self.0.end.glyph.checked_sub(1))
     }
+    /// The plain renderer's original grapheme-safe 512-byte run endings.
+    pub fn text_run_boundaries(&self) -> impl Iterator<Item = usize> + '_ {
+        self.0.points.iter().skip(1).map(|point| point.byte)
+    }
     /// Includes the terminal insertion point, matching visual_line_offsets.
     pub fn len(&self) -> usize {
         self.0.end.glyph + 1

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Prepare eligible unwrapped editor paragraphs in at most 16 KiB styled probes, preserving original paint-run boundaries and validating every overlap glyph before publishing exact extents and anchors. Keep glyph measurements near the origin and fall back to complete layout when proof fails. Tabbed, wrapped and bidirectional paragraphs retain complete preparation.
+
 - Preserve original grapheme-safe text-run boundaries when painting a cropped editor row, including short crops of long tokens. Stream run boundaries without allocating a complete run vector or segmenting the unused suffix; retain exact geometry validation and full-row fallback.
 
 - Add a reproducible paragraph-mutation probe with fresh Chrome processes, production font/run markup, geometry checks and explicit timeout records. Record why retaining DOM nodes alone does not resolve admitted Unicode paragraph stalls.

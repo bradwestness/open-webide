@@ -1,0 +1,460 @@
+//! Source-owned continuation and overlap validation for bounded paragraph probes.
+use super::{GlyphRectangle, HorizontalGeometry, MAX_MEASURE_BYTES, VisualLineIndex};
+use std::ops::Range;
+
+pub const MAX_PARAGRAPH_PROBE_BYTES: usize = 16 * 1024;
+const CONTEXT_BYTES: usize = 1024;
+const TOLERANCE: f64 = 0.25;
+
+#[derive(Clone, Debug)]
+pub struct ParagraphProbe {
+    pub bytes: Range<usize>,
+    pub native_start: usize,
+    pub glyph_start: usize,
+    pub origin: f64,
+}
+
+/// Adapters measure real styled text; this policy never estimates character
+/// widths. A failed overlap, unavailable paint boundary or stale source requires
+/// the caller's complete-paragraph fallback.
+pub struct ParagraphMeasurementPlan<'a> {
+    body: &'a str,
+    index: VisualLineIndex,
+    probe: ParagraphProbe,
+    continuation: Option<(usize, usize)>,
+    expected: Vec<GlyphRectangle>,
+    anchors: Vec<GlyphRectangle>,
+    dimensions: Option<(f64, f64)>,
+    scroll_width: f64,
+    finished: bool,
+    has_tabs: bool,
+    local_origin: f64,
+    retried: bool,
+    runs: Vec<usize>,
+}
+impl<'a> ParagraphMeasurementPlan<'a> {
+    pub fn new(body: &'a str, index: VisualLineIndex) -> Option<Self> {
+        let runs = index.text_run_boundaries().collect();
+        Self::with_run_boundaries(body, index, runs)
+    }
+    pub fn with_run_boundaries(
+        body: &'a str,
+        index: VisualLineIndex,
+        runs: Vec<usize>,
+    ) -> Option<Self> {
+        if body.len() <= MAX_MEASURE_BYTES
+            || !index.source_paint_eligible()
+            || index
+                .anchor_glyphs()
+                .take(super::MAX_ROW_GEOMETRY_ANCHORS + 1)
+                .count()
+                > super::MAX_ROW_GEOMETRY_ANCHORS
+        {
+            return None;
+        }
+        if runs.last().copied() != Some(body.len())
+            || runs.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return None;
+        }
+        let probe = Self::probe_at(body, &index, &runs, 0, 0.0)?;
+        let continuation = Self::continuation(body, &index, &runs, &probe)?;
+        Some(Self {
+            body,
+            index,
+            probe,
+            continuation,
+            expected: Vec::new(),
+            anchors: Vec::new(),
+            dimensions: None,
+            scroll_width: 0.0,
+            finished: false,
+            has_tabs: body.as_bytes().contains(&b'\t'),
+            local_origin: 0.0,
+            retried: false,
+            runs,
+        })
+    }
+    fn boundary(
+        body: &str,
+        index: &VisualLineIndex,
+        runs: &[usize],
+        start: usize,
+        end: usize,
+    ) -> Option<usize> {
+        let last = runs.partition_point(|byte| *byte <= end);
+        runs[..last]
+            .iter()
+            .rev()
+            .take_while(|byte| **byte > start)
+            .find_map(|byte| {
+                let byte = *byte;
+                let glyph = index.index_at_byte(body, byte)?;
+                (index.at(body, glyph)?.0 == byte).then_some(byte)
+            })
+    }
+    fn probe_at(
+        body: &str,
+        index: &VisualLineIndex,
+        runs: &[usize],
+        start: usize,
+        origin: f64,
+    ) -> Option<ParagraphProbe> {
+        let limit = (start + MAX_PARAGRAPH_PROBE_BYTES).min(body.len());
+        let end = if limit == body.len() {
+            limit
+        } else {
+            Self::boundary(body, index, runs, start, limit)?
+        };
+        let glyph_start = index.index_at_byte(body, start)?;
+        let (byte, native_start) = index.at(body, glyph_start)?;
+        (byte == start && end > start).then_some(ParagraphProbe {
+            bytes: start..end,
+            native_start,
+            glyph_start,
+            origin,
+        })
+    }
+    fn continuation(
+        body: &str,
+        index: &VisualLineIndex,
+        runs: &[usize],
+        probe: &ParagraphProbe,
+    ) -> Option<Option<(usize, usize)>> {
+        if probe.bytes.end == body.len() {
+            return Some(None);
+        }
+        let end = probe.bytes.end;
+        let start = Self::boundary(
+            body,
+            index,
+            runs,
+            probe.bytes.start + CONTEXT_BYTES,
+            end.checked_sub(CONTEXT_BYTES)?,
+        )?;
+        let proof_end = Self::boundary(
+            body,
+            index,
+            runs,
+            start,
+            end.checked_sub(CONTEXT_BYTES / 2)?,
+        )?;
+        (proof_end > start).then_some(Some((start, proof_end)))
+    }
+    pub fn probe(&self) -> Option<&ParagraphProbe> {
+        (!self.finished).then_some(&self.probe)
+    }
+    pub fn local_origin(&self) -> f64 {
+        self.local_origin
+    }
+    pub fn retry_origin(&mut self, rectangles: &[GlyphRectangle]) -> bool {
+        if self.finished || self.retried {
+            return false;
+        }
+        let Some(adjustment) = self.tab_origin_adjustment(rectangles) else {
+            return false;
+        };
+        let phase = self.local_origin + adjustment;
+        if !phase.is_finite() || !(0.0..=4096.0).contains(&phase) {
+            return false;
+        }
+        self.local_origin = phase;
+        self.retried = true;
+        true
+    }
+    /// Fit the tab grid from actual overlap measurements. Font fallback can
+    /// change a tab's space advance, so a standalone tab cannot define the grid
+    /// for a mixed-font paragraph. Only a first discrepancy at a tab admits one
+    /// retry; the complete overlap still has to pass normal validation.
+    fn tab_origin_adjustment(&self, rectangles: &[GlyphRectangle]) -> Option<f64> {
+        for old in &self.expected {
+            let new = rectangles.get(
+                rectangles
+                    .binary_search_by_key(&old.glyph, |rect| rect.glyph)
+                    .ok()?,
+            )?;
+            let same_position = (old.left - new.left).abs() <= TOLERANCE
+                && (old.top - new.top).abs() <= TOLERANCE
+                && (old.height - new.height).abs() <= TOLERANCE;
+            let difference = new.width - old.width;
+            if !same_position {
+                return None;
+            }
+            if difference.abs() > TOLERANCE {
+                let byte = self.index.at(self.body, old.glyph)?.0;
+                return (self.body.as_bytes().get(byte) == Some(&b'\t') && difference.is_finite())
+                    .then_some(difference);
+            }
+        }
+        None
+    }
+    /// Sparse document anchors plus every overlap glyph, in exact source order.
+    pub fn targets(&self) -> Option<Vec<usize>> {
+        if self.finished {
+            return None;
+        }
+        let commit_end = match self.continuation {
+            Some((byte, _)) => self.index.index_at_byte(self.body, byte)?,
+            None => self.index.len() - 1,
+        };
+        let mut targets = self
+            .index
+            .anchor_glyphs()
+            .filter(|glyph| {
+                *glyph >= self.probe.glyph_start
+                    && (*glyph < commit_end || self.continuation.is_none())
+            })
+            .collect::<Vec<_>>();
+        targets.extend(self.expected.iter().map(|rect| rect.glyph));
+        if let Some((start, end)) = self.continuation {
+            targets.extend(
+                self.index.index_at_byte(self.body, start)?
+                    ..self.index.index_at_byte(self.body, end)?,
+            );
+        }
+        targets.sort_unstable();
+        targets.dedup();
+        Some(targets)
+    }
+    /// Rectangles already include the probe's measured horizontal origin.
+    pub fn record(
+        &mut self,
+        width: f64,
+        height: f64,
+        scroll_width: f64,
+        rectangles: &[GlyphRectangle],
+    ) -> bool {
+        if self.finished
+            || !width.is_finite()
+            || !height.is_finite()
+            || !scroll_width.is_finite()
+            || width <= 0.0
+            || height <= 0.0
+            || scroll_width < width
+            || width > 1_000_000_000.0
+            || height > 1_000_000.0
+            || scroll_width > 1_000_000_000.0
+            || self.dimensions.is_some_and(|(old_width, old_height)| {
+                (old_width - width).abs() > TOLERANCE || (old_height - height).abs() > TOLERANCE
+            })
+        {
+            return false;
+        }
+        let Some(targets) = self.targets() else {
+            return false;
+        };
+        if targets.len() != rectangles.len()
+            || targets
+                .iter()
+                .zip(rectangles)
+                .any(|(glyph, rect)| *glyph != rect.glyph || !rect.valid())
+        {
+            return false;
+        }
+        let lookup = |glyph| {
+            rectangles
+                .binary_search_by_key(&glyph, |rect| rect.glyph)
+                .ok()
+                .map(|at| rectangles[at])
+        };
+        if self.expected.iter().any(|old| {
+            lookup(old.glyph).is_none_or(|new| {
+                (old.left - new.left).abs() > TOLERANCE
+                    || (old.top - new.top).abs() > TOLERANCE
+                    || (old.width - new.width).abs() > TOLERANCE
+                    || (old.height - new.height).abs() > TOLERANCE
+            })
+        }) {
+            return false;
+        }
+        let next = if let Some((byte, proof_end)) = self.continuation {
+            let Some(glyph) = self.index.index_at_byte(self.body, byte) else {
+                return false;
+            };
+            let Some(origin) = lookup(glyph).map(|rect| rect.left) else {
+                return false;
+            };
+            let Some(probe) = Self::probe_at(self.body, &self.index, &self.runs, byte, origin)
+            else {
+                return false;
+            };
+            let Some(continuation) = Self::continuation(self.body, &self.index, &self.runs, &probe)
+            else {
+                return false;
+            };
+            let Some(end_glyph) = self.index.index_at_byte(self.body, proof_end) else {
+                return false;
+            };
+            Some((
+                probe,
+                continuation,
+                rectangles
+                    .iter()
+                    .copied()
+                    .filter(|rect| (glyph..end_glyph).contains(&rect.glyph))
+                    .collect::<Vec<_>>(),
+                glyph,
+            ))
+        } else {
+            None
+        };
+        let commit_end = next
+            .as_ref()
+            .map_or(self.index.len() - 1, |(_, _, _, glyph)| *glyph);
+        for glyph in self.index.anchor_glyphs().filter(|glyph| {
+            *glyph >= self.probe.glyph_start && (*glyph < commit_end || next.is_none())
+        }) {
+            let Some(rect) = lookup(glyph) else {
+                return false;
+            };
+            if self.anchors.last().is_none_or(|last| last.glyph != glyph) {
+                self.anchors.push(rect);
+            }
+        }
+        self.dimensions = Some((width, height));
+        self.scroll_width = self.scroll_width.max(scroll_width);
+        if let Some((probe, continuation, expected, _)) = next {
+            self.probe = probe;
+            self.continuation = continuation;
+            self.expected = expected;
+            // A small measured-DOM margin permits tab corrections in either
+            // direction without enormous global browser coordinates.
+            self.local_origin =
+                self.probe.origin.fract() + if self.has_tabs { 1024.0 } else { 0.0 };
+            self.retried = false;
+        } else {
+            self.finished = true;
+        }
+        true
+    }
+    pub fn finish(self) -> Option<(f64, HorizontalGeometry)> {
+        if !self.finished {
+            return None;
+        }
+        let (width, height) = self.dimensions?;
+        Some((
+            self.scroll_width,
+            HorizontalGeometry::new(self.index.len() - 1, width, height, self.anchors)?,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rectangles(plan: &ParagraphMeasurementPlan<'_>) -> Vec<GlyphRectangle> {
+        plan.targets()
+            .unwrap()
+            .into_iter()
+            .map(|glyph| GlyphRectangle {
+                glyph,
+                left: f64::from(u32::try_from(glyph).unwrap()) * 7.0,
+                top: 0.0,
+                width: 7.0,
+                height: 15.0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn probes_cover_admitted_source_and_preserve_complete_coordinates() {
+        for source in [
+            "word space ".repeat(95_000),
+            "文😀e\u{301}\t words ".repeat(40_000),
+            "x \u{301}word safe 🇺🇸👩‍👩‍👧‍👦 ".repeat(5000),
+        ] {
+            let index = VisualLineIndex::new(&source).unwrap();
+            let mut plan = ParagraphMeasurementPlan::new(&source, index.clone()).unwrap();
+            let mut previous = None;
+            while let Some(probe) = plan.probe().cloned() {
+                assert!(probe.bytes.len() <= MAX_PARAGRAPH_PROBE_BYTES);
+                assert!(previous.is_none_or(|old| probe.bytes.start > old));
+                assert_eq!(
+                    index.at(&source, probe.glyph_start),
+                    Some((probe.bytes.start, probe.native_start))
+                );
+                let end_glyph = index.index_at_byte(&source, probe.bytes.end).unwrap();
+                assert_eq!(index.at(&source, end_glyph).unwrap().0, probe.bytes.end);
+                let rectangles = rectangles(&plan);
+                let width = f64::from(u32::try_from(end_glyph).unwrap()) * 7.0;
+                assert!(plan.record(244.0, 15.0, width.max(244.0), &rectangles));
+                previous = Some(probe.bytes.start);
+            }
+            let (width, geometry) = plan.finish().unwrap();
+            assert_eq!(
+                width.to_bits(),
+                (f64::from(u32::try_from(index.len() - 1).unwrap()) * 7.0).to_bits()
+            );
+            let anchors = geometry.anchors(0..index.len() - 1).unwrap();
+            let mut expected = index.anchor_glyphs().collect::<Vec<_>>();
+            expected.dedup();
+            assert_eq!(
+                anchors.iter().map(|rect| rect.glyph).collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn mismatched_overlap_or_dimensions_never_advance_the_source() {
+        let source = "word space ".repeat(10_000);
+        let index = VisualLineIndex::new(&source).unwrap();
+        let mut plan = ParagraphMeasurementPlan::new(&source, index).unwrap();
+        let first = rectangles(&plan);
+        assert!(plan.record(244.0, 15.0, 200_000.0, &first));
+        let before = plan.probe().unwrap().bytes.clone();
+        let valid = rectangles(&plan);
+        let mut bad = valid.clone();
+        bad[0].left += 0.5;
+        assert!(!plan.record(244.0, 15.0, 300_000.0, &bad));
+        assert!(!plan.record(244.0, 16.0, 300_000.0, &valid));
+        assert!(!plan.record(244.0, 15.0, f64::NAN, &valid));
+        assert!(!plan.record(244.0, 15.0, 300_000.0, &valid[1..]));
+        assert_eq!(plan.probe().unwrap().bytes, before);
+        assert!(plan.record(244.0, 15.0, 300_000.0, &valid));
+        assert!(plan.finish().is_none());
+    }
+
+    #[test]
+    fn tab_grid_retry_preserves_source_and_requires_a_complete_second_proof() {
+        let source = "word \t space ".repeat(10_000);
+        let index = VisualLineIndex::new(&source).unwrap();
+        let mut plan = ParagraphMeasurementPlan::new(&source, index.clone()).unwrap();
+        let first = rectangles(&plan);
+        assert!(plan.record(244.0, 15.0, 200_000.0, &first));
+        let before = plan.probe().unwrap().bytes.clone();
+        let valid = rectangles(&plan);
+        let mut bad = valid.clone();
+        let glyph = plan
+            .expected
+            .iter()
+            .find(|rect| source.as_bytes()[index.at(&source, rect.glyph).unwrap().0] == b'\t')
+            .unwrap()
+            .glyph;
+        bad.iter_mut()
+            .find(|rect| rect.glyph == glyph)
+            .unwrap()
+            .width += 1.0;
+        let phase = plan.local_origin();
+        assert!(plan.retry_origin(&bad));
+        assert!((plan.local_origin() - phase - 1.0).abs() < f64::EPSILON);
+        assert_eq!(plan.probe().unwrap().bytes, before);
+        assert!(!plan.retry_origin(&bad));
+        assert!(!plan.record(244.0, 15.0, 300_000.0, &bad));
+        assert_eq!(plan.probe().unwrap().bytes, before);
+        assert!(plan.record(244.0, 15.0, 300_000.0, &valid));
+    }
+
+    #[test]
+    fn unsupported_paragraphs_require_complete_measurement() {
+        for source in [
+            "short".into(),
+            "word שלום ".repeat(10_000),
+            format!("e{}", "\u{301}".repeat(50_000)),
+        ] {
+            let index = VisualLineIndex::new(&source).unwrap();
+            assert!(ParagraphMeasurementPlan::new(&source, index).is_none());
+        }
+    }
+}
