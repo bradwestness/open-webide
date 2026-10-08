@@ -21,6 +21,8 @@ pub(super) struct SyntaxWork {
 struct EmbeddedWork {
     selected: std::vec::IntoIter<(Language, Range)>,
     old: std::vec::IntoIter<EmbeddedSyntax>,
+    retained: Option<std::vec::IntoIter<EmbeddedSyntax>>,
+    changed: Vec<EmbeddedSyntax>,
     unchanged: HashMap<(usize, usize), Vec<EmbeddedSyntax>>,
     next: Vec<EmbeddedSyntax>,
     current: Option<EmbeddedBody>,
@@ -176,63 +178,62 @@ impl SyntaxDocument {
             }
         }
     }
-    fn begin_embedded(
-        &mut self,
-        selected: Vec<(Language, Range)>,
-        edit: &InputEdit,
-        should_continue: &mut impl FnMut() -> bool,
-    ) -> Result<EmbeddedWork, SyntaxStatus> {
-        let mut unchanged: HashMap<(usize, usize), Vec<EmbeddedSyntax>> = HashMap::new();
-        let mut changed = Vec::new();
-        for mut body in std::mem::take(&mut self.embedded) {
-            if !should_continue() {
-                return Err(SyntaxStatus::Cancelled);
-            }
-            let bytes = if body.range.end_byte <= edit.start_byte {
-                Some(body.range.start_byte..body.range.end_byte)
-            } else if body.range.start_byte >= edit.old_end_byte {
-                Some(
-                    edit.new_end_byte + (body.range.start_byte - edit.old_end_byte)
-                        ..edit.new_end_byte + (body.range.end_byte - edit.old_end_byte),
-                )
-            } else {
-                None
-            };
-            if let Some(bytes) = bytes {
-                let range = Range {
-                    start_byte: bytes.start,
-                    end_byte: bytes.end,
-                    start_point: indexed_point(&self.source_lines, bytes.start),
-                    end_point: indexed_point(&self.source_lines, bytes.end),
-                };
-                if body.range != range
-                    && let Some(tree) = body.tree.as_mut()
-                {
-                    tree.edit(edit);
-                }
-                body.range = range;
-                unchanged
-                    .entry((bytes.start, bytes.end))
-                    .or_default()
-                    .push(body);
-            } else {
-                changed.push(body);
-            }
-        }
-
+    fn begin_embedded(&mut self, selected: Vec<(Language, Range)>) -> EmbeddedWork {
         #[cfg(test)]
         {
             self.embedded_parses = 0;
         }
-        Ok(EmbeddedWork {
+        EmbeddedWork {
             next: Vec::with_capacity(selected.len()),
             selected: selected.into_iter(),
-            old: changed.into_iter(),
-            unchanged,
+            old: Vec::new().into_iter(),
+            retained: Some(std::mem::take(&mut self.embedded).into_iter()),
+            changed: Vec::new(),
+            unchanged: HashMap::new(),
             current: None,
-        })
+        }
     }
 }
+impl EmbeddedWork {
+    fn retain_body(
+        &mut self,
+        mut body: EmbeddedSyntax,
+        edit: &InputEdit,
+        rows: &[crate::editor::lines::Line],
+    ) {
+        let bytes = if body.range.end_byte <= edit.start_byte {
+            Some(body.range.start_byte..body.range.end_byte)
+        } else if body.range.start_byte >= edit.old_end_byte {
+            Some(
+                edit.new_end_byte + (body.range.start_byte - edit.old_end_byte)
+                    ..edit.new_end_byte + (body.range.end_byte - edit.old_end_byte),
+            )
+        } else {
+            None
+        };
+        if let Some(bytes) = bytes {
+            let range = Range {
+                start_byte: bytes.start,
+                end_byte: bytes.end,
+                start_point: indexed_point(rows, bytes.start),
+                end_point: indexed_point(rows, bytes.end),
+            };
+            if body.range != range
+                && let Some(tree) = body.tree.as_mut()
+            {
+                tree.edit(edit);
+            }
+            body.range = range;
+            self.unchanged
+                .entry((bytes.start, bytes.end))
+                .or_default()
+                .push(body);
+        } else {
+            self.changed.push(body);
+        }
+    }
+}
+
 impl SyntaxWork {
     fn advance(
         &mut self,
@@ -274,11 +275,21 @@ impl SyntaxWork {
                     return Ok(false);
                 }
                 let selected = std::mem::take(&mut self.selection.selected);
-                self.embedded =
-                    Some(document.begin_embedded(selected, &self.edit, should_continue)?);
+                self.embedded = Some(document.begin_embedded(selected));
                 continue;
             }
             let embedded = self.embedded.as_mut().unwrap();
+            // Charge matching one retained body to the current batch. Cancellation
+            // and yield are checked by the same outer loop before the next body.
+            if let Some(retained) = embedded.retained.as_mut() {
+                if let Some(body) = retained.next() {
+                    embedded.retain_body(body, &self.edit, &document.source_lines);
+                } else {
+                    embedded.old = std::mem::take(&mut embedded.changed).into_iter();
+                    embedded.retained = None;
+                }
+                continue;
+            }
             if embedded.current.is_none() {
                 let Some((language, range)) = embedded.selected.next() else {
                     return Ok(true);
@@ -450,6 +461,119 @@ mod tests {
                 assert_eq!(limited.visited, super::super::MAX_FOLD_NODES);
                 assert_eq!(limited.advance(tree, document.provider, &source, &document.source_lines, &mut || true, &mut || false), Err(SyntaxStatus::TooLarge));
             }
+        }
+    }
+
+    #[test]
+    fn retained_body_matching_yields_and_cancels_without_partial_publication() {
+        for ending in ["\n", "\r\n"] {
+            let source = Arc::new(
+                (0..1_000)
+                    .map(|index| format!("Paragraph {index}: **文😀** and `code`.{ending}{ending}"))
+                    .collect::<String>(),
+            );
+            let changed = Arc::new(source.replacen("Paragraph 500:", "Changed paragraph 500:", 1));
+            let mut document = SyntaxDocument::new(Language::Markdown).unwrap();
+            assert!(matches!(
+                document.prepare_shared(source.clone(), 4, || true).0,
+                SyntaxStatus::Ready { .. }
+            ));
+            let mut previous_remaining = None;
+            let mut matching_batches = 0;
+            let result = loop {
+                let mut checks = 0;
+                let result = document.prepare_cooperative(
+                    changed.clone(),
+                    4,
+                    || true,
+                    || {
+                        checks += 1;
+                        checks >= 8
+                    },
+                );
+                if let Some(result) = result {
+                    break result;
+                }
+                assert!(!document.ready);
+                assert!(document.structure().is_none());
+                if let Some(remaining) = document
+                    .pending
+                    .as_ref()
+                    .and_then(|work| work.embedded.as_ref())
+                    .and_then(|work| work.retained.as_ref())
+                    .map(ExactSizeIterator::len)
+                {
+                    if let Some(previous) = previous_remaining {
+                        assert!(remaining < previous);
+                        assert!(
+                            previous - remaining < 8,
+                            "each body observes the batch boundary"
+                        );
+                    }
+                    previous_remaining = Some(remaining);
+                    matching_batches += 1;
+                }
+            };
+            assert!(matching_batches > 100);
+            assert_eq!(
+                document.embedded_parses, 1,
+                "matching preserves every unaffected tree"
+            );
+            let mut fresh = SyntaxDocument::new(Language::Markdown).unwrap();
+            let (_, expected) = fresh.prepare_shared(changed.clone(), 4, || true);
+            let expected = expected.unwrap();
+            assert_eq!(
+                serde_json::to_value(result.1.unwrap().transfer_data()).unwrap(),
+                serde_json::to_value(expected.transfer_data()).unwrap()
+            );
+
+            // Cancel while old bodies are still being matched, then recover fresh.
+            let replacement = Arc::new(changed.replacen("Paragraph 100:", "New paragraph 100:", 1));
+            let weak = Arc::downgrade(&replacement);
+            loop {
+                let mut checks = 0;
+                assert!(
+                    document
+                        .prepare_cooperative(
+                            replacement.clone(),
+                            4,
+                            || true,
+                            || {
+                                checks += 1;
+                                checks >= 8
+                            }
+                        )
+                        .is_none()
+                );
+                if document
+                    .pending
+                    .as_ref()
+                    .and_then(|work| work.embedded.as_ref())
+                    .is_some_and(|work| {
+                        work.retained
+                            .as_ref()
+                            .is_some_and(|bodies| bodies.len() > 0)
+                    })
+                {
+                    break;
+                }
+            }
+            assert_eq!(
+                document
+                    .prepare_cooperative(replacement.clone(), 4, || false, || false)
+                    .unwrap()
+                    .0,
+                SyntaxStatus::Cancelled
+            );
+            assert!(document.pending.is_none());
+            assert!(document.embedded.is_empty());
+            drop(replacement);
+            assert!(weak.upgrade().is_none());
+            let (_, recovered) = document.prepare_shared(changed, 4, || true);
+            assert_eq!(
+                serde_json::to_value(recovered.unwrap().transfer_data()).unwrap(),
+                serde_json::to_value(expected.transfer_data()).unwrap()
+            );
         }
     }
 

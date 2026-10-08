@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Match retained embedded syntax trees across worker batches, allowing yields and
+  cancellation between bodies while preserving unchanged-tree reuse.
+
 - Resume embedded-language selection across syntax worker batches, preserving
   traversal position, exact source ranges and cumulative node/code-body limits.
 

@@ -2227,3 +2227,21 @@ Retained-body matching and final metadata/paint assembly remain synchronous;
 this change does not prove a 100 ms wall-clock bound for the complete preparation
 pipeline. Cold layout, process memory, physical device checks and reliable CI
 remain completion gates.
+
+### Resumable retained-body matching (2026-10-08)
+
+Retained embedded syntax trees are now matched one body at a time in the shared
+preparation loop, rather than in a synchronous bulk pass. The pending task owns
+unmatched bodies, changed bodies and the exact-range reuse map; the same batch
+and cancellation checks precede each next body. After matching completes, parsing
+uses the unchanged source/range/provider rules and publishes only complete analysis.
+
+The native regression drives a middle-paragraph edit through more than 100
+matching batches for both LF and CRLF Unicode Markdown. It requires bounded
+per-batch body progress, exactly one affected paragraph parse, fresh publication
+equality, cancellation while retained bodies remain, source-buffer release and
+correct recovery. All 478 core tests and strict core/WASM frontend linting
+passed. The rebuilt release worker passed its normal grammar/delta/fallback
+checks and 1,189 forced scheduler yields with exact source, structure, folds and
+paint equality. Metadata/paint assembly and each individual Tree-sitter edit
+remain synchronous; a total preparation wall-clock bound is still unproved.
