@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Show the app logo and a clickable openwebide.com link in About, opening in a new browser tab. Use “project” in the app’s Open local/remote actions.
+
+- Nest sibling filename variants (such as docker-compose.ssh.yml) beneath their base files with expandable groups, keyboard navigation and reveal support in local and remote projects. Show creation actions only for folders and keep Reveal in Files on editor tabs.
+- Add Close to project and file tab menus and support middle-click closing with the existing unsaved-file prompts.
+
 - Use bounded startup input when restoring a caret in an eligible later long row,
   retaining its source selection, saved scroll and exact full-document geometry.
   Verify actual near-1-MiB Rust String highlighting through load, cached/uncached

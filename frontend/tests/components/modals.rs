@@ -294,6 +294,20 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
         assert!(text.contains(env!("CARGO_PKG_VERSION")));
         assert!(text.contains("Commit"));
         assert!(!text.contains("SIL OPEN FONT LICENSE"));
+        let website = mounted.element(".about-overview a");
+        assert_eq!(website.text_content().as_deref(), Some("openwebide.com"));
+        assert_eq!(
+            website.get_attribute("href").as_deref(),
+            Some("https://openwebide.com/")
+        );
+        assert_eq!(website.get_attribute("target").as_deref(), Some("_blank"));
+        assert!(
+            mounted
+                .root
+                .query_selector(".about-logo svg")
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(notice_call(&mock, "count").as_f64(), Some(0.0));
         let overview = mounted
             .element(".about-overview")

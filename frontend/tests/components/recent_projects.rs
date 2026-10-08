@@ -368,3 +368,65 @@ async fn project_tab_context_actions_preserve_chat_and_the_selected_anchor_in_bo
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn project_close_menu_and_middle_click_close_only_the_target_in_both_modes() {
+    use openwebide_frontend::state_actions::projects::{
+        ProjectsActionContext, build_projects_actions,
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            let projects = (1..=3)
+                .map(|id| {
+                    let mut project = state.projects.project(1).unwrap();
+                    project.id = id;
+                    project.mode = mode;
+                    project
+                })
+                .collect();
+            state.projects.projects.set(projects);
+            state.projects.open_tab_ids.set(vec![1, 2, 3]);
+            let actions = build_projects_actions(ProjectsActionContext {
+                api: state.api,
+                projects: state.projects,
+                workspace: state.workspace,
+                git: state.git,
+                chat: state.chat,
+                ui: state.ui,
+                ensure_root: Callback::new(|_| ()),
+                refresh_git: Callback::new(|()| ()),
+            });
+            view! { <TabBar on_select=actions.select_project on_select_chat=actions.select_chat on_close=actions.close_project on_tab_action=actions.tab_action /> }
+        });
+        settle().await;
+        let event = web_sys::MouseEventInit::new();
+        event.set_button(1);
+        event.set_bubbles(true);
+        event.set_cancelable(true);
+        mounted
+            .element("[data-project-tab='2']")
+            .dispatch_event(
+                &web_sys::MouseEvent::new_with_mouse_event_init_dict("auxclick", &event).unwrap(),
+            )
+            .unwrap();
+        settle().await;
+        assert_eq!(mounted.state.projects.open_tab_ids.get_untracked(), [1, 3]);
+        assert_eq!(
+            mounted.state.projects.active_project.get_untracked(),
+            Some(1)
+        );
+        mounted
+            .element("[data-project-tab='1']")
+            .dispatch_event(&web_sys::MouseEvent::new("contextmenu").unwrap())
+            .unwrap();
+        settle().await;
+        mounted.click_text("Close");
+        settle().await;
+        assert_eq!(mounted.state.projects.open_tab_ids.get_untracked(), [3]);
+        assert_eq!(
+            mounted.state.projects.active_project.get_untracked(),
+            Some(3)
+        );
+    }
+}

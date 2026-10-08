@@ -31,6 +31,7 @@ pub(super) fn EditorTabs() -> impl IntoView {
                     let label_path = path.clone();
                     let open_path = path.clone();
                     let close_path = path.clone();
+                    let middle_path = path.clone();
                     let keyboard_path = path.clone();
                     let menu_path = path.clone();
                     let action_path = path.clone();
@@ -50,7 +51,11 @@ pub(super) fn EditorTabs() -> impl IntoView {
                     });
                     let name = path.rsplit('/').next().unwrap_or(&path).to_string();
                     view! {
-                        <div class="tab editor-file-tab" class:active=move || selected.get() role="presentation" data-context-menu="">
+                        <div class="tab editor-file-tab" class:active=move || selected.get() role="presentation" data-context-menu=""
+                            on:mousedown=move |event: web_sys::MouseEvent| { if event.button() == 1 { event.prevent_default(); } }
+                            on:auxclick=move |event: web_sys::MouseEvent| {
+                                if event.button() == 1 { event.prevent_default(); event.stop_propagation(); if let Some(actions) = actions { actions.close_file.run(middle_path.clone()); } }
+                            }>
                             <super::file_tree::FileEntryMenu entry=entry context_only=true>
                                 <super::tab_actions::TabActionItems position=position on_action=on_tab_action />
                             </super::file_tree::FileEntryMenu>

@@ -36,6 +36,10 @@ pub fn TabBar(
                                 }
                                 data-project-tab=id.to_string()
                                 data-context-menu=""
+                                on:mousedown=move |event: web_sys::MouseEvent| { if event.button() == 1 { event.prevent_default(); } }
+                                on:auxclick=move |event: web_sys::MouseEvent| {
+                                    if event.button() == 1 { event.prevent_default(); event.stop_propagation(); on_close.run(id); }
+                                }
                                 on:click=move |_| on_select.run(id)
                             >
                                 <super::tab_actions::TabActions position=Signal::derive(move || projects.open_tab_ids.with(|tabs| tabs.iter().position(|tab| *tab == id).map(|index| (index, tabs.len())))) on_action=Callback::new(move |action| on_tab_action.run((id, action))) />

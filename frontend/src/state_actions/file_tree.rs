@@ -208,11 +208,18 @@ impl FileTreeActions {
                                 }
                             }
                         }
+                        let visible: Vec<_> = entries
+                            .iter()
+                            .filter(|entry| include_hidden || !entry.name.starts_with('.'))
+                            .cloned()
+                            .collect();
+                        let nested = openwebide_core::file_nesting::parents(&visible);
                         self.workspace.entries.update(|map| {
                             map.insert(dir.clone(), entries);
                         });
                         self.workspace.expanded.update(|expanded| {
                             expanded.insert(dir);
+                            expanded.extend(nested.into_values());
                         });
                     }
                     Err(error) => {

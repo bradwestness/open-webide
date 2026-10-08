@@ -1,6 +1,7 @@
 //! Ordering and target selection shared by project and file tabs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabAction {
+    Close,
     CloseOthers,
     CloseLeft,
     CloseRight,
@@ -14,6 +15,7 @@ impl TabAction {
             return Vec::new();
         };
         match self {
+            Self::Close => vec![selected.clone()],
             Self::CloseOthers => tabs
                 .iter()
                 .filter(|tab| *tab != selected)
@@ -46,6 +48,7 @@ mod tests {
     #[test]
     fn tab_actions_preserve_the_anchor_and_respect_edges() {
         let mut tabs = vec![1, 2, 3];
+        assert_eq!(TabAction::Close.targets(&tabs, &2), [2]);
         assert_eq!(TabAction::CloseOthers.targets(&tabs, &2), [1, 3]);
         assert_eq!(TabAction::CloseLeft.targets(&tabs, &2), [1]);
         assert_eq!(TabAction::CloseRight.targets(&tabs, &2), [3]);

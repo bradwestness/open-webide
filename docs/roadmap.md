@@ -218,7 +218,7 @@ autocomplete) into the editor while keeping the core diagnostics engine
 ### Phone device verification
 
 The compact app/editor rows, universal search, logo drawer, single status footer,
-on-demand pane controls, grouped menus, responsive dialogs, tree controls and Git icons/counts are implemented in
+on-demand pane controls, grouped menus, responsive dialogs, nested file groups, folder-only creation menus, middle-click tab closing, tree controls and Git icons/counts are implemented in
 both modes, with browser coverage for narrow layouts, focus restoration, keyboard
 navigation, inline header search with viewport-bounded results, stable file-tab geometry across preview availability changes, tooltip dismissal during pointer activation and scroll restoration, and review safeguards. Remaining checks need physical devices:
 

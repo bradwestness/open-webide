@@ -1092,6 +1092,9 @@ body {
   flex-shrink: 0;
 }
 
+.tree-disclosure { display: inline-flex; width: 18px; flex: none; }
+.tree-disclosure .icon-btn { width: 18px; height: 18px; padding: 0; }
+
 .tree-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3315,7 +3318,9 @@ button.browser-item {
 .about-modal .about-body { padding: 0; overflow: hidden; flex: 1; }
 .about-modal .about-content { padding: var(--space-6); min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; }
 .about-modal .about-overview { display: flex; align-items: safe center; justify-content: safe center; text-align: center; }
-.about-overview .about-build div { display: block; margin-bottom: var(--space-3); }
+.logo-mark.about-logo { width: 64px; height: 64px; margin-bottom: var(--space-3); }
+.about-overview > div { min-width: 0; max-width: 100%; }
+.about-overview .about-build div { display: flex; justify-content: center; flex-wrap: wrap; gap: 0 var(--space-2); margin-bottom: var(--space-2); }
 .about-modal .modal-header, .about-modal .modal-footer { flex-shrink: 0; }
 
 .slash-suggestions { max-height: 15rem; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); margin: var(--space-2) var(--space-3); }

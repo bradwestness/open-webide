@@ -545,3 +545,4 @@ pub use tasks::{
 };
 
 pub mod workspace_entries;
+pub mod file_nesting;

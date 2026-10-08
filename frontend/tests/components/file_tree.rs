@@ -20,6 +20,10 @@ export async function treeFolder() {
 }
 export function treeHandle(folder) {return folder.handle;}
 export async function treeCleanup(folder) {await folder.root.removeEntry(folder.name, {recursive:true});}
+export function treeMiddleClick(row, button) {
+    row.dispatchEvent(new MouseEvent('mousedown', {bubbles:true,cancelable:true,button}));
+    row.dispatchEvent(new MouseEvent('auxclick', {bubbles:true,cancelable:true,button}));
+}
 export function treeContext(row) {
     const box = row.getBoundingClientRect();
     row.dispatchEvent(new MouseEvent('contextmenu', {bubbles:true,cancelable:true,clientX:box.left+20,clientY:box.top+5}));
@@ -50,6 +54,7 @@ extern "C" {
     fn treeHandle(folder: &JsValue) -> JsValue;
     #[wasm_bindgen(catch)]
     async fn treeCleanup(folder: &JsValue) -> Result<(), JsValue>;
+    fn treeMiddleClick(row: &web_sys::HtmlElement, button: i16);
     fn treeContext(row: &web_sys::HtmlElement);
     fn treeLongPress(row: &web_sys::HtmlElement, move_pointer: bool);
     fn treeClipboardFallback() -> JsValue;
@@ -620,12 +625,20 @@ async fn tree_git_actions_share_both_adapters_and_report_failures() {
         }
         treeContext(&mounted.element(".tree-item"));
         wait_until("Git menu discovery", || {
-            mounted
+            let buttons = mounted
                 .root
                 .query_selector_all(".ui-dropdown-menu button:not(:disabled)")
-                .unwrap()
-                .length()
-                >= 11
+                .unwrap();
+            (0..buttons.length())
+                .filter_map(|index| buttons.item(index))
+                .filter(|button| {
+                    matches!(
+                        button.text_content().as_deref(),
+                        Some("Stage" | "Unstage" | "Revert changes")
+                    )
+                })
+                .count()
+                == 3
         })
         .await;
         if !local {
@@ -760,7 +773,13 @@ async fn changes_rows_share_git_and_chat_menus_and_review_uses_known_status() {
                 .find(|node| node.text_content().as_deref() == Some(label))
                 .unwrap()
         };
-        assert!(button("New folder").has_attribute("disabled"));
+        assert!(
+            !mounted
+                .element(".ui-dropdown-menu")
+                .text_content()
+                .unwrap()
+                .contains("New folder")
+        );
         assert!(!button("Review changes in chat").has_attribute("disabled"));
         mounted.click(".ui-dropdown-backdrop");
         treeContext(&mounted.element(".git-files .tree-item"));
@@ -1505,5 +1524,205 @@ async fn cached_file_refresh_retains_identical_text_and_applies_external_changes
         if let Some(folder) = folder {
             treeCleanup(&folder).await.unwrap();
         }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn nested_file_groups_menus_reveal_and_refresh_work_in_both_modes() {
+    use openwebide_core::vfs::VfsEntryKind;
+    for local in [false, true] {
+        let folder = if local {
+            Some(treeFolder().await.unwrap())
+        } else {
+            None
+        };
+        let (mounted, slot) = fixture(folder.as_ref().map(treeHandle));
+        settle().await;
+        let actions = slot.get().unwrap();
+        let files = Workspace::for_project(mounted.state.api, mounted.state.projects, 1).unwrap();
+        for path in [
+            "docker-compose.yml",
+            "docker-compose.ssh.yml",
+            "docker-compose.ssh.dev.yml",
+            "orphan.ssh.yml",
+        ] {
+            files.write(path, "Contents").await.unwrap();
+        }
+        files
+            .create("configs", VfsEntryKind::Directory)
+            .await
+            .unwrap();
+        let refresh = || async {
+            let entries = files.list("").await.unwrap();
+            mounted.state.workspace.entries.update(|map| {
+                map.insert("".into(), entries);
+            });
+            settle().await;
+        };
+        refresh().await;
+        assert!(
+            mounted
+                .root
+                .query_selector("[data-tree-path='docker-compose.ssh.yml']")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector("[data-tree-path='orphan.ssh.yml']")
+                .unwrap()
+                .is_some()
+        );
+        let base = mounted.element("[data-tree-path='docker-compose.yml']");
+        treeContext(&base);
+        settle().await;
+        let text = mounted.element(".ui-dropdown-menu").text_content().unwrap();
+        assert!(
+            !text.contains("New file")
+                && !text.contains("New folder")
+                && !text.contains("Reveal in Files")
+        );
+        mounted.click(".ui-dropdown-backdrop");
+        settle().await;
+        treeContext(&mounted.element("[data-tree-path='configs']"));
+        settle().await;
+        let text = mounted.element(".ui-dropdown-menu").text_content().unwrap();
+        assert!(text.contains("New file") && text.contains("New folder"));
+        mounted.click(".ui-dropdown-backdrop");
+        settle().await;
+        mounted.click("[aria-label='Expand docker-compose.yml']");
+        settle().await;
+        let variant = mounted.element("[data-tree-path='docker-compose.ssh.yml']");
+        assert_eq!(variant.get_attribute("aria-level").as_deref(), Some("2"));
+        assert!(mounted.state.workspace.open_file.get_untracked().is_none());
+        let key = web_sys::KeyboardEventInit::new();
+        key.set_key("ArrowLeft");
+        key.set_bubbles(true);
+        variant
+            .dispatch_event(
+                &web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &key)
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            base.is_same_node(
+                mounted
+                    .root
+                    .owner_document()
+                    .unwrap()
+                    .active_element()
+                    .as_ref()
+                    .map(|element| element.as_ref())
+            )
+        );
+        variant.click();
+        wait_until("nested file opened", || {
+            mounted.state.workspace.open_file.get_untracked().as_deref()
+                == Some("docker-compose.ssh.yml")
+                && !mounted.state.workspace.editor_loading.get_untracked()
+        })
+        .await;
+        actions.collapse_all();
+        settle().await;
+        actions.reveal("docker-compose.ssh.dev.yml");
+        wait_until("nested reveal focused", || {
+            actions.reveal_target.get_untracked().is_none()
+        })
+        .await;
+        assert_eq!(
+            mounted
+                .element("[data-tree-path='docker-compose.ssh.dev.yml']")
+                .get_attribute("aria-level")
+                .as_deref(),
+            Some("3")
+        );
+        assert_eq!(
+            mounted.state.workspace.open_file.get_untracked().as_deref(),
+            Some("docker-compose.ssh.yml")
+        );
+        actions.collapse_all();
+        settle().await;
+        actions.expand_all();
+        wait_until("groups expanded", || !actions.expanding.get_untracked()).await;
+        assert!(
+            mounted
+                .root
+                .query_selector("[data-tree-path='docker-compose.ssh.dev.yml']")
+                .unwrap()
+                .is_some()
+        );
+        let retained_variant = mounted.element("[data-tree-path='docker-compose.ssh.yml']");
+        // Removing the base must restore its variants to ordinary top-level rows.
+        files.delete("docker-compose.yml").await.unwrap();
+        refresh().await;
+        assert!(retained_variant.is_same_node(Some(
+            &mounted.element("[data-tree-path='docker-compose.ssh.yml']")
+        )));
+        assert_eq!(
+            mounted
+                .element("[data-tree-path='docker-compose.ssh.yml']")
+                .get_attribute("aria-level")
+                .as_deref(),
+            Some("1")
+        );
+        if let Some(folder) = folder {
+            treeCleanup(&folder).await.unwrap();
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn close_menu_and_middle_click_keep_file_dirty_guards_in_both_modes() {
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            for path in ["a.txt", "b.txt"] {
+                state.workspace.register_editor_tab(1, path.into());
+                state.workspace.open_file.set(Some(path.into()));
+                state.workspace.content.set(path.into());
+                state.workspace.retain_editor_buffer(false);
+            }
+            state.workspace.open_file.set(Some("a.txt".into()));
+            state.workspace.content.set("Unsaved".into());
+            state.workspace.dirty.set(true);
+            view! { {super::support::editor_view(state)} <ConfirmDialog /> }
+        });
+        settle().await;
+        let tab = mounted.element("[data-editor-tab='a.txt']");
+        treeMiddleClick(&tab, 2);
+        settle().await;
+        assert!(mounted.state.ui.confirm.get_untracked().is_none());
+        treeMiddleClick(&tab, 1);
+        settle().await;
+        assert!(mounted.state.ui.confirm.get_untracked().is_some());
+        assert!(
+            mounted.state.workspace.editor_tabs.get_untracked()[&1].contains(&"a.txt".to_string())
+        );
+        mounted.state.ui.clear_confirm();
+        treeContext(&mounted.element("[data-editor-tab='b.txt']"));
+        settle().await;
+        choose(&mounted, "Close");
+        settle().await;
+        assert_eq!(
+            mounted.state.workspace.editor_tabs.get_untracked()[&1],
+            ["a.txt"]
+        );
+        assert_eq!(
+            mounted.state.workspace.open_file.get_untracked().as_deref(),
+            Some("a.txt")
+        );
+        treeContext(&tab);
+        settle().await;
+        choose(&mounted, "Close");
+        settle().await;
+        assert!(mounted.state.ui.confirm.get_untracked().is_some());
+        mounted.click_text("Discard and close");
+        settle().await;
+        assert!(mounted.state.workspace.editor_tabs.get_untracked()[&1].is_empty());
     }
 }

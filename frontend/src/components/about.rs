@@ -1,6 +1,6 @@
 use super::{
     Modal,
-    ui::{DialogActions, DialogBody},
+    ui::{DialogActions, DialogBody, LogoMark},
 };
 use crate::state::ui::UiState;
 use leptos::prelude::*;
@@ -76,7 +76,13 @@ pub fn About() -> impl IntoView {
                         None => view! { <p role="status">"Loading open-source software…"</p> }.into_any(),
                     }
                 } else {
-                    view! { <div inner_html=OVERVIEW /> }.into_any()
+                    view! {
+                        <div>
+                            <LogoMark class="about-logo" />
+                            <div inner_html=OVERVIEW />
+                            <a href="https://openwebide.com/" target="_blank" rel="noopener noreferrer">"openwebide.com"</a>
+                        </div>
+                    }.into_any()
                 }}
             </div></DialogBody>
             <DialogActions><button class="btn" on:click=move |_| close.run(())>"Close"</button></DialogActions>

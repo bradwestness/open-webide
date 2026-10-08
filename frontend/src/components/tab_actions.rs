@@ -24,6 +24,7 @@ pub(super) fn TabActionItems(
     view! {
             <h3 class="ui-menu-heading">"Tab actions"</h3>
             {[
+                (TabAction::Close, "Close"),
                 (TabAction::CloseOthers, "Close others"),
                 (TabAction::CloseLeft, "Close all to left"),
                 (TabAction::CloseRight, "Close all to right"),
@@ -32,6 +33,7 @@ pub(super) fn TabActionItems(
             ].into_iter().map(move |(action, label)| view! {
                 <button type="button" class="ui-dropdown-item recent-item" role="menuitem"
                     disabled=move || position.get().is_none_or(|(index, count)| match action {
+                        TabAction::Close => false,
                         TabAction::CloseOthers => count < 2,
                         TabAction::CloseLeft | TabAction::MoveLeft => index == 0,
                         TabAction::CloseRight | TabAction::MoveRight => index + 1 >= count,

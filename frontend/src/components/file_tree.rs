@@ -8,6 +8,14 @@ use crate::state::{
     git::GitState, layout::LayoutState, projects::ProjectsState, workspace::WorkspaceState,
 };
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TreeRow {
+    entry: FileEntry,
+    depth: u32,
+    parent: String,
+    nested: bool,
+}
+
 /// A collapsible project file tree with directory contents loaded lazily and cached in
 /// `entries` (keyed by directory path, root = "").
 #[component]
@@ -36,8 +44,7 @@ pub fn FileTree(
     // following only expanded directories. Recomputes when `entries` or
     // `expanded` change. A flat list avoids a recursive component, which
     // would otherwise create a recursive opaque return type.
-    let flat = RwSignal::new(Vec::<(FileEntry, u32)>::new());
-    Effect::new(move || {
+    let flat = Memo::new(move |_| {
         let mut map = entries.get();
         for children in map.values_mut() {
             openwebide_core::vfs::sort_file_entries(children);
@@ -53,25 +60,65 @@ pub fn FileTree(
             }
         }
         let exp = expanded.get();
-        let mut result: Vec<(FileEntry, u32)> = Vec::new();
+        let mut result = Vec::new();
         fn traverse(
             map: &HashMap<String, Vec<FileEntry>>,
             exp: &HashSet<String>,
             dir: &str,
             depth: u32,
-            result: &mut Vec<(FileEntry, u32)>,
+            result: &mut Vec<TreeRow>,
         ) {
             if let Some(children) = map.get(dir) {
+                let parents = openwebide_core::file_nesting::parents(children);
+                let mut groups: HashMap<&str, Vec<&FileEntry>> = HashMap::new();
                 for child in children {
-                    result.push((child.clone(), depth));
-                    if child.is_dir && exp.contains(&child.path) {
-                        traverse(map, exp, &child.path, depth + 1, result);
+                    let parent = parents.get(&child.path).map_or(dir, String::as_str);
+                    groups.entry(parent).or_default().push(child);
+                }
+                append_group(map, exp, &groups, dir, depth, result);
+            }
+        }
+        fn append_group(
+            map: &HashMap<String, Vec<FileEntry>>,
+            exp: &HashSet<String>,
+            groups: &HashMap<&str, Vec<&FileEntry>>,
+            parent: &str,
+            depth: u32,
+            result: &mut Vec<TreeRow>,
+        ) {
+            if let Some(children) = groups.get(parent) {
+                for child in children {
+                    let nested = groups.contains_key(child.path.as_str());
+                    result.push(TreeRow {
+                        entry: (*child).clone(),
+                        depth,
+                        parent: parent.to_string(),
+                        nested,
+                    });
+                    if exp.contains(&child.path) {
+                        if child.is_dir {
+                            traverse(map, exp, &child.path, depth + 1, result);
+                        } else if nested {
+                            append_group(map, exp, groups, &child.path, depth + 1, result);
+                        }
                     }
                 }
             }
         }
         traverse(&map, &exp, "", 0, &mut result);
-        flat.set(result);
+        result
+    });
+    let row_details = Memo::new(move |_| {
+        flat.with(|rows| {
+            rows.iter()
+                .map(|row| {
+                    (
+                        row.entry.path.clone(),
+                        (row.depth, row.parent.clone(), row.nested),
+                    )
+                })
+                .collect::<HashMap<_, _>>()
+        })
     });
 
     Effect::new(move |_| {
@@ -82,6 +129,26 @@ pub fn FileTree(
         let Some(path) = actions.reveal_target.get() else {
             return;
         };
+        let parents = entries.with(|map| {
+            map.get(openwebide_core::workspace_entries::parent(&path))
+                .map(|children| openwebide_core::file_nesting::parents(children))
+                .unwrap_or_default()
+        });
+        let mut nested_parents = Vec::new();
+        let mut child = path.as_str();
+        while let Some(parent) = parents.get(child) {
+            nested_parents.push(parent.clone());
+            child = parent;
+        }
+        if workspace.expanded.with_untracked(|expanded| {
+            nested_parents
+                .iter()
+                .any(|parent| !expanded.contains(parent))
+        }) {
+            workspace
+                .expanded
+                .update(|expanded| expanded.extend(nested_parents));
+        }
         let epoch = actions.epoch.get();
         request_animation_frame(move || {
             if actions.epoch.try_get_untracked() != Some(epoch)
@@ -135,9 +202,11 @@ pub fn FileTree(
                         <div class="tree-root" role="tree" aria-label="Project files">
                             <For
                                 each=move || flat.get()
-                                key=move |entry| (projects.active_project.get_untracked(), entry.0.path.clone(), entry.0.is_dir)
-                                children=move |(entry, depth)| {
-                                    view! { <FileTreeEntry entry=entry depth=depth on_toggle=on_toggle on_open=on_open /> }
+                                key=move |row| (projects.active_project.get_untracked(), row.entry.path.clone(), row.entry.is_dir)
+                                children=move |row| {
+                                    let path = StoredValue::new(row.entry.path.clone());
+                                    let details = Signal::derive(move || row_details.with(|rows| rows.get(&path.get_value()).cloned().unwrap_or_default()));
+                                    view! { <FileTreeEntry entry=row.entry depth=Signal::derive(move || details.get().0) tree_parent=Signal::derive(move || details.get().1) nested=Signal::derive(move || details.get().2) on_toggle=on_toggle on_open=on_open /> }
 
                                 }
                             />
@@ -338,7 +407,9 @@ fn tree_rows(target: Option<web_sys::EventTarget>) -> Vec<web_sys::HtmlElement> 
 #[component]
 pub(super) fn FileTreeEntry(
     entry: FileEntry,
-    depth: u32,
+    #[prop(into)] depth: Signal<u32>,
+    #[prop(optional, into)] tree_parent: Signal<String>,
+    #[prop(optional, into)] nested: Signal<bool>,
     on_toggle: Callback<String>,
     on_open: Callback<String>,
     #[prop(default = false)] changes_only: bool,
@@ -348,12 +419,23 @@ pub(super) fn FileTreeEntry(
     let workspace = expect_context::<WorkspaceState>();
     let git = expect_context::<GitState>();
     let is_dir = entry.is_dir;
-    let name = entry.name.clone();
     let entry = StoredValue::new(entry);
     let root = NodeRef::<leptos::html::Div>::new();
     Effect::new(move |_| {
         if let Some(root) = root.get() {
-            let _ = root.set_attribute("aria-level", &(depth + 1).to_string());
+            let _ = root.set_attribute("aria-level", &(depth.get() + 1).to_string());
+        }
+    });
+    let toggle = Callback::new(move |()| {
+        if is_dir {
+            on_toggle.run(entry.get_value().path);
+        } else {
+            workspace.expanded.update(|expanded| {
+                let path = entry.get_value().path;
+                if !expanded.remove(&path) {
+                    expanded.insert(path);
+                }
+            });
         }
     });
     let activate = Callback::new(move |()| {
@@ -365,8 +447,8 @@ pub(super) fn FileTreeEntry(
     });
     view! {
         <div node_ref=root data-context-menu="" class=move || if workspace.open_file.get().as_deref() == Some(&entry.get_value().path) {"tree-item selected"} else {"tree-item"}
-            style=format!("padding-left: {}px", 8 + depth as usize * 14) tabindex="0" role="treeitem" aria-label=move || git.status.with(|repo| { let value = entry.get_value(); let status = repo.as_ref().and_then(|repo| repo.files.get(&value.path)); status.map_or(value.name.clone(), |status| format!("{}, {}", value.name, status.description())) }) data-tree-path=entry.get_value().path
-            aria-expanded=move || is_dir.then(|| workspace.expanded.with(|dirs| dirs.contains(&entry.get_value().path)).to_string())
+            style=move || format!("padding-left: {}px", 8 + depth.get() as usize * 14) tabindex="0" role="treeitem" aria-label=move || git.status.with(|repo| { let value = entry.get_value(); let status = repo.as_ref().and_then(|repo| repo.files.get(&value.path)); status.map_or(value.name.clone(), |status| format!("{}, {}", value.name, status.description())) }) data-tree-path=entry.get_value().path
+            aria-expanded=move || (is_dir || nested.get()).then(|| workspace.expanded.with(|dirs| dirs.contains(&entry.get_value().path)).to_string())
             on:click=move |_| activate.run(())
             on:keydown=move |event: web_sys::KeyboardEvent| {
                 if event.target().and_then(|target| target.dyn_into::<web_sys::Element>().ok())
@@ -377,13 +459,13 @@ pub(super) fn FileTreeEntry(
                     "ArrowDown" => rows.get(index + 1),
                     "ArrowUp" => rows.get(index.saturating_sub(1)),
                     "Home" => rows.first(), "End" => rows.last(),
-                    "ArrowRight" if is_dir => {
+                    "ArrowRight" if is_dir || nested.get_untracked() => {
                         if workspace.expanded.with_untracked(|dirs| dirs.contains(&entry.get_value().path)) {rows.get(index + 1)}
-                        else {on_toggle.run(entry.get_value().path); None}
+                        else {toggle.run(()); None}
                     }
                     "ArrowLeft" => {
-                        if is_dir && workspace.expanded.with_untracked(|dirs| dirs.contains(&entry.get_value().path)) {on_toggle.run(entry.get_value().path); None}
-                        else {rows.iter().find(|row| row.get_attribute("data-tree-path").as_deref() == Some(parent(&entry.get_value().path)))}
+                        if (is_dir || nested.get_untracked()) && workspace.expanded.with_untracked(|dirs| dirs.contains(&entry.get_value().path)) {toggle.run(()); None}
+                        else {rows.iter().find(|row| row.get_attribute("data-tree-path").as_deref() == Some(if changes_only {parent(&entry.get_value().path).to_string()} else {tree_parent.get_untracked()}.as_str()))}
                     }
                     _ => None,
                 };
@@ -393,6 +475,17 @@ pub(super) fn FileTreeEntry(
                 if matches!(event.key().as_str(), "Enter" | " ") {event.prevent_default(); activate.run(());}
             }
             >
+            {(!changes_only).then(|| view! {
+                <span class="tree-disclosure">
+                    <Show when=move || is_dir || nested.get()>
+                        <button type="button" class="icon-btn ui-icon" aria-label=move || format!("{} {}", if workspace.expanded.with(|paths| paths.contains(&entry.get_value().path)) {"Collapse"} else {"Expand"}, entry.get_value().name)
+                            on:keydown=move |event: web_sys::KeyboardEvent| { if matches!(event.key().as_str(), "Enter" | " ") { event.stop_propagation(); } }
+                            on:click=move |event| {event.stop_propagation(); toggle.run(());}>
+                            <Icon name=Signal::derive(move || if workspace.expanded.with(|paths| paths.contains(&entry.get_value().path)) {IconName::ChevronDown} else {IconName::ChevronRight}) />
+                        </button>
+                    </Show>
+                </span>
+            })}
             <span class=move || git.status.with(|repo| {
                 let path = entry.get_value().path;
                 let class = repo.as_ref().and_then(|repo| repo.files.get(&path).map(|status| status.css_class())).unwrap_or(if is_dir && repo.as_ref().is_some_and(|repo| repo.files.keys().any(|file| file.starts_with(&format!("{path}/")))) { "git-badge-modified" } else { "" });
@@ -403,7 +496,7 @@ pub(super) fn FileTreeEntry(
             })><Icon name=Signal::derive(move || if is_dir {
                 if workspace.expanded.with(|dirs| dirs.contains(&entry.get_value().path)) {IconName::FolderOpen} else {IconName::Folder}
             } else {IconName::File}) /></span>
-            <span class="tree-name">{name.clone()}</span>
+            <span class="tree-name">{entry.get_value().name}</span>
             {move || git.status.with(|repo| {
                 let repo = repo.as_ref()?;
                 let path = entry.get_value().path;
@@ -435,7 +528,6 @@ pub(super) fn FileEntryMenu(
     use openwebide_core::{
         git::{GitPathAction, GitPathChanges},
         vfs::VfsEntryKind,
-        workspace_entries::parent,
     };
     let git = expect_context::<GitState>();
     let actions = use_context::<FileTreeActions>();
@@ -562,15 +654,17 @@ pub(super) fn FileEntryMenu(
                     {owner.with(|| view! {
                         {children.as_ref().map(|children| children())}
                         {(!changes_only).then(|| view! {
-                        <h3 class="ui-menu-heading">"File"</h3>
-                        <button class="recent-item" role="menuitem" disabled=move || disabled.get()
-                            on:click=move |_| {let entry = entry.get_value(); actions.create(if is_dir {&entry.path} else {parent(&entry.path)}, VfsEntryKind::File);}>"New file"</button>
-                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !is_dir
-                            on:click=move |_| {let entry = entry.get_value(); actions.create(&entry.path, VfsEntryKind::Directory);}>"New folder"</button>
+                        <h3 class="ui-menu-heading">{if is_dir {"Folder"} else {"File"}}</h3>
+                        {is_dir.then(|| view! {
+                            <button class="recent-item" role="menuitem" disabled=move || disabled.get()
+                                on:click=move |_| actions.create(&entry.get_value().path, VfsEntryKind::File)>"New file"</button>
+                            <button class="recent-item" role="menuitem" disabled=move || disabled.get()
+                                on:click=move |_| actions.create(&entry.get_value().path, VfsEntryKind::Directory)>"New folder"</button>
+                        })}
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.move_entry(&entry.get_value(), true)>"Rename"</button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.move_entry(&entry.get_value(), false)>"Move"</button>
                         <button class="recent-item" role="menuitem" on:click=move |_| actions.copy_path(&entry.get_value().path)>"Copy path"</button>
-                        <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.reveal(&entry.get_value().path)>"Reveal in Files"</button>
+                        {context_only.then(|| view! { <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.reveal(&entry.get_value().path)>"Reveal in Files"</button> })}
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.delete(&entry.get_value())>"Delete"</button>
                         })}
                         <h3 class="ui-menu-heading">"Git"</h3>

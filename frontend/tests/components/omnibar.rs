@@ -286,12 +286,12 @@ async fn phone_drawer_and_desktop_menu_share_configuration_and_project_actions()
         assert!(tabs.top() >= top.top() && tabs.bottom() <= top.bottom() + 1.0);
         mounted.click("[aria-label='App menu']");
         settle().await;
-        mounted.click_text("Open local folder");
+        mounted.click_text("Open local project");
         settle().await;
         assert_eq!(opened.get_untracked(), 1);
         mounted.click("[aria-label='App menu']");
         settle().await;
-        mounted.click_text("Open remote folder");
+        mounted.click_text("Open remote project");
         settle().await;
         assert_eq!(opened.get_untracked(), 11);
         mounted.click("[aria-label='App menu']");
@@ -325,7 +325,7 @@ async fn phone_drawer_and_desktop_menu_share_configuration_and_project_actions()
         settle().await;
         let drawer = mounted.element(".app-drawer").get_bounding_client_rect();
         assert!(drawer.width() <= 340.0);
-        for item in ["Open local folder", "Open remote folder"] {
+        for item in ["Open local project", "Open remote project"] {
             let buttons = mounted
                 .element(".app-drawer")
                 .query_selector_all("button")
