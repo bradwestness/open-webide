@@ -1795,3 +1795,44 @@ contract (14.22 seconds). The 114 native frontend tests, strict WASM frontend li
 formatting and Trunk/PWA release build also pass. Linux CI for this combined
 checkpoint is still pending; the previously green startup checkpoint does not
 verify these later changes.
+
+
+### Styled transaction timing and bounded metadata attempts
+
+Combined checkpoint CI `37792246345` passed all five jobs, including the full-size
+styled Rust contract and restored-caret/shared-menu regressions. This does not
+verify the subsequent metadata change or complete the remaining Linux PSS,
+wrapped-layout, physical input and repeated responsiveness requirements.
+
+The [split transaction sample](editor-performance/styled-transaction-split.jsonl)
+uses the same near-1-MiB styled Rust String, loaded Monaspace Neon, both workspace
+modes and unchanged complete-renderer comparisons. The synchronous source
+transaction took 32.725 ms Local and 32.425 ms Remote; transaction-to-complete-paint
+was 1,290.325/1,263.765 ms. Initial styled paint took 1,427.890/1,388.395 ms. The
+focused run passed in 16.84 seconds. These individual observations distinguish
+source mutation from downstream layout; they do not establish input percentiles,
+whole-app main-thread responsiveness or an absence of other source-copy costs.
+
+Capped styled-run construction previously extended the entire long token before
+checking the retained run limit. It now retains no boundary beyond the budget
+and segments at most one additional run to detect overflow, instead of scanning
+the whole remaining token. A budget exhausted before a long token skips that
+token's segmentation entirely. Tests cover zero,
+small and production-cap budgets, including an admitted row with a nearly full
+short-token prefix and a final long token. Unicode/grapheme and normalized CRLF
+boundaries match complete construction when the budget fits; insufficient budgets
+return no partial run table. The existing complete-layout fallback remains.
+
+This bounds the rejected metadata attempt. Accepted initial rows still require
+complete original run boundaries, and over-limit/unsupported complete preparation
+and repeated-prefix fallback work remain on the roadmap. The retained cap itself,
+readiness deadlines, exact geometry tolerances and ownership checks are unchanged.
+
+
+Verification passes all 441 browser checks: 439 ordinary checks (including the
+18 WASM unit cases), the font matrix (15.36 seconds) and the near-limit plain-text
+contract (13.10 seconds). Both-mode load/scroll/edit geometry and ownership
+contracts remain unchanged. The 114 native frontend tests, strict WASM frontend
+lint, formatting and Trunk/PWA release build pass. The UI-only run-budget tests
+execute in WASM; the native frontend test set remains 114. Linux CI for this
+metadata checkpoint is still pending.

@@ -68,7 +68,8 @@ tracks the remaining work rather than every optimization already shipped.
   exact browser geometry.
 - [ ] **Incremental paragraph updates:** finish shifted suffix reuse and avoid
   repeated prefix segmentation for over-limit styled run tables. Initial run-table
-  construction and unsupported-boundary fallbacks still scan complete rows.
+  construction and unsupported-boundary fallbacks still scan complete rows;
+  capped metadata attempts now stop once their run budget is exceeded.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   lexical fallback/context assembly and changed-source lexical row-table

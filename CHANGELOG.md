@@ -14,6 +14,10 @@ for what's still ahead.
 - Nest sibling filename variants (such as docker-compose.ssh.yml) beneath their base files with expandable groups, keyboard navigation and reveal support in local and remote projects. Show creation actions only for folders and keep Reveal in Files on editor tabs.
 - Add Close to project and file tab menus and support middle-click closing with the existing unsaved-file prompts.
 
+- Stop capped styled editor run-table construction as soon as the metadata budget
+  is exceeded, avoiding unused long-token suffix scanning and allocation. Preserve
+  complete run boundaries, Unicode/CRLF handling and complete-layout fallback.
+
 - Use bounded startup input when restoring a caret in an eligible later long row,
   retaining its source selection, saved scroll and exact full-document geometry.
   Verify actual near-1-MiB Rust String highlighting through load, cached/uncached
