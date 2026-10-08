@@ -430,7 +430,9 @@ rescanning prefixes for UTF-16 conversion. Duplicate composition commits use the
 same borrowed comparison and leave selections/history unchanged. Complete-value
 comparison remains linear in unchanged prefix/suffix text. Chunks retain complete
 Unicode characters and never split a CRLF pair; normalization at chunk edges uses
-the same directional character iterator as native text generation.
+the same directional character iterator as native text generation. Cold geometry
+probes, cropped row paint and visual cursor measurements use this borrowed check
+to validate DOM text without allocating temporary normalized source strings.
 Ambiguous repeated-text edits retain the original selected occurrence. IME previews
 validate eventual secondary edits against the same byte, line and long-line limits
 before publishing the primary change, and failed

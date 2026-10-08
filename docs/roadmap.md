@@ -162,7 +162,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   publish shared handles; external write/recovery transfers retain owned strings.
   Document initialization shares host text, and projection provenance also validates
   the document version when multiple documents share one allocation. Reduce remaining
-  diff shaping, serialization and native-text materialization. Unfolded projections share immutable document
+  diff shaping, serialization and native-text materialization. Cold row probes,
+  cropped paint and visual motion now validate DOM text through the shared borrowed
+  native comparison without temporary normalized source copies.
+  Unfolded projections share immutable document
   source, including LF native text; folded views reserve visible bytes and move
   assembled strings into shared storage. Unused projection caches release source
   before edits, while retained views and composition baselines detach on change.
@@ -191,7 +194,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   process-memory stalls remain. Cold-probe traces separate rendering, DOM installation,
   row layout and source geometry; use those measurements, then repeat admitted byte,
   row-count and long-line boundary workloads in both modes, including Linux Chrome
-  PSS and the unresponsive wrapped cases. Broader startup scroll latency and
+  PSS and the unresponsive wrapped cases. Fresh Linux Chromium 154 runs complete
+  all sixteen wrapped/unwrapped boundary cases with PSS observations, but long-line
+  cold paint/input and row-count input still take seconds; isolate those phases and
+  repeat after fixing them. Broader startup scroll latency and
   initial-shaping samples remain unverified despite bounded steady-state paint.
   See [recorded measurements](editor-performance.md).
 - **Selections and files:** finish real-device input/IME/clipboard verification

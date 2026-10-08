@@ -178,7 +178,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
                         return scroll && getComputedStyle(scroll).position === 'absolute' ? scroll : input;
                     };
                     window.editorViewMeasurement = {maxFrameMs: 0, inputAt: 0,
-                        longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0, phase: "cold", probes: [], batches: [], workers: [], fonts: [], traceTruncated: false};
+                        longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0, phase: "cold", probes: [], batches: [], workers: [], fonts: [], nativeEvents: [], traceTruncated: false};
                     if (__TRACE__) {
                         const batches = new WeakMap();
                         window.__openwebideEditorProbeTiming = (paint, phase, elapsedMs, units) => {
@@ -243,6 +243,38 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
                             events.push(record);
                             return record;
                         }
+                        // Native extent reads can force whole-source layout before
+                        // a bounded window is installed. Keep this separate from
+                        // the styled row probes, and never read value just to log it.
+                        function nativeRecord(input, kind) {
+                            if (!(input instanceof HTMLTextAreaElement) ||
+                                !input.matches('.editor-textarea, [data-editor-path]')) return null;
+                            const record = recordEvent(editorViewMeasurement.nativeEvents, kind);
+                            if (record) record.bound = input.dataset.editorNativeBound === 'true';
+                            return record;
+                        }
+                        for (const property of ['scrollWidth', 'scrollHeight']) {
+                            const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, property);
+                            if (!descriptor?.get) continue;
+                            Object.defineProperty(Element.prototype, property, {
+                                ...descriptor,
+                                get() {
+                                    const record = nativeRecord(this, property), started = performance.now();
+                                    try { return descriptor.get.call(this); }
+                                    finally { if (record) record.elapsedMs = performance.now() - started; }
+                                }
+                            });
+                        }
+                        const nativeValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+                        if (nativeValue?.set) Object.defineProperty(HTMLTextAreaElement.prototype, 'value', {
+                            ...nativeValue,
+                            set(value) {
+                                const record = nativeRecord(this, 'value'), started = performance.now();
+                                if (record) record.nativeLength = typeof value === 'string' ? value.length : null;
+                                try { return nativeValue.set.call(this, value); }
+                                finally { if (record) record.elapsedMs = performance.now() - started; }
+                            }
+                        });
                         for (const kind of ["loading", "loadingdone", "loadingerror"])
                             document.fonts.addEventListener(kind, event => {
                                 const record = recordEvent(editorViewMeasurement.fonts, kind);
@@ -365,7 +397,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
                     "afterInputWasmCommittedBytes": tasks["wasmBytes"],
                     "longTasks": tasks["longTasks"], "longTaskMs": tasks["longTaskMs"],
                     "maxLongTaskMs": tasks["maxLongTaskMs"], "maxFrameIncludingInputMs": tasks["maxFrameMs"],
-                    **({"layoutProbes": tasks["probes"], "preparationBatches": tasks["batches"], "workerEvents": tasks["workers"], "fontEvents": tasks["fonts"], "traceTruncated": tasks["traceTruncated"]} if trace else {})}
+                    **({"layoutProbes": tasks["probes"], "preparationBatches": tasks["batches"], "workerEvents": tasks["workers"], "fontEvents": tasks["fonts"], "nativeEvents": tasks["nativeEvents"], "traceTruncated": tasks["traceTruncated"]} if trace else {})}
         except (AssertionError, TimeoutError, RuntimeError) as error:
             observed = samples.finish() if samples else {}
             samples = None

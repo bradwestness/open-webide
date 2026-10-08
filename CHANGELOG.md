@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Validate editor paint and cursor geometry against borrowed, newline-normalized source instead of creating temporary normalized copies for cold probes, cropped rows and visual motion.
+
 - Compare complete native editor input in borrowed byte chunks, falling back to character normalization at CR/LF and Unicode edges. Keep minimal source edits, duplicate composition detection and LF/CRLF behavior shared across workspace adapters.
 
 - Validate embedded-language range points through the parser’s incremental source-row index instead of rebuilding whole-file line starts. Share point mapping with parser edits and preserve invalid-range and cancellation fallbacks.

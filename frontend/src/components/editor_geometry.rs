@@ -198,7 +198,10 @@ pub(super) fn preparation_geometry(
         return None;
     }
     let text = row.text_content()?;
-    if text.strip_suffix('\n').unwrap_or(&text) != body.replace('\r', "\n") {
+    if !openwebide_core::editor::textarea_value_matches(
+        body,
+        text.strip_suffix('\n').unwrap_or(&text),
+    ) {
         return None;
     }
     let mut glyphs = Glyphs::new(row, body, Some(index))?;
@@ -218,7 +221,10 @@ fn window_paint_row(
     geometry: &mut Option<openwebide_core::editor::MeasuredRowGeometry>,
 ) -> Option<()> {
     let text = row.text_content()?;
-    if text.strip_suffix('\n').unwrap_or(&text) != body.replace('\r', "\n") {
+    if !openwebide_core::editor::textarea_value_matches(
+        body,
+        text.strip_suffix('\n').unwrap_or(&text),
+    ) {
         return None;
     }
     use openwebide_core::editor::RowPaintWindow;
@@ -723,10 +729,10 @@ pub(super) fn visual_layout(
     if !parent.class_list().contains("highlight-ready")
         || projection.byte_to_textarea(start_byte).ok()? != start
         || projection.byte_to_textarea(end_byte).ok()? != end
-        || projection.text()[start_byte..end_byte]
-            .replace("\r\n", "\n")
-            .replace('\r', "\n")
-            != painted
+        || !openwebide_core::editor::textarea_value_matches(
+            &projection.text()[start_byte..end_byte],
+            &painted,
+        )
     {
         return None;
     }
@@ -794,7 +800,10 @@ impl RowMeasurement<'_> {
             .or_else(|| raw.strip_suffix('\n'))
             .unwrap_or(raw);
         let painted = row.text_content()?;
-        if painted.strip_suffix('\n').unwrap_or(&painted) != body.replace('\r', "\n") {
+        if !openwebide_core::editor::textarea_value_matches(
+            body,
+            painted.strip_suffix('\n').unwrap_or(&painted),
+        ) {
             return None;
         }
         let bounds = row.get_bounding_client_rect();

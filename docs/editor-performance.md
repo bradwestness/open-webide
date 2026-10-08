@@ -865,3 +865,48 @@ The final implementation passes all 367 browser component tests, including
 the eight controlled font-load outcomes across both modes, and all-target WASM
 Clippy. Production probes use disposable state; native folder permission,
 physical PWA input, Linux PSS and uninstrumented latency gates remain open.
+
+## Fresh Linux boundary observations
+
+On 2026-10-07, the release build at `abc6e4a` completed sixteen fresh-process
+Linux Chromium 154 cases: 2 MiB, near 8 MiB, 100,000 rows and a near 1 MiB Unicode
+line, wrapped/unwrapped in local/remote projects. Each case retained bounded native
+input and completed cold paint, destination scrolling and a trusted insertion.
+The container retained the 10 GiB memory/four-core configuration and CJK/emoji
+fonts. These are single observations per mode, without probe instrumentation;
+input timing starts at `beforeinput`. The following ranges cover the two modes,
+not repeated-run percentiles. PSS is the largest sampled peak, including startup.
+
+| Layout | Case | Cold range ms | Input range ms | Scroll range ms | Peak Chrome PSS GiB |
+| --- | --- | ---: | ---: | ---: | ---: |
+| wrapped | medium | 3793–3985 | 726–745 | 26–34 | 1.23 |
+| wrapped | byte-limit | 7486–7915 | 434–473 | 34–36 | 2.15 |
+| wrapped | line-limit | 4389–4598 | 1658–1658 | 24–34 | 1.27 |
+| wrapped | long-line | 16808–16923 | 4356–4634 | 36–41 | 2.79 |
+| unwrapped | medium | 1745–2383 | 72–735 | 12–25 | 0.87 |
+| unwrapped | byte-limit | 2387–2434 | 430–457 | 32–35 | 1.07 |
+| unwrapped | line-limit | 3451–3504 | 1649–1669 | 25–34 | 0.97 |
+| unwrapped | long-line | 11672–11822 | 3749–4130 | 20–22 | 0.83 |
+
+Raw records: [wrapped](editor-performance/production-linux-native-chunks-wrapped.jsonl),
+[unwrapped](editor-performance/production-linux-native-chunks-unwrapped.jsonl).
+Chrome subprocess exits made one initial unwrapped PSS sample unavailable; that
+case retained later, peak and final PSS samples. The records preserve the missing
+value instead of substituting summed RSS.
+
+The runs establish functional boundary coverage and current memory observations,
+but contradict completion of cold/long-line responsiveness. The long paragraph
+still causes multi-second tasks, and row-count input needs profiling. Isolated
+phase traces and repeated runs are needed to attribute those costs; these results
+cannot be compared directly to older Chrome/build/font observations. Geometry
+validation's subsequent removal of temporary normalized source copies is a
+separate change, not a measured speedup in these records. Keep cold shaping,
+incremental measurement, long-row input and responsiveness verification open.
+
+The opt-in `--trace` harness now also records native textarea value-write lengths
+and `scrollWidth`/`scrollHeight` read durations, with the installed binding state
+and phase. This distinguishes native layout from styled-row probe timings without
+reading/copying the textarea value for diagnostics. A disposable small Linux case
+verified all three event kinds and the complete-to-window value transition. The
+trace check is instrumentation validation, not an isolated performance sample;
+use it to profile long-line and row-count cases next.
