@@ -367,6 +367,7 @@ impl EditorActions {
                 revision,
                 completed: 0,
                 total,
+                paint: None,
             },
         ));
         Some(ticket)
@@ -375,7 +376,7 @@ impl EditorActions {
         self.workspace
             .editor_row_preparation
             .with_untracked(|preparation| {
-                preparation.is_some_and(|preparation| {
+                preparation.as_ref().is_some_and(|preparation| {
                     preparation.ticket == ticket
                         && preparation.revision
                             == self.workspace.editor_view_revision.get_untracked()
@@ -387,7 +388,9 @@ impl EditorActions {
     pub fn row_geometry_is_pending(self) -> bool {
         let revision = self.view_revision();
         self.workspace.editor_row_preparation.with(|preparation| {
-            preparation.is_some_and(|preparation| preparation.revision == revision)
+            preparation
+                .as_ref()
+                .is_some_and(|preparation| preparation.revision == revision)
         }) && self.measured_rows().is_none()
     }
     pub fn report_row_preparation(self, ticket: u64, completed: usize) {

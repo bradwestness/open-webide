@@ -11758,11 +11758,167 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
 }
 
 #[wasm_bindgen_test]
+fn in_flight_font_metrics_require_current_preparation_ownership_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Indentation, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for change in 0..10 {
+            let slot = Rc::new(Cell::new(None::<EditorActions>));
+            let captured = slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("font-scope.txt".into()));
+                state.workspace.content.set("value 文😀\n".into());
+                captured.set(Some(EditorActions::new(state.workspace)));
+                view! { <div/> }
+            });
+            let actions = slot.get().unwrap();
+            actions.prepare_edit(Selection::caret(0)).unwrap();
+            let metrics = "loaded face and CSS metrics";
+            assert!(actions.font_measurements_changed(Some(metrics)));
+            let projection = actions.projection().unwrap();
+            let ticket = actions
+                .begin_row_preparation(actions.view_revision(), projection.lines().len())
+                .unwrap();
+            assert!(
+                actions.font_measurements_changed(Some(metrics)),
+                "a ticket alone proves no font environment"
+            );
+            let (paint, _) = actions
+                .prepare_row_measurements(
+                    metrics.into(),
+                    projection,
+                    (false, Arc::new(Vec::new())),
+                    Arc::from([0, 0]),
+                    Indentation::default(),
+                    false,
+                )
+                .unwrap();
+            assert!(!actions.retain_row_preparation(ticket.wrapping_add(1), &paint));
+            assert!(actions.retain_row_preparation(ticket, &paint));
+            assert!(actions.retain_row_preparation(ticket, &paint));
+            let mut replacement = paint.clone();
+            replacement.metrics = "different environment on the same ticket".into();
+            assert!(!actions.retain_row_preparation(ticket, &replacement));
+            assert!(!actions.font_measurements_changed(Some(metrics)));
+            assert!(actions.font_measurements_changed(Some("changed face or CSS metrics")));
+            assert!(actions.font_measurements_changed(None));
+            assert!(
+                actions.measured_rows().is_none(),
+                "pending provenance publishes no geometry"
+            );
+            assert!(
+                mounted
+                    .state
+                    .workspace
+                    .editor_paragraph_cache
+                    .get_untracked()
+                    .is_none()
+            );
+            let workspace = mounted.state.workspace;
+            match change {
+                0 => {
+                    let next = actions
+                        .begin_row_preparation(actions.view_revision(), 2)
+                        .unwrap();
+                    assert!(actions.font_measurements_changed(Some(metrics)));
+                    assert!(!actions.retain_row_preparation(ticket, &paint));
+                    assert!(actions.retain_row_preparation(next, &paint));
+                    actions.end_row_preparation(ticket);
+                    assert!(
+                        !actions.font_measurements_changed(Some(metrics)),
+                        "old completion retains the replacement's provenance"
+                    );
+                    actions.end_row_preparation(next);
+                    assert!(actions.font_measurements_changed(Some(metrics)));
+                    continue;
+                }
+                1 => actions.invalidate_measured_font(),
+                2 => actions.invalidate_measured_rows(),
+                3 => {
+                    workspace.begin_editor_read();
+                }
+                4 => workspace.pending_epoch.update(|epoch| *epoch += 1),
+                5 => mounted
+                    .state
+                    .auth
+                    .generation
+                    .update(|generation| *generation += 1),
+                6 => workspace.active_project.set(Some(2)),
+                7 => workspace.open_file.set(Some("other.txt".into())),
+                8 => workspace.content.set("changed source\n".into()),
+                _ => workspace
+                    .editor_fold_revision
+                    .update(|revision| *revision += 1),
+            }
+            assert!(
+                actions.font_measurements_changed(Some(metrics)),
+                "stale font provenance: {mode:?}, change {change}"
+            );
+            assert!(!actions.retain_row_preparation(ticket, &paint));
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
     #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
     export function auditParagraphReadiness() {
         const previous = window.__openwebideEditorProbeTiming;
         const started = performance.now(), probes = new Map();
+        const layout = new Map(), restores = [];
+        const record = (node, name, elapsed) => {
+            if (!node.closest?.('.editor')) return;
+            const key = `${node.className}.${name}`;
+            const value = layout.get(key) ?? {calls:0, milliseconds:0, maximum:0};
+            value.calls++; value.milliseconds += elapsed;
+            if (elapsed > value.maximum) {
+                value.maximum = elapsed;
+                if (elapsed > 100) value.stack = new Error().stack;
+            }
+            layout.set(key, value);
+        };
+        // Include the first native layout, before a row probe exists. Keep the
+        // original getter/result and restore descriptors after each mode.
+        for (const name of ['clientWidth', 'clientHeight', 'scrollWidth', 'scrollHeight', 'offsetLeft']) {
+            let owner = HTMLElement.prototype;
+            while (owner && !Object.hasOwn(owner, name)) owner = Object.getPrototypeOf(owner);
+            const descriptor = owner && Object.getOwnPropertyDescriptor(owner, name);
+            if (!descriptor?.get || !descriptor.configurable) continue;
+            Object.defineProperty(owner, name, {...descriptor, get() {
+                const before = performance.now();
+                const result = descriptor.get.call(this);
+                const elapsed = performance.now() - before;
+                record(this, name, elapsed);
+                return result;
+            }});
+            restores.push(() => Object.defineProperty(owner, name, descriptor));
+        }
+        const native = HTMLTextAreaElement.prototype;
+        const value = Object.getOwnPropertyDescriptor(native, 'value');
+        Object.defineProperty(native, 'value', {...value, set(text) {
+            const before = performance.now();
+            try { return value.set.call(this, text); }
+            finally { record(this, 'value-set', performance.now() - before); }
+        }});
+        restores.push(() => Object.defineProperty(native, 'value', value));
+        for (const [owner, name] of [[native, 'setSelectionRange'], [Element.prototype, 'getBoundingClientRect']]) {
+            const descriptor = Object.getOwnPropertyDescriptor(owner, name);
+            Object.defineProperty(owner, name, {...descriptor, value(...args) {
+                const before = performance.now();
+                try { return descriptor.value.apply(this, args); }
+                finally { record(this, name, performance.now() - before); }
+            }});
+            restores.push(() => Object.defineProperty(owner, name, descriptor));
+        }
         window.__openwebideEditorProbeTiming = (paint, phase, elapsed, units) => {
             let probe = probes.get(paint);
             if (!probe) {
@@ -11782,6 +11938,7 @@ async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
                     classes: root.querySelector('.editor-code')?.className,
                     nativeUnits: input?.value.length,
                     bound: input?.dataset.editorNativeBound,
+                    layout: Object.fromEntries(layout),
                     fonts: [...document.fonts].map(face => ({family:face.family,status:face.status})),
                     probes: [...probes.values()].map(({node, phases}) => ({
                         connected:node.isConnected,
@@ -11791,6 +11948,7 @@ async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
                 });
             },
             restore() {
+                restores.reverse().forEach(restore => restore());
                 if (previous === undefined) delete window.__openwebideEditorProbeTiming;
                 else window.__openwebideEditorProbeTiming = previous;
             }

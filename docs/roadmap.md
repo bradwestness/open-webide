@@ -82,6 +82,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   from large integer CSS lengths; the styled rounding counterexample matches complete
   geometry in both adapters. See the [candidate check](editor-performance.md#exact-origin-suffix-candidate-check).
   Cold probes briefly await the selected font, with bounded fallback and fresh ownership checks.
+  In-flight jobs now retain their original font/layout environment so matching
+  trusted font notifications can retain current work; unknown, changed and stale
+  environments still refresh. Initial native layout remains expensive, and the
+  near-limit Linux readiness timeout still needs reliable CI verification.
   The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)
   records why Rust shaping and canvas widths cannot replace current DOM geometry directly.
   Advance diagnostics confirm accumulation drift and missing font/tab integration;

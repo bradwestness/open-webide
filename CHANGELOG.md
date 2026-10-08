@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Retain current in-flight editor measurements when a trusted font notification
+  reports identical face availability and CSS metrics. Preserve refreshes for
+  changed metrics, stale ownership and unknown measurement environments.
+
 - Show the active filename, project and conversation in the browser tab and app window title, updating when they change.
 
 - Keep the app-menu logo at its compact size and align the brand label in desktop and phone navigation.

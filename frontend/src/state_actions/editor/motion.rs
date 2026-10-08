@@ -194,6 +194,7 @@ impl EditorActions {
             .editor_row_preparation
             .with_untracked(|preparation| {
                 preparation
+                    .as_ref()
                     .filter(|preparation| self.row_preparation_current(preparation.ticket))
                     .map(|preparation| (preparation.ticket, preparation.completed))
             });

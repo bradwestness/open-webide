@@ -1392,6 +1392,10 @@ fn HighlightOverlay(
                 actions.end_row_preparation(ticket);
                 return;
             };
+            if !actions.retain_row_preparation(ticket, &paint) {
+                actions.end_row_preparation(ticket);
+                return;
+            }
             let geometry_paint = paint.clone();
             let result = super::editor_rows::measure_batches(
                 actions,

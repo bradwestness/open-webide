@@ -1665,3 +1665,37 @@ fonts, no row probes yet and no bounded-native declaration. That points to cold
 startup/native layout before row preparation; it is not proof of the Linux
 failure's cause. The next CI failure can show whether probes started, were
 cancelled, or fell back to complete measurement.
+
+### Native installation and in-flight font notifications
+
+CI run `37774838140` again passed four jobs and the ordinary/font browser
+contracts, then failed the unchanged near-limit readiness deadline. Its first
+diagnostic report arrived at 28,768 ms with the complete 748,980-unit native
+value, loaded Neon faces and no row probes. CI reliability remains unproved.
+
+The [native installation trace](editor-performance/native-install-before.jsonl)
+separates text installation, selection restoration and browser layout reads.
+Text installation took less than 0.5 ms and selection restoration less than
+0.02 ms. The first scroll-surface width read during native scroll restoration
+forced 3,803 ms of layout in Local and 3,145 ms in Remote. These are single Mac
+Chrome observations, not Linux timings or latency percentiles. Combining scroll
+updates and sizing an empty textarea before installing text did not improve
+startup in their local samples; neither production candidate is retained.
+
+The same trace records a disconnected 16-probe job followed by a new job with
+an advanced font/layout generation. Previously a trusted font notification
+always invalidated in-flight measurements because only completed geometry could
+establish identical metrics. The shared facade now retains each current ticket's
+original paint environment. A matching notification can retain that job without
+publishing partial geometry. Missing provenance, changed face availability/CSS
+metrics and stale source/view/read/account/project/file ownership still invalidate;
+synthetic notifications retain their explicit refresh behavior.
+
+The both-mode ownership regression verifies matching/changed/unknown metrics,
+immutable ticket provenance, replacement-ticket cleanup, and font, layout, view,
+read, source, pending-edit, account, project and file invalidation. All 428 browser
+checks pass: 426 ordinary checks, the font matrix (15.37 seconds), and the
+near-limit differential contract (21.59 seconds). Those elapsed samples do not
+prove startup latency or CI reliability; the complete-native layout remains.
+The 114 native frontend tests, strict WASM frontend lint, formatting and
+Trunk/PWA release build also pass.

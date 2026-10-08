@@ -184,12 +184,13 @@ pub struct EditorRowCache {
     pub rows: openwebide_core::editor::MeasuredRows,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct EditorRowPreparation {
     pub ticket: u64,
     pub revision: u64,
     pub completed: usize,
     pub total: usize,
+    pub paint: Option<EditorRowPaint>,
 }
 
 /// Scroll position for a document's edit view; caret and selection live in Document.

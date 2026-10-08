@@ -565,12 +565,45 @@ impl EditorActions {
         }
         Some((paint, plan))
     }
-    /// A native notification can arrive after geometry already used the loaded
-    /// face. Retain only current, source/account-owned measurements with identical
-    /// actual face availability and CSS metrics; unknown geometry still refreshes.
+    /// Keep the original measurement environment until this ticket ends. Native
+    /// font notifications may arrive after the job already observed loaded faces.
+    pub fn retain_row_preparation(self, ticket: u64, paint: &EditorRowPaint) -> bool {
+        if !self.row_preparation_current(ticket) || !self.row_paint_current(paint) {
+            return false;
+        }
+        self.workspace
+            .editor_row_preparation
+            .try_update(|preparation| {
+                let Some(preparation) = preparation.as_mut() else {
+                    return false;
+                };
+                if let Some(original) = preparation.paint.as_ref() {
+                    return same_paint_scope(original, paint)
+                        && original.projection.shares_text_version(&paint.projection);
+                }
+                preparation.paint = Some(paint.clone());
+                true
+            })
+            .unwrap_or(false)
+    }
+
+    /// Retain completed or in-flight source/account-owned measurements only when
+    /// actual face availability and CSS metrics match. Unknown geometry refreshes.
     pub fn font_measurements_changed(self, metrics: Option<&str>) -> bool {
-        self.measured_rows()
-            .is_none_or(|rows| Some(rows.metrics.as_str()) != metrics)
+        if let Some(rows) = self.measured_rows() {
+            return Some(rows.metrics.as_str()) != metrics;
+        }
+        !self
+            .workspace
+            .editor_row_preparation
+            .with_untracked(|preparation| {
+                preparation.as_ref().is_some_and(|preparation| {
+                    preparation.revision == self.workspace.editor_view_revision.get_untracked()
+                        && preparation.paint.as_ref().is_some_and(|paint| {
+                            self.row_paint_current(paint) && Some(paint.metrics.as_str()) == metrics
+                        })
+                })
+            })
     }
     pub fn invalidate_measured_font(self) {
         self.workspace
