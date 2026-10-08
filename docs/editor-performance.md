@@ -2055,4 +2055,4 @@ source paint using the production CSS: Chromium's overflowing textarea omits its
 rather than loosening the oracle. Complete native height and exact glyph/source
 comparisons remain independent. No wrapped/bidirectional startup, physical IME,
 Linux memory percentile or whole-goal completion claim follows from these passes.
-CI still needs confirmation on the pushed checkpoint.
+Linux/runtime and physical-input evidence remain separate roadmap gates.

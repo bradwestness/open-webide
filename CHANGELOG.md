@@ -11,7 +11,7 @@ for what's still ahead.
 
 - Move session goals into a compact, clickable chat statusline indicator with an on-demand context panel. Show active/paused/completed states and persist elapsed completion time across reloads in both workspace modes. Restore approval-mode colors in the statusline and menu.
 
-- Add optional Web Push for finished remote and projectless runs and pending approvals, including child agents. Settings enables each browser subscription; notifications identify the project/session and open that chat. Persist server VAPID keys, account-owned subscriptions and a bounded retry queue, discard expired/resolved alerts, and suppress notifications for the attended chat. Local projects retain app-open notifications.
+- Add optional Web Push for finished remote and projectless runs and pending approvals, including child agents. Settings enables each browser subscription; notifications identify the project/session and open that chat. Persist server VAPID keys, account-owned subscriptions and a bounded retry queue, discard expired/resolved alerts, and suppress notifications for the attended chat. Local projects retain app-open notifications. Include the notification setup guide in the website navigation.
 
 - Match Git changes row density to the file explorer automatically on desktop
   and phone layouts.
