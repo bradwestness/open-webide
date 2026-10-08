@@ -155,12 +155,12 @@ test('About and notices remain available on offline navigation without API reque
 function pushWorker({user = 7, enabled = true, clients = [], offline = false} = {}) {
   const host = worker(async url => {
     if (offline) throw Error('offline');
-    return new Response(JSON.stringify(url === '/api/auth/me' ? {user: {id: user}} : {browser_notifications: String(enabled)}));
+    return new Response(JSON.stringify({user_id: user, enabled}));
   });
   // Recreate with browser primitives so the worker exercises its real handlers.
   const shown = [], opened = [], handlers = {};
   const context = {BUILD_ID: 'push', SHELL_FILES: [], URL, Request, MessageChannel, setTimeout, clearTimeout,
-    fetch: async (url, options) => {assert.equal(options.headers['x-openwebide'], '1'); if (offline) throw Error('offline'); return new Response(JSON.stringify(url === '/api/auth/me' ? {user: {id: user}} : {browser_notifications: String(enabled)}));},
+    fetch: async (url, options) => {assert.equal(options.headers['x-openwebide'], '1'); if (offline) throw Error('offline'); return new Response(JSON.stringify({user_id: user, enabled}));},
     self: {location: {origin: 'https://ide.test'}, clients: {matchAll: async () => clients, openWindow: async url => opened.push(url)}, registration: {showNotification: async (...args) => shown.push(args)}, addEventListener: (name, action) => {handlers[name] = action;}}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8'), context);
   const data = {title: 'Run finished · Project', body: 'Session', tag: 'openwebide-11-done:20', user_id: 7, session_id: 11};
