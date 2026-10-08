@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add a reproducible paragraph-mutation probe with fresh Chrome processes, production font/run markup, geometry checks and explicit timeout records. Record why retaining DOM nodes alone does not resolve admitted Unicode paragraph stalls.
+
 - Size the editor gutter from the current document’s source-row index, retaining hidden fold rows and the final empty row. Restore native input directly from the projection’s normalized value without making temporary whole-file newline replacements.
 
 - Flush pending source paint before an editor pointer gesture when background analysis has temporarily invalidated readiness. Keep source/account validation and exact glyph hit-testing for bounded native input.

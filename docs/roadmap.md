@@ -209,6 +209,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   cold paint/input still take seconds. Isolated traces attributed row-count input
   to frame waits and repeated rules detection; twelve repeated samples after those
   fixes show 230–250 ms input paint, with cold paint still around 2–3 seconds.
+  The [retained paragraph mutation check](editor-performance.md#retained-paragraph-mutation-check)
+  verifies that a DOM cache alone still causes multi-second Unicode updates, even
+  with the current grapheme-run markup. Build bounded paragraph preparation rather
+  than treating node retention as proof of incremental shaping.
   Continue profiling cold/long-line phases and repeat after fixing them. Broader startup scroll latency and
   initial-shaping samples remain unverified despite bounded steady-state paint.
   See [recorded measurements](editor-performance.md).

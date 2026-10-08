@@ -241,7 +241,7 @@ class Browser:
             self.stop()
             raise
 
-    def call(self, method, path, body=None, session=True):
+    def call(self, method, path, body=None, session=True, timeout=30):
         prefix = "/session/" + self.session if session else ""
         request = urllib.request.Request(
             self.url + prefix + path,
@@ -249,7 +249,7 @@ class Browser:
             headers={"Content-Type": "application/json"}, method=method,
         )
         try:
-            with self.client.open(request, timeout=30) as response:
+            with self.client.open(request, timeout=timeout) as response:
                 return json.loads(response.read())["value"]
         except urllib.error.HTTPError as error:
             detail = json.loads(error.read()).get("value", {})

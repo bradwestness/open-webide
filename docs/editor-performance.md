@@ -958,3 +958,66 @@ cases (Rust/C#/JSON, short/scrolled and wrapped Rust) and four bounded-native
 composition cases (local/remote, LF/CRLF). The cold unwrapped contract specifically
 clicks a scrolled source row while full measurements are pending, then verifies
 insertion at the source offset and retained whole-file extents.
+
+## Retained paragraph mutation check
+
+`tools/measure-editor-row-update.py` isolates paragraph mutation using the built
+stylesheet, Monaspace Neon with texture healing/ligatures enabled, and fresh
+Chromium 154 processes. The Linux container retains the 10-GiB/four-core limits
+and CJK/emoji fallback fonts. It compares minimal `Text.replaceData`, replacing
+text data and rebuilding nodes after initial layout. Each completed case checks
+complete text and compares row width/height plus one sampled caret across methods.
+These checks do not prove every glyph or end-to-end application input behavior.
+
+The first single-text-node surrogate completed 27 cases, then timed out on the
+first wrapped Unicode case even with a 180-second command deadline. Its missing
+wrapped result is recorded explicitly. This surrogate does not match the editor's
+existing 512-byte, grapheme-preserving `editor-text-run` markup, and its glyph
+geometry differs; it must not be used as an application performance estimate.
+A separate 4,096-unit, space-boundary split completed one wrapped Unicode sample
+in about 4.5 seconds, but still retained a multi-second input task.
+
+The matching plain-run fixture then completed all 36 cases: ASCII/Unicode,
+wrapped/unwrapped, three update methods and three repetitions. A midpoint `X`
+insertion retained row dimensions and sampled caret positions across methods
+within 0.25 CSS pixels. Median elapsed times in milliseconds:
+
+| Source/layout | Minimal edit total | Minimal edit mutation | Minimal edit layout | Set data total | Rebuild total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ASCII, unwrapped | 112 | 110 | 3 | 124 | 947 |
+| ASCII, wrapped | 120 | 88 | 32 | 163 | 937 |
+| Unicode, unwrapped | 3483 | 3474 | 10 | 3272 | 3762 |
+| Unicode, wrapped | 3508 | 3428 | 80 | 3432 | 3986 |
+
+Rebuild totals include JavaScript `Intl.Segmenter` and DOM creation in this
+isolated fixture; the application builds markup in Rust. Those totals cannot be
+substituted for measured application rebuild costs. More importantly, minimal
+mutation still performs multi-second work on Unicode even when the subsequent
+rectangle read is short. A retained DOM cache alone therefore does not establish
+responsive admitted paragraphs. Keep bounded cold/changed paragraph preparation,
+font fallback, bidi windows and application latency/PSS verification open.
+Chromium's [inline layout description](https://chromium.googlesource.com/chromium/src/+/main/third_party/blink/renderer/core/layout/inline/README.md)
+and [LayoutNG overview](https://developer.chrome.com/docs/chromium/layoutng)
+explain the paragraph-level shaping/cache boundary; DOM node identity alone is
+not evidence that an update is local.
+
+Raw records: [single-node surrogate, including timeout](editor-performance/layout-row-mutation-linux.jsonl),
+[space-boundary split](editor-performance/layout-row-mutation-split-wrapped.jsonl),
+[matching plain-run fixture](editor-performance/layout-row-mutation-production-runs.jsonl).
+The timeout footer on the first record was added after the old harness terminated;
+new runs emit timeout records directly. The body mutation/geometry phases of that
+failed wrapped command remain unresolved. No PSS was collected by this isolated
+probe, and no native folder handle was granted. Existing both-mode application
+contracts and their performance gates remain separate.
+
+Reproduce the matching fixture after building the frontend/backend, using the
+existing measurement image (no new Cargo target):
+
+```bash
+docker run --rm --init --shm-size=1g --memory=10g --cpus=4 \
+  --mount type=bind,src="$PWD",dst=/workspace/repos/openwebide \
+  --entrypoint python3 openwebide:editor-view-measurements \
+  tools/measure-editor-row-update.py --repeat 3 --source ascii unicode \
+  --operations production-replace-data production-set-data production-replace-node \
+  --timeout 60
+```
