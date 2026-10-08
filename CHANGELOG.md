@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Flush pending source paint before an editor pointer gesture when background analysis has temporarily invalidated readiness. Keep source/account validation and exact glyph hit-testing for bounded native input.
+
+- Schedule cooperative lexical rendering by elapsed preparation time, with a hard batch cap and conservative clock fallback. Memoize shared editor rules so missing/failed config reads do not re-detect settings on every ownership check. Keep task yields, source/default/file invalidation and stale-source cancellation between batches.
+
 - Validate editor paint and cursor geometry against borrowed, newline-normalized source instead of creating temporary normalized copies for cold probes, cropped rows and visual motion.
 
 - Compare complete native editor input in borrowed byte chunks, falling back to character normalization at CR/LF and Unicode edges. Keep minimal source edits, duplicate composition detection and LF/CRLF behavior shared across workspace adapters.

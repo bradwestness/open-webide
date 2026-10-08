@@ -12,101 +12,6 @@ struct PublishedSyntax {
     analysis: std::sync::Arc<openwebide_core::editor::SyntaxAnalysis>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::state::{auth::AuthState, workspace::WorkspaceState};
-    use std::sync::Arc;
-
-    #[wasm_bindgen_test::wasm_bindgen_test]
-    fn syntax_requests_share_source_across_pending_queries_and_tab_settings() {
-        Owner::new().with(|| {
-            let workspace = WorkspaceState::new();
-            workspace.active_project.set(Some(1));
-            workspace.open_file.set(Some("same.rs".into()));
-            workspace
-                .content
-                .set("fn main() { 文😀(); }\r\n".repeat(1000).into());
-            let actions = EditorActions::new(workspace);
-            let first = actions.syntax_scope().unwrap();
-            let second = actions.syntax_scope().unwrap();
-            assert!(Arc::ptr_eq(&first.source, &second.source));
-            assert!(Arc::ptr_eq(
-                &first.source,
-                &workspace.content.get_untracked().shared()
-            ));
-            assert_eq!(first.source_revision, second.source_revision);
-            assert!(actions.syntax_source_retained(&second));
-            let mut indentation = actions.rules_untracked().indentation;
-            indentation.tab_width = first.tab_width + 4;
-            actions.set_indentation(indentation);
-            let changed = actions.syntax_scope().unwrap();
-            assert!(Arc::ptr_eq(&first.source, &changed.source));
-            assert_ne!(first.tab_width, changed.tab_width);
-            assert!(!actions.syntax_scope_current(&first));
-            assert!(actions.syntax_scope_current(&changed));
-            assert_eq!(first.source_revision, changed.source_revision);
-            workspace.content.set(first.source.to_string().into());
-            assert!(!actions.syntax_scope_current(&changed));
-            let refreshed = actions.syntax_scope().unwrap();
-            assert!(Arc::ptr_eq(&first.source, &refreshed.source));
-            assert_ne!(refreshed.source_revision, changed.source_revision);
-            assert!(actions.syntax_source_retained(&refreshed));
-            let mut external = refreshed.clone();
-            external.source = Arc::new(refreshed.source.as_ref().clone());
-            assert!(!actions.syntax_source_retained(&external));
-            assert!(actions.syntax_scope_current(&external));
-            external.source = Arc::new("forged source".to_owned());
-            assert!(!actions.syntax_scope_current(&external));
-            workspace.open_file.set(None);
-            assert!(actions.syntax_scope().is_none());
-            assert!(workspace.editor_syntax_scope.get_untracked().is_none());
-        });
-    }
-
-    #[wasm_bindgen_test::wasm_bindgen_test]
-    fn syntax_source_cache_rejects_content_and_ownership_changes_and_reset() {
-        Owner::new().with(|| {
-            let auth = AuthState::new();
-            provide_context(auth);
-            let workspace = WorkspaceState::new();
-            workspace.active_project.set(Some(1));
-            workspace.open_file.set(Some("same.rs".into()));
-            workspace.content.set("same source\r\n文😀".into());
-            let actions = EditorActions::new(workspace);
-            let initial = actions.syntax_scope().unwrap();
-            let mut previous = initial.clone();
-            for change in 0..6 {
-                match change {
-                    0 => workspace.content.set("changed source\r\n文😀".into()),
-                    1 => workspace.active_project.set(Some(2)),
-                    2 => workspace.open_file.set(Some("other.rs".into())),
-                    3 => workspace.pending_epoch.update(|epoch| *epoch += 1),
-                    4 => workspace
-                        .editor_read_revision
-                        .update(|revision| *revision += 1),
-                    _ => auth.generation.update(|generation| *generation += 1),
-                }
-                let next = actions.syntax_scope().unwrap();
-                assert!(Arc::ptr_eq(
-                    &workspace.content.get_untracked().shared(),
-                    &next.source
-                ));
-                if change == 0 {
-                    assert!(!Arc::ptr_eq(&previous.source, &next.source));
-                }
-                assert!(!actions.syntax_scope_current(&previous));
-                assert!(actions.syntax_scope_current(&next));
-                previous = next;
-            }
-            assert_eq!(initial.source.as_ref(), "same source\r\n文😀");
-            workspace.reset();
-            assert!(workspace.editor_syntax_scope.get_untracked().is_none());
-            assert!(!actions.syntax_scope_current(&previous));
-        });
-    }
-}
-
 impl EditorActions {
     pub(super) fn syntax_scope(self) -> Option<EditorSyntaxScope> {
         let Some(key) = self.key() else {
@@ -425,7 +330,10 @@ impl EditorActions {
                 if !current() {
                     return;
                 }
-                let mut batches = 1_usize;
+                let mut batches = 0_usize;
+                let clock = web_sys::window().and_then(|window| window.performance());
+                let now = || clock.as_ref().map_or(f64::NAN, web_sys::Performance::now);
+                let mut frame_started = now();
                 while !lexical.is_complete() {
                     if !current() {
                         return;
@@ -436,10 +344,13 @@ impl EditorActions {
                     );
                     batches += 1;
                     if !lexical.is_complete() {
-                        if batches
-                            .is_multiple_of(openwebide_core::highlight::LEXICAL_BATCHES_PER_FRAME)
-                        {
+                        if openwebide_core::highlight::lexical_frame_due(
+                            batches,
+                            now() - frame_started,
+                        ) {
                             crate::util::yield_frame().await;
+                            batches = 0;
+                            frame_started = now();
                         } else {
                             crate::util::yield_task().await;
                         }
@@ -631,6 +542,101 @@ impl EditorActions {
                 }
                 running.set(false);
             });
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{auth::AuthState, workspace::WorkspaceState};
+    use std::sync::Arc;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn syntax_requests_share_source_across_pending_queries_and_tab_settings() {
+        Owner::new().with(|| {
+            let workspace = WorkspaceState::new();
+            workspace.active_project.set(Some(1));
+            workspace.open_file.set(Some("same.rs".into()));
+            workspace
+                .content
+                .set("fn main() { 文😀(); }\r\n".repeat(1000).into());
+            let actions = EditorActions::new(workspace);
+            let first = actions.syntax_scope().unwrap();
+            let second = actions.syntax_scope().unwrap();
+            assert!(Arc::ptr_eq(&first.source, &second.source));
+            assert!(Arc::ptr_eq(
+                &first.source,
+                &workspace.content.get_untracked().shared()
+            ));
+            assert_eq!(first.source_revision, second.source_revision);
+            assert!(actions.syntax_source_retained(&second));
+            let mut indentation = actions.rules_untracked().indentation;
+            indentation.tab_width = first.tab_width + 4;
+            actions.set_indentation(indentation);
+            let changed = actions.syntax_scope().unwrap();
+            assert!(Arc::ptr_eq(&first.source, &changed.source));
+            assert_ne!(first.tab_width, changed.tab_width);
+            assert!(!actions.syntax_scope_current(&first));
+            assert!(actions.syntax_scope_current(&changed));
+            assert_eq!(first.source_revision, changed.source_revision);
+            workspace.content.set(first.source.to_string().into());
+            assert!(!actions.syntax_scope_current(&changed));
+            let refreshed = actions.syntax_scope().unwrap();
+            assert!(Arc::ptr_eq(&first.source, &refreshed.source));
+            assert_ne!(refreshed.source_revision, changed.source_revision);
+            assert!(actions.syntax_source_retained(&refreshed));
+            let mut external = refreshed.clone();
+            external.source = Arc::new(refreshed.source.as_ref().clone());
+            assert!(!actions.syntax_source_retained(&external));
+            assert!(actions.syntax_scope_current(&external));
+            external.source = Arc::new("forged source".to_owned());
+            assert!(!actions.syntax_scope_current(&external));
+            workspace.open_file.set(None);
+            assert!(actions.syntax_scope().is_none());
+            assert!(workspace.editor_syntax_scope.get_untracked().is_none());
+        });
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn syntax_source_cache_rejects_content_and_ownership_changes_and_reset() {
+        Owner::new().with(|| {
+            let auth = AuthState::new();
+            provide_context(auth);
+            let workspace = WorkspaceState::new();
+            workspace.active_project.set(Some(1));
+            workspace.open_file.set(Some("same.rs".into()));
+            workspace.content.set("same source\r\n文😀".into());
+            let actions = EditorActions::new(workspace);
+            let initial = actions.syntax_scope().unwrap();
+            let mut previous = initial.clone();
+            for change in 0..6 {
+                match change {
+                    0 => workspace.content.set("changed source\r\n文😀".into()),
+                    1 => workspace.active_project.set(Some(2)),
+                    2 => workspace.open_file.set(Some("other.rs".into())),
+                    3 => workspace.pending_epoch.update(|epoch| *epoch += 1),
+                    4 => workspace
+                        .editor_read_revision
+                        .update(|revision| *revision += 1),
+                    _ => auth.generation.update(|generation| *generation += 1),
+                }
+                let next = actions.syntax_scope().unwrap();
+                assert!(Arc::ptr_eq(
+                    &workspace.content.get_untracked().shared(),
+                    &next.source
+                ));
+                if change == 0 {
+                    assert!(!Arc::ptr_eq(&previous.source, &next.source));
+                }
+                assert!(!actions.syntax_scope_current(&previous));
+                assert!(actions.syntax_scope_current(&next));
+                previous = next;
+            }
+            assert_eq!(initial.source.as_ref(), "same source\r\n文😀");
+            workspace.reset();
+            assert!(workspace.editor_syntax_scope.get_untracked().is_none());
+            assert!(!actions.syntax_scope_current(&previous));
         });
     }
 }

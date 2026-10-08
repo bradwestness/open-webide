@@ -910,3 +910,51 @@ reading/copying the textarea value for diagnostics. A disposable small Linux cas
 verified all three event kinds and the complete-to-window value transition. The
 trace check is instrumentation validation, not an isolated performance sample;
 use it to profile long-line and row-count cases next.
+
+## Row-count input scheduling and rules detection
+
+Isolated release traces at parent `94ef898` separated the two remaining costs:
+[row input](editor-performance/production-linux-row-input-trace.jsonl) and
+[layout/native input](editor-performance/production-linux-layout-input-trace.jsonl).
+On 100,000-row input, the native `input` handler took about 16 ms and the changed
+row probe about 0.3 ms, but lexical fallback waited one animation frame per eight
+128-row batches (roughly 98 frames). A near-1-MiB wrapped paragraph instead spent
+about 3.5 seconds measuring its changed full row; that separate cost remains.
+
+Lexical fallback now uses a four-millisecond preparation budget per animation
+frame with a 64-batch hard cap, retaining task yields and ownership validation
+between batches. Missing/invalid clocks retain the conservative eight-batch
+fallback. An intermediate build reduced remote row-count input to about 243 ms,
+but local input remained about 1.1 seconds even in isolated repeated runs.
+Profiling ownership checks found repeated full-source rules detection when a
+loaded configuration entry was unavailable. The shared facade now memoizes rules
+and invalidates on source, preferences, loaded configuration, override and file/
+project changes. Neither adapter implements its own rules or scheduling policy.
+
+Three fresh-process samples per mode/layout on Linux Chromium 154 used the
+working release module `3b3fccc397b4a4fd` on parent `94ef898` with both changes.
+Input timing starts at trusted `beforeinput`; the same 10-GiB/four-core container
+and CJK/emoji fonts were retained. Medians and observed input ranges follow:
+
+| Layout | Mode | Cold median ms | Input median ms | Input range ms | Peak Chrome PSS GiB |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Wrapped | Local | 3208 | 244 | 241–249 | 1.24 |
+| Wrapped | Remote | 3112 | 244 | 241–250 | 1.27 |
+| Unwrapped | Local | 1983 | 238 | 230–238 | 0.97 |
+| Unwrapped | Remote | 2005 | 237 | 236–238 | 0.97 |
+
+Raw records: [wrapped](editor-performance/production-linux-lexical-rules-wrapped.jsonl),
+[unwrapped](editor-performance/production-linux-lexical-rules-unwrapped.jsonl).
+These twelve observations establish the row-count improvement; they do not
+establish interactive latency percentiles or resolve cold shaping and long-row
+measurement. Local fixtures recover source without a browser directory handle,
+so physical native folder permissions remain a separate gate. A later pointer
+readiness fix flushes a pending validated source frame before a click; its release
+module differs and is not included in these timing records.
+
+Validation passed 438 core tests, all 408 WASM browser tests and strict all-targets
+frontend Clippy. The updated release app also passed fourteen trusted pointer
+cases (Rust/C#/JSON, short/scrolled and wrapped Rust) and four bounded-native
+composition cases (local/remote, LF/CRLF). The cold unwrapped contract specifically
+clicks a scrolled source row while full measurements are pending, then verifies
+insertion at the source offset and retained whole-file extents.

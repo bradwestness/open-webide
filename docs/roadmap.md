@@ -58,6 +58,8 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Cold probes briefly await the selected font, with bounded fallback and fresh ownership checks.
   The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)
   records why Rust shaping and canvas widths cannot replace current DOM geometry directly.
+  Pointer gestures flush pending source paint before resolving current glyph
+  coordinates, including cold bounded native windows during analysis updates.
   Terminal lexical paint prepares in cooperative, source-owned batches; worker and
   fallback updates reuse exact source/context rows and share their immutable token
   allocations. Worker replies reference validated unchanged token rows and publish
@@ -100,6 +102,12 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   validated UTF-8 replacement span, preserving incoming-state checks and terminal
   row handling. Source-change comparison and changed-source table assembly still
   traverse the source; rows intersecting the span retain raw-byte validation.
+  Cooperative lexical rendering now uses a 4 ms elapsed budget with a 64-batch
+  hard cap, retaining task yields and conservative clock fallback instead of a
+  frame wait after every eight cheap batches.
+  Shared rules resolution is memoized even when config reads fail, preventing
+  fallback source detection on every preparation ownership check. Source,
+  defaults, loaded rules and file/project changes invalidate the cached result.
   Shared change comparison now uses byte chunks and UTF-8 edge adjustment, with
   native/WASM before-after measurements; unchanged text still needs comparison.
   Parser fallback metadata and lexical folding now scan borrowed source without

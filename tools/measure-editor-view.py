@@ -253,6 +253,17 @@ def measure(case, mode, wrapped, trace=False, repetition=1):
                             if (record) record.bound = input.dataset.editorNativeBound === 'true';
                             return record;
                         }
+                        const inputEvents = new WeakMap();
+                        for (const kind of ['beforeinput', 'input']) {
+                            document.addEventListener(kind, event => {
+                                const record = nativeRecord(event.target, kind);
+                                if (record) inputEvents.set(event, {record, started: performance.now()});
+                            }, true);
+                            document.addEventListener(kind, event => {
+                                const measured = inputEvents.get(event);
+                                if (measured) measured.record.elapsedMs = performance.now() - measured.started;
+                            });
+                        }
                         for (const property of ['scrollWidth', 'scrollHeight']) {
                             const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, property);
                             if (!descriptor?.get) continue;

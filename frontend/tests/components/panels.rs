@@ -1311,7 +1311,7 @@ async fn phone_navigation_is_equal_and_output_overlays_retained_pane_in_both_mod
             }
         });
         settle().await;
-        let (layout, actions) = slot.get().unwrap();
+        let (_layout, actions) = slot.get().unwrap();
         actions
             .set_mode
             .run(openwebide_frontend::state::responsive::LayoutMode::Phone);

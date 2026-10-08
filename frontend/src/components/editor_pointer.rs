@@ -94,11 +94,7 @@ impl PointerAdapter {
         self.gesture.set_value(None);
         self.generation
             .update_value(|generation| *generation = generation.wrapping_add(1));
-        if event.button() != 0
-            || event.alt_key()
-            || self.actions.is_composing()
-            || !self.ready.get_untracked()
-        {
+        if event.button() != 0 || event.alt_key() || self.actions.is_composing() {
             return;
         }
         let Some(input) = self
@@ -110,6 +106,17 @@ impl PointerAdapter {
         };
         if !self.motion.flush(&input) {
             event.prevent_default();
+            return;
+        }
+        // Analysis can invalidate readiness while the current source frame is
+        // still painted. Resolve the pending frame before handing a click to
+        // native input, whose bounded window uses different coordinates.
+        if !self.ready.get_untracked()
+            && let Some(paint) = self.motion.paint.get_untracked()
+        {
+            paint.flush.run(());
+        }
+        if !self.ready.get_untracked() {
             return;
         }
         let Some(offset) = self.offset(&input, event.client_x(), event.client_y(), false) else {

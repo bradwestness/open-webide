@@ -217,6 +217,22 @@ pub fn tool_count_labels<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<St
         .collect()
 }
 
+/// Finished tool-turn reasoning can share a disclosure with adjacent tool steps.
+pub fn is_reasoning_activity(message: &ChatMessage) -> bool {
+    message.role == Role::Assistant && (message.tool_calls.is_some() || message.id > 0) && {
+        let parsed = openwebide_core::tui::parse_thinking(&message.content);
+        parsed.thinking.is_some() && parsed.answer.trim().is_empty()
+    }
+}
+
+pub fn is_activity(item: &ConversationItem) -> bool {
+    match item {
+        ConversationItem::ToolStep { .. } => true,
+        ConversationItem::Message(message) => is_reasoning_activity(message),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -381,21 +397,5 @@ mod tests {
         assert!(
             matches!(&items[0], ConversationItem::Message(m) if m.content == openwebide_core::with_reasoning(&snapshot.reasoning, "answer"))
         );
-    }
-}
-
-/// Finished tool-turn reasoning can share a disclosure with adjacent tool steps.
-pub fn is_reasoning_activity(message: &ChatMessage) -> bool {
-    message.role == Role::Assistant && (message.tool_calls.is_some() || message.id > 0) && {
-        let parsed = openwebide_core::tui::parse_thinking(&message.content);
-        parsed.thinking.is_some() && parsed.answer.trim().is_empty()
-    }
-}
-
-pub fn is_activity(item: &ConversationItem) -> bool {
-    match item {
-        ConversationItem::ToolStep { .. } => true,
-        ConversationItem::Message(message) => is_reasoning_activity(message),
-        _ => false,
     }
 }

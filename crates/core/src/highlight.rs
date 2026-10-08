@@ -153,6 +153,16 @@ pub const LEXICAL_BATCH_ROWS: usize = 128;
 pub const LEXICAL_BATCH_BYTES: usize = 64 * 1024;
 pub const LEXICAL_BATCHES_PER_FRAME: usize = 8;
 
+/// Yield rendering after a short preparation interval, rather than imposing a
+/// frame wait on every few cheap retained-row batches. Invalid clocks retain the
+/// conservative fixed-batch schedule; the hard cap also bounds fast-clock work.
+pub fn lexical_frame_due(batches: usize, elapsed_ms: f64) -> bool {
+    if !elapsed_ms.is_finite() || elapsed_ms < 0.0 {
+        return batches >= LEXICAL_BATCHES_PER_FRAME;
+    }
+    elapsed_ms >= 4.0 || batches >= 64
+}
+
 /// Complete contextual lexical paint and the row states needed for exact reuse.
 #[derive(Debug)]
 pub struct LexicalSnapshot {
@@ -1550,6 +1560,47 @@ const CSS_KEYWORDS: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lexical_rendering_budget_bounds_work_without_frame_waits_for_each_small_batch() {
+        for cost in [0.01, 1.5] {
+            let mut elapsed = 0.0;
+            let mut batches = 0;
+            let mut frames = 0;
+            for _ in 0..100_000_usize.div_ceil(super::LEXICAL_BATCH_ROWS) {
+                elapsed += cost;
+                batches += 1;
+                if super::lexical_frame_due(batches, elapsed) {
+                    assert!(elapsed <= 4.0 + cost);
+                    assert!(batches <= 64);
+                    elapsed = 0.0;
+                    batches = 0;
+                    frames += 1;
+                }
+            }
+            if cost < 0.1 {
+                assert!(
+                    frames < 20,
+                    "cheap retained rows must not wait nearly 100 frames"
+                );
+            } else {
+                assert!(
+                    frames > 200,
+                    "costly batches must regularly yield rendering"
+                );
+            }
+        }
+        for elapsed in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            assert!(!super::lexical_frame_due(
+                super::LEXICAL_BATCHES_PER_FRAME - 1,
+                elapsed
+            ));
+            assert!(super::lexical_frame_due(
+                super::LEXICAL_BATCHES_PER_FRAME,
+                elapsed
+            ));
+        }
+    }
+
     use super::*;
 
     #[test]

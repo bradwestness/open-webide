@@ -929,12 +929,20 @@ Multiline comment state survives batch boundaries. Each batch admits at most
 128 rows and 64 KiB of source, allowing one oversized row; the existing 10,000-byte
 plain-token rule bounds per-character lexing on that row. A first bounded batch
 can finish a small file without a pending frame. Larger jobs yield browser tasks
-between batches and a frame after eight batches. No partial token table is
+between batches and request a frame after 4 ms of preparation or 64 batches,
+whichever comes first. Missing/nonfinite/backward clocks retain the conservative
+eight-batch frame schedule. This bounds rendering deferral while allowing cheap
+retained rows to finish without nearly a hundred frame waits. No partial token table is
 published, and pending paint borrows projected source bodies or retains an
 already scoped styled frame. Full-row probes wait for cooperative fallback tokens
 instead of measuring a neutral table that will be discarded. Pending background
 workers retain their borrowed source preview. Both decisions use the same editor
 facade, and native input stays visible during cold preparation.
+
+Rules resolution is memoized above workspace adapters, including detected/default
+rules when configuration cannot be read. Repeated ownership checks reuse that
+result; source, file/project, preferences, loaded rules and indentation overrides
+invalidate it through their existing reactive dependencies.
 
 Initial geometry installs the shared source document index before syntax completes.
 After native text is installed, bounded neutral unwrapped frames can publish without
@@ -1009,3 +1017,8 @@ small lists and language changes retain standalone data. Reconstruction checks e
 list range and the aggregate expanded record budget before allocating, then applies
 the existing source/coordinate/bracket validation. Structural extraction and receiver
 reconstruction/validation still visit the full lists.
+
+Pointer gestures flush pending source paint when analysis has temporarily marked
+hit-testing unavailable. The current input target, source scope and glyph geometry
+are revalidated before translating to source coordinates; bounded native windows
+never supply whole-file pointer offsets.

@@ -6732,7 +6732,7 @@ async fn recovery_busy_status_distinguishes_pending_checks_from_stable_issues_in
             .state
             .workspace
             .editor_recovery_checks
-            .update(|checks| checks.clear());
+            .update(std::collections::HashMap::clear);
         settle().await;
         assert!(
             mounted
@@ -10302,7 +10302,20 @@ async fn cold_unwrapped_native_windows_preserve_extents_pointer_and_edits_in_bot
                 .is_some()
         })
         .await;
-        assert!(editorPrimaryGesture(&input, 6501, 4, 1, false, "mousedown").default_prevented());
+        let point = editorClickPoint(&input, 6501, 4, false);
+        assert!(
+            editorPrimaryGesture(&input, 6501, 4, 1, false, "mousedown").default_prevented(),
+            "{mode:?}: ready={:?}, hit={:?}, bound={:?}",
+            mounted
+                .element(".editor-code")
+                .get_attribute("data-editor-pointer-ready"),
+            openwebide_frontend::viewport::editor_caret_from_point(
+                &input,
+                point.get(0).as_f64().unwrap(),
+                point.get(1).as_f64().unwrap()
+            ),
+            actions.bound_native_context().is_some()
+        );
         editorPrimaryGesture(&input, 6501, 4, 1, false, "mouseup");
         let offset = source.find("row 6500 ").unwrap() + 4;
         assert_eq!(actions.current_selection().unwrap().head, offset);
@@ -10834,7 +10847,10 @@ async fn cold_repeated_wrapped_rows_share_layout_and_preserve_far_edits_in_both_
         let height = rows.top(1).unwrap();
         assert!(height > 20.0, "fixture must wrap");
         for row in [127, 500, 9_000, 11_999] {
-            assert_eq!(rows.top(row + 1).unwrap() - rows.top(row).unwrap(), height);
+            assert_eq!(
+                (rows.top(row + 1).unwrap() - rows.top(row).unwrap()).to_bits(),
+                height.to_bits()
+            );
         }
         let at = body.len() * 9_000 + 4;
         actions
@@ -10851,8 +10867,8 @@ async fn cold_repeated_wrapped_rows_share_layout_and_preserve_far_edits_in_both_
         assert_eq!(changed.len(), rows.len());
         assert_eq!(changed.top(9_000), rows.top(9_000));
         assert_eq!(
-            changed.top(12_000).unwrap() - changed.top(9_001).unwrap(),
-            rows.top(12_000).unwrap() - rows.top(9_001).unwrap()
+            (changed.top(12_000).unwrap() - changed.top(9_001).unwrap()).to_bits(),
+            (rows.top(12_000).unwrap() - rows.top(9_001).unwrap()).to_bits()
         );
     }
 }

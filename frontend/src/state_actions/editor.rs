@@ -68,12 +68,43 @@ fn insertion_projection(document: &Document) -> Option<openwebide_core::editor::
         .ok()
 }
 
+fn resolve_current_rules(
+    workspace: WorkspaceState,
+    preferences: Option<crate::state::settings::SettingsState>,
+) -> openwebide_core::editor::EditorRules {
+    let key = workspace
+        .active_project
+        .get()
+        .zip(workspace.open_file.get());
+    let defaults = preferences
+        .map(|settings| settings.editor_preferences.get())
+        .unwrap_or_default();
+    let mut rules = workspace
+        .editor_rules
+        .with(|rules| key.as_ref().and_then(|key| rules.get(key).cloned()))
+        .unwrap_or_else(|| {
+            #[cfg(test)]
+            source_tests::RULE_DETECTIONS.with(|count| count.set(count.get() + 1));
+            workspace
+                .content
+                .with(|source| openwebide_core::editor::resolve_rules("", source, defaults, &[]).0)
+        });
+    if let Some(indentation) = workspace
+        .editor_indentation
+        .with(|values| key.as_ref().and_then(|key| values.get(key).copied()))
+    {
+        rules.indentation = indentation;
+    }
+    rules
+}
+
 #[derive(Clone, Copy)]
 pub struct EditorActions {
     workspace: WorkspaceState,
     auth: Option<crate::state::auth::AuthState>,
     preferences: Option<crate::state::settings::SettingsState>,
     capacity: Memo<Option<openwebide_core::editor::EditorLimit>>,
+    rules: Memo<openwebide_core::editor::EditorRules>,
     group: RwSignal<u64>,
     typing: RwSignal<TypingState>,
     native_binding: RwSignal<Option<EditorNativeContext>>,
@@ -96,10 +127,12 @@ impl EditorActions {
     }
 
     pub fn new(workspace: WorkspaceState) -> Self {
+        let preferences = use_context::<crate::state::settings::SettingsState>();
         Self {
             workspace,
             auth: use_context::<crate::state::auth::AuthState>(),
-            preferences: use_context::<crate::state::settings::SettingsState>(),
+            preferences,
+            rules: Memo::new(move |_| resolve_current_rules(workspace, preferences)),
             capacity: Memo::new(move |_| {
                 workspace
                     .content
@@ -113,32 +146,7 @@ impl EditorActions {
     }
 
     pub fn rules(self) -> openwebide_core::editor::EditorRules {
-        let key = self
-            .workspace
-            .active_project
-            .get()
-            .zip(self.workspace.open_file.get());
-        let defaults = self
-            .preferences
-            .map(|settings| settings.editor_preferences.get())
-            .unwrap_or_default();
-        let mut rules = self
-            .workspace
-            .editor_rules
-            .with(|rules| key.as_ref().and_then(|key| rules.get(key).cloned()))
-            .unwrap_or_else(|| {
-                self.workspace.content.with(|source| {
-                    openwebide_core::editor::resolve_rules("", source, defaults, &[]).0
-                })
-            });
-        if let Some(indentation) = self
-            .workspace
-            .editor_indentation
-            .with(|values| key.as_ref().and_then(|key| values.get(key).copied()))
-        {
-            rules.indentation = indentation;
-        }
-        rules
+        self.rules.get()
     }
 
     pub fn preferences(self) -> openwebide_core::editor::EditorPreferences {
@@ -1827,6 +1835,56 @@ impl EditorActions {
 mod source_tests {
     use super::*;
     use std::sync::Arc;
+
+    thread_local! {
+        pub(super) static RULE_DETECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn rule_queries_share_detection_and_refresh_source_defaults_overrides_and_file_ownership() {
+        Owner::new().with(|| {
+            let workspace = crate::state::workspace::WorkspaceState::new();
+            let settings = crate::state::settings::SettingsState::new(
+                crate::state::settings::Theme::Dark,
+                String::new(),
+            );
+            provide_context(settings);
+            workspace.active_project.set(Some(1));
+            workspace.open_file.set(Some("fallback.rs".into()));
+            workspace.content.set("x\n".repeat(99_999).into());
+            let actions = EditorActions::new(workspace);
+            RULE_DETECTIONS.with(|count| count.set(0));
+            let initial = actions.rules_untracked();
+            for _ in 0..1000 {
+                assert_eq!(actions.rules_untracked(), initial);
+            }
+            RULE_DETECTIONS.with(|count| assert_eq!(count.get(), 1));
+            workspace.content.set("x\r\n".into());
+            assert_eq!(actions.rules_untracked().line_ending, initial.line_ending);
+            RULE_DETECTIONS.with(|count| assert_eq!(count.get(), 2));
+            settings
+                .editor_preferences
+                .update(|preferences| preferences.indentation.width = 8);
+            assert_eq!(actions.rules_untracked().indentation.width(), 8);
+            RULE_DETECTIONS.with(|count| assert_eq!(count.get(), 3));
+            let mut loaded = initial.clone();
+            loaded.indentation.width = 3;
+            workspace.editor_rules.update(|rules| {
+                rules.insert((1, "fallback.rs".into()), loaded);
+            });
+            assert_eq!(actions.rules_untracked().indentation.width(), 3);
+            let mut override_indent = initial.indentation;
+            override_indent.width = 6;
+            actions.set_indentation(override_indent);
+            assert_eq!(actions.rules_untracked().indentation.width(), 6);
+            workspace.open_file.set(Some("other.rs".into()));
+            assert_eq!(actions.rules_untracked().indentation.width(), 8);
+            RULE_DETECTIONS.with(|count| assert_eq!(count.get(), 4));
+            workspace.active_project.set(Some(2));
+            assert_eq!(actions.rules_untracked().indentation.width(), 8);
+            RULE_DETECTIONS.with(|count| assert_eq!(count.get(), 5));
+        });
+    }
 
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn publication_shares_document_buffer_and_project_source_and_preserves_retained_views() {
