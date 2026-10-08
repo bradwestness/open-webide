@@ -794,6 +794,7 @@ impl ChatActions {
                     status: openwebide_core::GoalStatus::Active,
                     revision: 0,
                     updated_at: 0,
+                    started_at: None,
                 }
                 .prompt();
                 start.run((None, None, Some(prompt), Some(objective)));

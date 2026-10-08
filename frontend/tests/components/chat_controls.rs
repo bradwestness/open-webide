@@ -149,12 +149,59 @@ async fn chat_controls_goals_start_pause_continue_complete_and_reload_in_both_mo
         let goal = mounted.state.chat.goal.get_untracked().expect("saved goal");
         assert_eq!(goal.status, GoalStatus::Active);
         assert_eq!(goal.objective, "Fix the failing test");
+        assert_eq!(
+            mounted.element(".tui-goal-label").text_content().unwrap(),
+            "Goal active"
+        );
+        assert!(mounted.root.query_selector(".tui-goal").unwrap().is_none());
+        let pane = mounted
+            .element(".tui-pane")
+            .unchecked_into::<web_sys::HtmlElement>();
+        for width in [375, 600, 1024] {
+            pane.style()
+                .set_property("width", &format!("{width}px"))
+                .unwrap();
+            pane.style()
+                .set_property("max-width", &format!("{width}px"))
+                .unwrap();
+            mounted.state.chat.approval_mode.update(|modes| {
+                modes.insert(1, openwebide_core::ApprovalMode::AutoAcceptEdits);
+            });
+            settle().await;
+            let status = mounted
+                .element(".tui-statusline")
+                .get_bounding_client_rect();
+            let badge = mounted
+                .element(".tui-goal-label")
+                .get_bounding_client_rect();
+            assert!(
+                badge.left() >= status.left() && badge.right() <= status.right() + 1.0,
+                "{width}: goal must stay visible"
+            );
+            mounted.click(".tui-goal-label");
+            settle().await;
+            let menu = mounted.element(".tui-goal-menu").get_bounding_client_rect();
+            assert!(
+                menu.left() >= 0.0
+                    && menu.right()
+                        <= web_sys::window()
+                            .unwrap()
+                            .inner_width()
+                            .unwrap()
+                            .as_f64()
+                            .unwrap()
+            );
+            mounted.click(".tui-goal-label");
+            settle().await;
+        }
+        mounted.click(".tui-goal-label");
+        settle().await;
         assert!(
             mounted
                 .element(".tui-goal")
                 .text_content()
                 .unwrap()
-                .contains("review or continue")
+                .contains("Review the latest reply or continue")
         );
         mounted.click_text("Pause");
         settle().await;
@@ -162,6 +209,10 @@ async fn chat_controls_goals_start_pause_continue_complete_and_reload_in_both_mo
         assert_eq!(
             mounted.state.fake.goals.borrow()[&1].status,
             GoalStatus::Paused
+        );
+        assert_eq!(
+            mounted.element(".tui-goal-label").text_content().unwrap(),
+            "Goal paused"
         );
         mounted.state.chat.draft.set("Keep my draft".into());
         reply(&mounted, mode);
@@ -180,8 +231,29 @@ async fn chat_controls_goals_start_pause_continue_complete_and_reload_in_both_mo
             mounted.state.fake.goals.borrow()[&1].status,
             GoalStatus::Completed
         );
+        assert!(
+            mounted
+                .element(".tui-goal-label")
+                .text_content()
+                .unwrap()
+                .starts_with("Goal complete (")
+        );
         mounted.state.chat.active_session.set(None);
         settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".tui-goal-menu")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".tui-goal-label")
+                .unwrap()
+                .is_none()
+        );
         mounted.state.chat.active_session.set(Some(1));
         settle().await;
         assert_eq!(
@@ -395,6 +467,7 @@ async fn chat_controls_delayed_goal_loads_cannot_cross_account_project_or_sessio
                 status: GoalStatus::Active,
                 revision: 42,
                 updated_at: 1,
+                started_at: Some(1),
             })))
             .unwrap();
             settle().await;
@@ -562,5 +635,115 @@ async fn chat_controls_tool_spinners_follow_execution_and_permission_states() {
         chat.apply_event(RunEvent::Cancelled);
         settle().await;
         assert!(group.query_selector(".tui-spinner").unwrap().is_none());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn goal_status_is_compact_persisted_and_the_panel_closes_on_session_changes() {
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = fixture(mode);
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".tui-goal-label")
+                .unwrap()
+                .is_none()
+        );
+        let started = openwebide_core::Goal::transition(
+            None,
+            1,
+            openwebide_core::GoalCommand::Start {
+                objective: "A long objective ".repeat(100),
+            },
+            100,
+        )
+        .unwrap();
+        let complete = openwebide_core::Goal::transition(
+            Some(&started),
+            1,
+            openwebide_core::GoalCommand::Complete,
+            5080,
+        )
+        .unwrap();
+        mounted.state.chat.goal.set(Some(complete));
+        settle().await;
+        assert_eq!(
+            mounted.element(".tui-goal-label").text_content().unwrap(),
+            "Goal complete (1h23m)"
+        );
+        assert!(mounted.root.query_selector(".tui-goal").unwrap().is_none());
+        mounted.click(".tui-goal-label");
+        settle().await;
+        assert!(
+            mounted
+                .element(".tui-goal")
+                .text_content()
+                .unwrap()
+                .contains("You marked this goal complete.")
+        );
+        assert_eq!(
+            mounted
+                .element(".tui-goal-menu")
+                .get_attribute("role")
+                .as_deref(),
+            Some("dialog")
+        );
+        mounted.state.chat.active_session.set(Some(2));
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".tui-goal-menu")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".tui-goal-label")
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn approval_mode_colors_match_in_the_statusline_and_menu() {
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = fixture(mode);
+        settle().await;
+        let mut colors = Vec::new();
+        for choice in openwebide_core::ApprovalMode::CHOICES {
+            mounted.state.chat.approval_mode.update(|modes| {
+                modes.insert(1, choice);
+            });
+            settle().await;
+            let badge = mounted.element(".tui-mode-badge .ui-dropdown-label > span");
+            let color = web_sys::window()
+                .unwrap()
+                .get_computed_style(&badge)
+                .unwrap()
+                .unwrap()
+                .get_property_value("color")
+                .unwrap();
+            mounted.click(".tui-mode-badge");
+            settle().await;
+            let label = mounted.element(&format!(".approval-mode-menu .{}", badge.class_name()));
+            assert_eq!(
+                web_sys::window()
+                    .unwrap()
+                    .get_computed_style(&label)
+                    .unwrap()
+                    .unwrap()
+                    .get_property_value("color")
+                    .unwrap(),
+                color
+            );
+            assert!(!colors.contains(&color), "each mode has a distinct color");
+            colors.push(color);
+            mounted.click(".tui-mode-badge");
+            settle().await;
+        }
     }
 }
