@@ -2365,3 +2365,34 @@ requires 14 forced yields, and matches source/highlight/structure/fold publicati
 against fresh preparation. The retained Rust literal still passes its styling and
 14-yield gate. The full check reports 1,552 cooperative yields. These are worker
 contracts; main-editor load/scroll/input, PSS and the other full-goal gates remain.
+
+### Parsed bracket traversal (2026-10-08)
+
+Final parsed bracket linking now traverses ordered opaque-region and language-body
+boundaries directly. It skips an entire known literal or an unbracketed language
+span instead of decoding every character and querying protected ranges. Each
+embedded-scope boundary still clears bracket ancestry, including when an opaque
+region crosses it. Scope validation matches wire reconstruction before jumping
+through source offsets. The bracket cap and pairing rules are unchanged; no
+source snapshot or copy is added.
+
+The original lexical oracle checks final bracket results across all admitted
+captured cases. A near-1-MiB Unicode literal crossing an embedded scope examines
+only its two exposed parentheses and preserves unmatched ancestry. Near-1-MiB
+Markdown prose examines only an embedded two-character Rust body. Separate
+contracts cover adjacent bodies, unbracketed bodies, empty scopes, invalid UTF-8
+boundaries, overlap/out-of-source ranges and the exact bracket cap.
+
+All five CI jobs completed successfully for e061d68 (run 37856267663), including
+the child-task fixture correction and the two separate heavy geometry matrices.
+The subsequent YAML checkpoint's CI remains active. These checkpoints do not
+complete the remaining editor performance, storage, device/input, recovery and
+accessibility work. Final metadata/paint/fold assembly remains synchronous.
+
+Validation passed: all 488 core tests, strict core and WASM frontend linting, and
+the finalized release build. The actual production worker retains exact
+fresh/incremental source, highlights, structure and folds; both near-1-MiB Rust
+and YAML sources contain String spans exceeding 1,000,000 bytes and satisfy their
+14-yield gates. The complete check still reports 1,552 cooperative yields.
+No main-editor latency or process-memory completion claim follows from this
+traversal/worker evidence. Full CI for this checkpoint remains required.

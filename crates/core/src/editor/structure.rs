@@ -223,6 +223,16 @@ impl Structure {
         mut opaque_starts: Vec<usize>,
         mut selection_ranges: Vec<Range<usize>>,
     ) -> Option<Self> {
+        if scopes.iter().any(|(range, _)| {
+            range.start > range.end
+                || !text.is_char_boundary(range.start)
+                || !text.is_char_boundary(range.end)
+        }) || scopes
+            .windows(2)
+            .any(|pair| pair[0].0.end > pair[1].0.start)
+        {
+            return None;
+        }
         protected.sort_by_key(|(range, _, _)| (range.start, range.end));
         let mut end = 0;
         for (range, _, _) in &protected {
@@ -256,56 +266,89 @@ impl Structure {
             protected,
             brackets: Vec::new(),
         };
+        result.link_brackets(|| {})?;
+        Some(result)
+    }
+
+    #[cfg(feature = "editor-parser")]
+    fn link_brackets(&mut self, mut examined: impl FnMut()) -> Option<()> {
         let mut stack = Vec::<usize>::new();
         let mut last_scope = None;
         let mut scope_index = 0;
-        for (position, ch) in text.char_indices() {
-            while result
+        let mut region_index = 0;
+        let mut position = 0;
+        while position < self.source.len() {
+            while self
                 .scopes
                 .get(scope_index)
                 .is_some_and(|(range, _)| range.end <= position)
             {
                 scope_index += 1;
             }
-            let scope = result
+            let scope = self
                 .scopes
                 .get(scope_index)
                 .filter(|(range, _)| range.contains(&position))
                 .map(|_| scope_index);
-            let current_language = scope.map_or(language, |index| result.scopes[index].1);
+            let language = scope.map_or(self.language, |index| self.scopes[index].1);
             if scope != last_scope {
                 stack.clear();
                 last_scope = scope;
             }
-            if !supports_brackets(current_language)
-                || result
-                    .region_at(position)
-                    .is_some_and(|(range, _, _)| range.contains(&position))
-            {
+            // A skipped region may cross language bodies. Visit every scope
+            // boundary so unrelated bodies never share bracket ancestry.
+            let boundary = self
+                .scopes
+                .get(scope_index)
+                .map_or(self.source.len(), |(range, _)| {
+                    if scope.is_some() {
+                        range.end
+                    } else {
+                        range.start
+                    }
+                });
+            if !supports_brackets(language) {
+                position = boundary;
                 continue;
             }
+            while self
+                .protected
+                .get(region_index)
+                .is_some_and(|(range, _, _)| range.end <= position)
+            {
+                region_index += 1;
+            }
+            if let Some((range, _, _)) = self.protected.get(region_index)
+                && range.contains(&position)
+            {
+                position = range.end.min(boundary);
+                continue;
+            }
+            examined();
+            let ch = self.source[position..].chars().next()?;
             if closing(ch).is_some() {
-                if result.brackets.len() == MAX_BRACKETS {
+                if self.brackets.len() == MAX_BRACKETS {
                     return None;
                 }
-                stack.push(result.brackets.len());
-                result.brackets.push((position, ch, None));
+                stack.push(self.brackets.len());
+                self.brackets.push((position, ch, None));
             } else if matches!(ch, ')' | ']' | '}') {
-                if result.brackets.len() == MAX_BRACKETS {
+                if self.brackets.len() == MAX_BRACKETS {
                     return None;
                 }
-                let index = result.brackets.len();
-                result.brackets.push((position, ch, None));
+                let index = self.brackets.len();
+                self.brackets.push((position, ch, None));
                 if let Some(open) = stack.last().copied()
-                    && closing(result.brackets[open].1) == Some(ch)
+                    && closing(self.brackets[open].1) == Some(ch)
                 {
                     stack.pop();
-                    result.brackets[open].2 = Some(position);
-                    result.brackets[index].2 = Some(result.brackets[open].0);
+                    self.brackets[open].2 = Some(position);
+                    self.brackets[index].2 = Some(self.brackets[open].0);
                 }
             }
+            position += ch.len_utf8();
         }
-        Some(result)
+        Some(())
     }
 
     pub(super) fn selection_ranges(&self) -> impl Iterator<Item = &Range<usize>> {
@@ -445,6 +488,135 @@ pub fn closing(ch: char) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "editor-parser")]
+    #[test]
+    fn parsed_brackets_match_the_original_lexical_oracle() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            language: Language,
+            source: String,
+            metadata: serde_json::Value,
+        }
+        let cases: Vec<Case> =
+            serde_json::from_str(include_str!("structure/scanning_cases.json")).unwrap();
+        for case in cases {
+            if case.metadata.is_null() {
+                continue;
+            }
+            let expected: Vec<(usize, char, Option<usize>)> =
+                serde_json::from_value(case.metadata["brackets"].clone()).unwrap();
+            let protected = serde_json::from_value(case.metadata["protected"].clone()).unwrap();
+            let opaque = serde_json::from_value(case.metadata["opaque_starts"].clone()).unwrap();
+            let parsed = Structure::parsed(
+                Arc::new(case.source.clone()),
+                case.language,
+                protected,
+                vec![],
+                opaque,
+                vec![],
+            )
+            .unwrap();
+            assert_eq!(
+                parsed.brackets, expected,
+                "{:?}: {:?}",
+                case.language, case.source
+            );
+        }
+    }
+
+    #[cfg(feature = "editor-parser")]
+    #[test]
+    fn parsed_brackets_skip_large_opaque_bodies_but_preserve_scope_boundaries() {
+        let source = Arc::new(format!("({})", "文😀".repeat(149_000)));
+        let end = source.len() - 1;
+        let scope_start = source.find('😀').unwrap();
+        let scope_end = scope_start + 4;
+        let mut parsed = Structure::parsed(
+            source.clone(),
+            Language::Rust,
+            vec![(1..end, true, RegionKind::String)],
+            vec![(scope_start..scope_end, Language::JavaScript)],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&parsed.source, &source));
+        assert_eq!(parsed.brackets, vec![(0, '(', None), (end, ')', None)]);
+        parsed.brackets.clear();
+        let mut examined = 0;
+        parsed.link_brackets(|| examined += 1).unwrap();
+        assert_eq!(
+            examined, 2,
+            "literal bytes are never decoded by the final bracket pass"
+        );
+        assert_eq!(parsed.brackets, vec![(0, '(', None), (end, ')', None)]);
+
+        let source = Arc::new(format!("{}()", "文😀".repeat(149_000)));
+        let start = source.len() - 2;
+        let mut parsed = Structure::parsed(
+            source,
+            Language::Markdown,
+            vec![],
+            vec![(start..start + 2, Language::Rust)],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        parsed.brackets.clear();
+        examined = 0;
+        parsed.link_brackets(|| examined += 1).unwrap();
+        assert_eq!(
+            examined, 2,
+            "unbracketed prose is never decoded by the bracket pass"
+        );
+        assert_eq!(
+            parsed.brackets,
+            vec![(start, '(', Some(start + 1)), (start + 1, ')', Some(start))]
+        );
+    }
+
+    #[cfg(feature = "editor-parser")]
+    #[test]
+    fn parsed_bracket_limits_and_scope_validation_match_reconstruction() {
+        let parsed = |source: &str, scopes| {
+            Structure::parsed(
+                Arc::new(source.to_owned()),
+                Language::Rust,
+                vec![],
+                scopes,
+                vec![],
+                vec![],
+            )
+        };
+        assert!(parsed(&"(".repeat(MAX_BRACKETS + 1), vec![]).is_none());
+        assert_eq!(
+            parsed(&"(".repeat(MAX_BRACKETS), vec![])
+                .unwrap()
+                .brackets
+                .len(),
+            MAX_BRACKETS
+        );
+        assert!(parsed("😀", vec![(2..4, Language::Rust)]).is_none());
+        assert!(parsed("abcd", vec![(0..3, Language::Rust), (2..4, Language::Rust)]).is_none());
+        assert!(parsed("abcd", vec![(0..5, Language::Rust)]).is_none());
+        assert_eq!(
+            parsed("()", vec![(0..1, Language::Rust), (1..2, Language::Rust)])
+                .unwrap()
+                .brackets,
+            vec![(0, '(', None), (1, ')', None)]
+        );
+        assert_eq!(
+            parsed("{[]}", vec![(1..3, Language::Yaml)])
+                .unwrap()
+                .brackets,
+            vec![(0, '{', None), (3, '}', None)]
+        );
+        assert_eq!(
+            parsed("()", vec![(0..0, Language::Rust)]).unwrap().brackets,
+            vec![(0, '(', Some(1)), (1, ')', Some(0))]
+        );
+    }
+
     #[test]
     fn lexical_structure_ignores_multiline_comments_raw_strings_and_lifetimes() {
         let text = "fn f<'a>() { /* { /* } */ } */ let x = r##\"}\"##; '\\''; }";

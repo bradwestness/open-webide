@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Skip known opaque text and languages without brackets during the final parsed
+  bracket pass, while preserving each embedded body's separate bracket ancestry.
+  Validate scope ranges before traversing their boundaries.
+
+
 - Resume YAML scalar headers, literal bodies and dedentation checks in bounded
   syntax worker batches. Replay invalid headers and dedented rows through the
   shared scanner, preserving complete metadata and source-bound publication.
