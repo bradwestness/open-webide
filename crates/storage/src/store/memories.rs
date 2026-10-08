@@ -55,15 +55,15 @@ impl<D: Db> Store<D> {
         Box<dyn std::future::Future<Output = Result<ProjectMemories, StorageError>> + Send + 'a>,
     > {
         Box::pin(async move {
-            command.validate().map_err(StorageError::InvalidValue)?;
+            command.validate().map_err(StorageError::InvalidRequest)?;
             self.db.transaction(|tx| async move {
                 let store = Store::new(tx);
                 let current = store.project_memories(user, project).await?;
-                if agent && (!current.enabled || matches!(command, MemoryCommand::SetEnabled { .. })) { return Err(StorageError::InvalidValue("Project memory is disabled or this operation is unavailable to agents".into())); }
+                if agent && (!current.enabled || matches!(command, MemoryCommand::SetEnabled { .. })) { return Err(StorageError::InvalidRequest("Project memory is disabled or this operation is unavailable to agents".into())); }
                 let scope = [DbValue::Int(user.get()), DbValue::Int(project)];
                 match command {
                     MemoryCommand::Create { title, content } => {
-                        if current.entries.len() >= openwebide_core::memory::MAX_MEMORIES { return Err(StorageError::InvalidValue("This project already has 100 memories".into())); }
+                        if current.entries.len() >= openwebide_core::memory::MAX_MEMORIES { return Err(StorageError::InvalidRequest("This project already has 100 memories".into())); }
                         store.db.execute("INSERT INTO project_memories (user_id, project_id, title, content, updated_at) VALUES (?, ?, ?, ?, ?)", &[scope[0].clone(), scope[1].clone(), DbValue::Text(title.trim().into()), DbValue::Text(content.trim().into()), DbValue::Int(now)]).await?;
                     }
                     MemoryCommand::Update { id, revision, title, content } => {
@@ -100,7 +100,7 @@ impl<D: Db> Store<D> {
             .await?
             .project_id
             .ok_or_else(|| {
-                StorageError::InvalidValue("Project memory requires a project".into())
+                StorageError::InvalidRequest("Project memory requires a project".into())
             })?;
         self.memory_command(user, project, command, true, now).await
     }
@@ -286,12 +286,12 @@ mod tests {
                     &MemoryCommand::Read { id: entry.id },
                     &MemoryCommand::SetEnabled { enabled: true },
                 ] {
-                    assert!(
+                    assert!(matches!(
                         store
                             .session_memory_command(user, next, command, 4)
-                            .await
-                            .is_err()
-                    );
+                            .await,
+                        Err(StorageError::InvalidRequest(_))
+                    ));
                 }
                 let disabled = store.project_memories(user, project).await.unwrap();
                 assert!(!disabled.enabled);
