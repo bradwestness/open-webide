@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share one guarded source snapshot across repeated syntax worker/fallback requests and tab-width changes. Build it directly from borrowed editor content, clear it on reset or requests without an open file, and reject changed source, project, account, reload or review ownership.
+
 - Compare complete textarea input with borrowed, newline-normalized source characters instead of copying the full normalized file. Map native edit boundaries directly to source bytes, preserving Unicode and CRLF behavior; duplicate composition commits share the same comparison without changing selections or history.
 
 - Update indentation guides from changed document rows and their neighboring blank runs. Ordinary text edits retain the existing immutable guide table when indentation is unchanged; edits that change guide values reuse retained columns without scanning unrelated source rows.

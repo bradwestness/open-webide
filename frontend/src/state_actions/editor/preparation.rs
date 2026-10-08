@@ -12,16 +12,118 @@ struct PublishedSyntax {
     analysis: std::sync::Arc<openwebide_core::editor::SyntaxAnalysis>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{auth::AuthState, workspace::WorkspaceState};
+    use std::sync::Arc;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn syntax_requests_share_source_across_pending_queries_and_tab_settings() {
+        Owner::new().with(|| {
+            let workspace = WorkspaceState::new();
+            workspace.active_project.set(Some(1));
+            workspace.open_file.set(Some("same.rs".into()));
+            workspace
+                .content
+                .set("fn main() { 文😀(); }\r\n".repeat(1000));
+            let actions = EditorActions::new(workspace);
+            let first = actions.syntax_scope().unwrap();
+            let second = actions.syntax_scope().unwrap();
+            assert!(Arc::ptr_eq(&first.source, &second.source));
+            let mut indentation = actions.rules_untracked().indentation;
+            indentation.tab_width = first.tab_width + 4;
+            actions.set_indentation(indentation);
+            let changed = actions.syntax_scope().unwrap();
+            assert!(Arc::ptr_eq(&first.source, &changed.source));
+            assert_ne!(first.tab_width, changed.tab_width);
+            assert!(!actions.syntax_scope_current(&first));
+            assert!(actions.syntax_scope_current(&changed));
+            workspace.content.set(first.source.to_string());
+            assert!(Arc::ptr_eq(
+                &first.source,
+                &actions.syntax_scope().unwrap().source
+            ));
+            workspace.open_file.set(None);
+            assert!(actions.syntax_scope().is_none());
+            assert!(workspace.editor_syntax_scope.get_untracked().is_none());
+        });
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn syntax_source_cache_rejects_content_and_ownership_changes_and_reset() {
+        Owner::new().with(|| {
+            let auth = AuthState::new();
+            provide_context(auth);
+            let workspace = WorkspaceState::new();
+            workspace.active_project.set(Some(1));
+            workspace.open_file.set(Some("same.rs".into()));
+            workspace.content.set("same source\r\n文😀".into());
+            let actions = EditorActions::new(workspace);
+            let initial = actions.syntax_scope().unwrap();
+            let mut previous = initial.clone();
+            for change in 0..6 {
+                match change {
+                    0 => workspace.content.set("changed source\r\n文😀".into()),
+                    1 => workspace.active_project.set(Some(2)),
+                    2 => workspace.open_file.set(Some("other.rs".into())),
+                    3 => workspace.pending_epoch.update(|epoch| *epoch += 1),
+                    4 => workspace
+                        .editor_read_revision
+                        .update(|revision| *revision += 1),
+                    _ => auth.generation.update(|generation| *generation += 1),
+                }
+                let next = actions.syntax_scope().unwrap();
+                assert!(!Arc::ptr_eq(&previous.source, &next.source));
+                assert!(!actions.syntax_scope_current(&previous));
+                assert!(actions.syntax_scope_current(&next));
+                previous = next;
+            }
+            assert_eq!(initial.source.as_ref(), "same source\r\n文😀");
+            workspace.reset();
+            assert!(workspace.editor_syntax_scope.get_untracked().is_none());
+            assert!(!actions.syntax_scope_current(&previous));
+        });
+    }
+}
+
 impl EditorActions {
     pub(super) fn syntax_scope(self) -> Option<EditorSyntaxScope> {
-        Some(EditorSyntaxScope {
-            key: self.key()?,
-            source: self.workspace.content.get_untracked().into(),
-            epoch: self.workspace.pending_epoch.get_untracked(),
-            read_revision: self.workspace.editor_read_revision.get_untracked(),
-            account_generation: self.auth.map_or(0, |auth| auth.generation.get_untracked()),
-            tab_width: self.rules_untracked().indentation.tab_width(),
-        })
+        let Some(key) = self.key() else {
+            self.workspace.editor_syntax_scope.set(None);
+            return None;
+        };
+        let epoch = self.workspace.pending_epoch.get_untracked();
+        let read_revision = self.workspace.editor_read_revision.get_untracked();
+        let account_generation = self.auth.map_or(0, |auth| auth.generation.get_untracked());
+        let tab_width = self.rules_untracked().indentation.tab_width();
+        let source = self.workspace.content.with_untracked(|source| {
+            self.workspace.editor_syntax_scope.with_untracked(|cached| {
+                cached
+                    .as_ref()
+                    .filter(|cached| {
+                        cached.key == key
+                            && cached.epoch == epoch
+                            && cached.read_revision == read_revision
+                            && cached.account_generation == account_generation
+                            && cached.source.as_ref() == source.as_str()
+                    })
+                    .map_or_else(
+                        || std::sync::Arc::from(source.as_str()),
+                        |cached| cached.source.clone(),
+                    )
+            })
+        });
+        let scope = EditorSyntaxScope {
+            key,
+            source,
+            epoch,
+            read_revision,
+            account_generation,
+            tab_width,
+        };
+        self.workspace.editor_syntax_scope.set(Some(scope.clone()));
+        Some(scope)
     }
     pub(super) fn syntax_scope_current(self, scope: &EditorSyntaxScope) -> bool {
         !self.workspace.content.is_disposed()

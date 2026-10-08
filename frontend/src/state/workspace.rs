@@ -293,6 +293,7 @@ pub struct WorkspaceState {
     pub editor_fallback_active: RwSignal<bool>,
     pub editor_fallback_paint: RwSignal<Option<EditorFallbackPaint>>,
     pub editor_preparation: RwSignal<Option<PreparedEditorSyntax>>,
+    pub(crate) editor_syntax_scope: RwSignal<Option<EditorSyntaxScope>>,
     pub editor_preparation_revision: RwSignal<u64>,
     pub editor_documents: RwSignal<HashMap<(i64, String), openwebide_core::editor::Document>>,
     // Browser parser allocation is thread-local; the wrapper enforces owner-thread access.
@@ -396,6 +397,7 @@ impl WorkspaceState {
             editor_fallback_active: RwSignal::new(false),
             editor_fallback_paint: RwSignal::new(None),
             editor_preparation: RwSignal::new(None),
+            editor_syntax_scope: RwSignal::new(None),
             editor_preparation_revision: RwSignal::new(0),
             editor_syntax: RwSignal::new(send_wrapper::SendWrapper::new(Default::default())),
             editor_scroll: RwSignal::new(HashMap::new()),
@@ -833,6 +835,7 @@ impl WorkspaceState {
         self.editor_composition.set(None);
         self.editor_text_insertion.set(None);
         self.editor_preparation.set(None);
+        self.editor_syntax_scope.set(None);
         self.editor_fallback_paint.set(None);
         self.editor_preparation_revision
             .update(|value| *value = value.wrapping_add(1));

@@ -881,6 +881,14 @@ remain immutable across document clones and undo.
 
 ### Cooperative lexical paint
 
+Worker and fallback requests share the facade's retained source snapshot for the
+current file, project, account, reload and review generation. Repeated requests and
+tab-width changes share that allocation, including while analysis is pending. New
+snapshots copy directly from borrowed editor content, without an intermediate full
+String. Source or ownership changes replace the snapshot; reset and requests
+without an open file clear it. Scope validation still compares complete source bytes, and worker
+transport still serializes the requested source.
+
 When a worker is unavailable or finishes without usable syntax paint, the editor
 facade prepares fallback rows through a resumable Rust lexical job. The same
 line tokenizer serves synchronous core callers and cooperative browser jobs.

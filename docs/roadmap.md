@@ -94,6 +94,9 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   reconstruction/validation and standalone lexical row-table construction still visit the whole file.
   Parser fallback metadata and lexical folding now scan borrowed source without
   creating temporary source snapshots; owned contexts share their scan/query policy.
+  Worker/fallback request scopes share one guarded source snapshot across repeated
+  pending queries and tab-width changes, built directly from borrowed content.
+  Scope byte validation and transport serialization still visit complete source.
   Finish those incremental paths, larger retained-container reuse and remaining source snapshot
   ownership,
   uncached initial/cold shaping, bidirectional visual-run windows, fine long-row paint
