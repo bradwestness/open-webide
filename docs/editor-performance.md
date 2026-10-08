@@ -1179,3 +1179,49 @@ adapter. Render/layout/geometry-plus-final-overflow totals (ms):
 Two layouts per continuation probe remain a substantial cost. These diagnostic
 totals exclude initial native shaping and are separate from the uninstrumented
 latency table. [Raw diagnostic records](editor-performance/dense-probe-coordinates-linux-trace.jsonl).
+
+
+## Rejected co-installed local and global overflow probes
+
+A one-row transform candidate was rejected: translating a global-gap row near
+the local origin still failed the near-1-MiB complete-geometry contract (the
+shared overlap proof rejected preparation). The shorter font matrix passed,
+which is insufficient evidence for large-coordinate correctness. No tolerance,
+source limit or fallback was relaxed.
+
+The second candidate installed a bounded clone of the local probe with its original
+global inline gap before any layout reads. Exact glyph ranges use the first row's
+small coordinates, while exact integer overflow uses the clone's original inline
+layout. Both are cleared together after the existing source-owned batch. Shared
+planning, admission, overlap checks and adapter selection remain unchanged.
+The probe remains at most 16 KiB; transient DOM now contains up to two copies.
+
+The near-1-MiB differential oracle, all five Monaspace families/features and
+injected-overlap fallback pass in both adapters. Horizontal tab fallback,
+scroll extent and native hits pass. The ordinary browser suite passes 12 library,
+399 component and 4 integration tests, with the two heavy matrices verified
+separately. Strict frontend Clippy and the release build pass.
+
+Three release repetitions per adapter using the same source fixture, browser and
+resource limits as the dense-coordinate baseline. The production sources match
+that baseline apart from the paired-probe candidate; the earlier baseline captured
+the dense-coordinate change before its commit:
+
+| Mode | Cold median (ms) | Input median / range (ms) | Scroll median (ms) | Peak Chrome PSS median (KiB) | Largest task median (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Local | 10164 | 2518 / 2486–2527 | 22 | 823547 | 3401 |
+| Remote | 10430 | 2542 / 2542–2587 | 27 | 822375 | 3498 |
+
+The paired-row candidate regresses input latency against the 1810/1826 ms
+baseline despite passing exact geometry contracts. It has been removed; production
+retains the faster sequential local/global measurement. Correctness alone did not
+justify shipping more transient DOM. The `appModule` in these records identifies
+the rejected release, whose source was uncommitted over `7c15bde`.
+[Raw candidate measurements](editor-performance/paired-probe-candidate-linux.jsonl).
+
+Next, reuse validated measurement prefixes inside changed paragraphs rather than
+repeating unchanged continuation probes. Reuse must establish source/run/style
+identity, preserve the complete renderer's shaping boundaries, validate fresh
+continuation overlaps and reject stale font/layout/project/account ownership.
+This is still unimplemented; tabbed/wrapped/bidi preparation and physical-input
+verification remain requirements.
