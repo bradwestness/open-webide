@@ -29,6 +29,7 @@ enum Route {
     DeleteConnection,
     SetToolStreamUnsupported,
     PushConfig,
+    PushContext,
     PushSubscribe,
     PushStatus,
     PushUnsubscribe,
@@ -145,6 +146,7 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
             Some(Route::SetToolStreamUnsupported)
         }
         ("GET", ["push", "config"]) => Some(Route::PushConfig),
+        ("GET", ["push", "context"]) => Some(Route::PushContext),
         ("POST", ["push", "subscriptions"]) => Some(Route::PushSubscribe),
         ("POST", ["push", "subscriptions", "status"]) => Some(Route::PushStatus),
         ("DELETE", ["push", "subscriptions"]) => Some(Route::PushUnsubscribe),
@@ -366,6 +368,7 @@ pub async fn route(req: Request) -> JsonResp {
             api::editor_recovery::save(req, &state, &path, user).await
         }
         (Some(Route::PushConfig), Some(_)) => api::push::config(&state).await,
+        (Some(Route::PushContext), Some(user)) => api::push::context(&state, user).await,
         (Some(Route::PushSubscribe), Some(user)) => api::push::subscribe(req, &state, user).await,
         (Some(Route::PushStatus), Some(user)) => {
             api::push::subscription(req, &state, user, false).await

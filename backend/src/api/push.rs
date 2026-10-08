@@ -12,6 +12,20 @@ pub(crate) async fn config(state: &AppState) -> Result<JsonResp, ApiError> {
         },
     ))
 }
+/// Return account identity and preference together so a worker cannot combine two accounts' responses.
+pub(crate) async fn context(state: &AppState, user: AuthedUser) -> Result<JsonResp, ApiError> {
+    let enabled = state
+        .store
+        .get_user_setting(user.id, "browser_notifications")
+        .await?
+        .as_deref()
+        == Some("true");
+    Ok(json_response(
+        200,
+        &json!({"user_id": user.id, "enabled": enabled}),
+    ))
+}
+
 pub(crate) async fn subscribe(
     req: Request,
     state: &AppState,

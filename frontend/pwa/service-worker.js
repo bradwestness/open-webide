@@ -29,10 +29,10 @@ function validNotification(data) {
     typeof data.title === 'string' && data.title.length <= 256 && typeof data.body === 'string' && data.body.length <= 512 && typeof data.tag === 'string' && data.tag.startsWith(`openwebide-${data.session_id}-`) && data.tag.length <= 512;
 }
 async function notificationAccount(data) {
-  const account = await fetch('/api/auth/me', {credentials: 'same-origin', cache: 'no-store', headers: {'x-openwebide': '1'}});
-  if (!account.ok || (await account.json()).user?.id !== data.user_id) return false;
-  const settings = await fetch('/api/settings', {credentials: 'same-origin', cache: 'no-store', headers: {'x-openwebide': '1'}});
-  return settings.ok && (await settings.json()).browser_notifications === 'true';
+  const response = await fetch('/api/push/context', {credentials: 'same-origin', cache: 'no-store', headers: {'x-openwebide': '1'}});
+  if (!response.ok) return false;
+  const context = await response.json();
+  return context.user_id === data.user_id && context.enabled === true;
 }
 async function clientContext(client) {
   return new Promise(resolve => {
