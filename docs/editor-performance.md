@@ -1424,3 +1424,58 @@ Validation: 447 core native tests, 114 frontend native tests, 15 WASM library /
 (422 unique browser tests). Strict core and WASM frontend Clippy and the complete
 Trunk release/PWA build pass. These are correctness checks, not production
 latency samples.
+
+
+### Styled release boundary and rejected DOM-call batching
+
+`styled-long-line` supplies a 1,048,567-byte valid Rust constant containing a
+Unicode string, below the admitted 1 MiB logical-row boundary. Unlike a neutral
+long-line fixture, it requires an actual `.tok-string` in the current source-owned
+paint at initial readiness, after scrolling and after native input. Its snapshot
+records `styledString`. Both production adapters retain that styling; these
+recovery-based local samples still do not exercise an OS directory handle.
+
+Three fresh uninstrumented Linux/Chromium repetitions per adapter compare the
+verified renderer with a rejected measurement-only candidate under the same
+4-CPU/10-GiB container limits. The candidate performs every original DOM range
+read in one JavaScript primitive, with endpoints and all geometry/overlap policy
+still in Rust. A differential browser test matches scalar glyph rectangles bit
+for bit across Unicode, multi-node text, tabs and italic spans, rejects invalid
+source/endpoints, and retains empty-target behavior. All four paragraph contracts
+(including both modes, fonts/features, near-limit complete-geometry comparison,
+changed-prefix reuse and failed-overlap fallback), the 16-test WASM library and
+strict frontend lint pass. Correctness does not establish performance benefit.
+
+| Renderer | Mode | Cold paint median (ms) | Beginning input median / range (ms) | Scroll median (ms) | Peak Chrome PSS median (KiB) | Largest task median (ms) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Verified scalar | Local | 9211 | 1731 / 1724–1746 | 21.5 | 834044 | 3510 |
+| Verified scalar | Remote | 9279 | 1755 / 1752–1772 | 28.3 | 830076 | 3427 |
+| Rejected batch | Local | 9232 | 1735 / 1734–1744 | 26.4 | 822550 | 3411 |
+| Rejected batch | Remote | 9471 | 1743 / 1706–1746 | 24.5 | 835406 | 3536 |
+
+There is no material input improvement across these samples; cold startup stays
+multi-second. Three repetitions are not a latency distribution or a general
+regression/performance guarantee. Source/probe and worker policies are unchanged.
+The candidate source was removed, and the verified production release rebuilt.
+[Rejected patch](editor-performance/range-batch-rejected.patch),
+[baseline records](editor-performance/range-batch-before-linux.jsonl),
+[candidate records](editor-performance/range-batch-after-linux.jsonl). Header
+checkout `41c3df9` describes the measurement worktree; `appModule` separates the
+verified `58db9da3b934f406` bundle from the rejected `1fb4488f17965066` candidate.
+
+A separate instrumented scalar repetition records actual styled readiness,
+9556/9187 ms cold paint and 1784/1766 ms beginning input (local/remote). Its 71
+input probe batches spend about 1632/1616 ms combined in paragraph layout and
+geometry, with only 12/12 ms in source rendering; both traces are untruncated.
+These diagnostic timings include instrumentation and are separate from the
+repeated uninstrumented samples. [Raw styled trace](editor-performance/styled-long-line-linux-trace.jsonl).
+
+The next optimization must reduce actual preparation/layout work or provide an
+exact incremental geometry path. Bulk calls alone do not complete initial native
+shaping, changed suffix reuse, tabbed/wrapped/bidi preparation or memory gates.
+Reproduce the scalar samples with:
+
+```bash
+bash tools/measure-editor-view-linux.sh --cases styled-long-line --repeat 3
+bash tools/measure-editor-view-linux.sh --cases styled-long-line --repeat 1 --trace
+```

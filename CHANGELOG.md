@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add a near-1-MiB styled-string release measurement that requires grammar color through cold paint, scrolling and input; record both-adapter Linux latency/PSS and reject ineffective DOM-call batching without changing production geometry.
+
 - Retain grammar colors on long prepared code lines; keep source/work admission and lexical fallback limits. Resume eligible styled viewport slices at retained original paint-run boundaries and preserve token wrappers when cropping, with exact geometry and source checks in both workspace modes.
 
 - Extend the isolated native/WASM editor layout probe with identical-glyph advance precision and missing-glyph diagnostics; record the rejected early native bootstrap and retain exact production geometry.

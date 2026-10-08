@@ -73,6 +73,10 @@ def source_for(case):
         return "x\n" * 99_999
     if case == "long-line":
         return "文😀 words " * (1024 * 1024 // len("文😀 words ".encode()))
+    if case == "styled-long-line":
+        prefix, suffix, unit = 'const VALUE: &str = "', '";', "文😀 words "
+        budget = 1024 * 1024 - len((prefix + suffix).encode())
+        return prefix + unit * (budget // len(unit.encode())) + suffix
     raise ValueError(case)
 
 
@@ -125,12 +129,14 @@ READY = """
     return input && paint && (input.value.length === arguments[0] || bound) &&
         paint.dataset.editorScope === input.dataset.editorScope &&
         (getComputedStyle(input).whiteSpace !== 'pre-wrap' || Number(paint.dataset.documentHeight) > 0) &&
-        input.parentElement.classList.contains('highlight-ready');
+        input.parentElement.classList.contains('highlight-ready') &&
+        (!arguments[1] || !!paint.querySelector('.tok-string'));
 """
 
 
 def measure(case, mode, wrapped, trace=False, repetition=1, input_position="start"):
     source = source_for(case)
+    require_styled = case == "styled-long-line"
     native = source.replace("\r\n", "\n")
     # JS lengths are UTF-16, not Python's Unicode scalar count.
     native_length = len(native.encode("utf-16-le")) // 2
@@ -325,7 +331,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
             phase = "cold paint"
             browser.call("POST", "/url", {"url": runtime.url + "/"})
             deadline = time.monotonic() + 60
-            while not browser.call("POST", "/execute/sync", {"script": READY, "args": [native_length]}):
+            while not browser.call("POST", "/execute/sync", {"script": READY, "args": [native_length, require_styled]}):
                 assert time.monotonic() < deadline, "Editor view readiness timed out"
                 time.sleep(0.05)
             load_ms = (time.monotonic() - started) * 1000
@@ -338,7 +344,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                     window.editorViewWasmMemory = wasm.memory;
                     const input = document.querySelector('textarea[data-editor-path]');
                     const scroll = editorViewScroll(input);
-                    done({nativeInputLength: input.value.length, nativeBound: input.dataset.editorNativeBound === 'true', appModule: new URL(link.href).pathname, wasmCommittedBytes: wasm.memory.buffer.byteLength,
+                    done({styledString: !!document.querySelector('.editor-highlight-content .tok-string'), nativeInputLength: input.value.length, nativeBound: input.dataset.editorNativeBound === 'true', appModule: new URL(link.href).pathname, wasmCommittedBytes: wasm.memory.buffer.byteLength,
                         domNodes: document.getElementsByTagName('*').length,
                         paintRows: document.querySelectorAll('.editor-source-line').length,
                         scrollHeight: scroll.scrollHeight, scrollWidth: scroll.scrollWidth, clientWidth: scroll.clientWidth,
@@ -347,12 +353,13 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                 })().catch(error => done({error: String(error)}));
             """, "args": []})
             assert "error" not in snapshot, snapshot
+            assert not require_styled or snapshot["styledString"], "Prepared string style was unavailable"
             assert snapshot["wrapped"] == wrapped, "Editor preference was not applied"
             memory = process_memory(browser.process.pid)
             phase = "scroll paint"
             scroll = browser.call("POST", "/execute/async", {"script": """
                 const done = arguments[arguments.length - 1], input = document.querySelector('textarea[data-editor-path]');
-                const singleRow = arguments[0];
+                const singleRow = arguments[0], requireStyled = arguments[1];
                 const scroll = editorViewScroll(input);
                 const horizontal = singleRow && getComputedStyle(input).whiteSpace !== 'pre-wrap';
                 editorViewMeasurement.phase = "scroll";
@@ -370,12 +377,12 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                     const target = horizontal ? scroll.scrollLeft : scroll.scrollTop;
                     const margin = horizontal ? scroll.clientWidth * 2 + 30 : scroll.clientHeight + 8 * parseFloat(getComputedStyle(input).lineHeight) + 32;
                     const moved = singleRow ? Number.isFinite(offset) && offset <= target + 30 && target - offset <= margin : first !== old;
-                    if (moved && paint?.dataset.editorScope === input.dataset.editorScope && input.parentElement.classList.contains('highlight-ready'))
+                    if (moved && paint?.dataset.editorScope === input.dataset.editorScope && input.parentElement.classList.contains('highlight-ready') && (!requireStyled || paint.querySelector('.tok-string')))
                         return done({scrollToPaintMs: performance.now()-started, scrollAxis: horizontal ? 'horizontal' : 'vertical', scrollOffset: target});
                     requestAnimationFrame(check);
                 }
                 requestAnimationFrame(check);
-            """, "args": ["\n" not in native]})
+            """, "args": ["\n" not in native, require_styled]})
             assert "error" not in scroll, scroll
             if input_position == "start":
                 browser.script("const input=document.querySelector('textarea[data-editor-path]'); input.focus(); input.setSelectionRange(0,0);")
@@ -400,19 +407,19 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
             browser.script("editorViewMeasurement.phase = 'input';")
             browser.call("POST", "/goog/cdp/execute", {"cmd": "Input.insertText", "params": {"text": "z"}})
             edited = browser.call("POST", "/execute/async", {"script": """
-                const done=arguments[arguments.length-1], inputPosition=arguments[0], deadline=performance.now()+10000;
+                const done=arguments[arguments.length-1], inputPosition=arguments[0], requireStyled=arguments[1], deadline=performance.now()+10000;
                 function check() {
                     const input=document.querySelector('textarea[data-editor-path]');
                     const paint=document.querySelector('.editor-highlight-content');
                     if (performance.now()>deadline) return done({error:'Input paint timed out'});
                     if ((inputPosition === 'end' ? input.value.endsWith('z') : input.value.startsWith('z')) && paint.dataset.editorScope===input.dataset.editorScope &&
                         (getComputedStyle(input).whiteSpace !== 'pre-wrap' || Number(paint.dataset.documentHeight)>0) &&
-                        input.parentElement.classList.contains('highlight-ready'))
+                        input.parentElement.classList.contains('highlight-ready') && (!requireStyled || paint.querySelector('.tok-string')))
                         return done({inputToPaintMs:performance.now()-editorViewMeasurement.inputAt});
                     requestAnimationFrame(check);
                 }
                 requestAnimationFrame(check);
-            """, "args": [input_position]})
+            """, "args": [input_position, require_styled]})
             assert "error" not in edited, edited
             browser.script("editorViewMeasurement.phase = 'deferred';")
             # Include deferred syntax preparation and queued recovery saves.
@@ -451,7 +458,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cases", nargs="+", choices=["small", "medium", "byte-limit", "line-limit", "long-line"], default=["small"])
+    parser.add_argument("--cases", nargs="+", choices=["small", "medium", "byte-limit", "line-limit", "long-line", "styled-long-line"], default=["small"])
     parser.add_argument("--modes", nargs="+", choices=["local", "remote"], default=["local", "remote"])
     parser.add_argument("--wrap", action="store_true")
     parser.add_argument("--trace", action="store_true", help="Record bounded probe/worker diagnostics; timings include instrumentation overhead")

@@ -239,7 +239,11 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   font/feature/whitespace settings and failed-proof fallback share both modes.
   Finish tabbed/wrapped/bidi preparation, initial native shaping and incremental reuse;
   node retention alone still does not prove incremental shaping.
-  Continue profiling cold/long-line phases and repeat after fixing them. Broader startup scroll latency and
+  Release probes now require actual near-1-MiB String styling through load,
+  scrolling and input in both modes. Repeated Linux samples confirm multi-second
+  cold paint and roughly 1.7-second beginning edits. A bit-exact DOM-call batching
+  experiment does not materially improve those timings and is not shipped.
+  Continue reducing actual preparation/layout work and repeat after fixing it. Broader startup scroll latency and
   initial-shaping samples remain unverified despite bounded steady-state paint.
   See [recorded measurements](editor-performance.md).
 - **Selections and files:** finish real-device input/IME/clipboard verification

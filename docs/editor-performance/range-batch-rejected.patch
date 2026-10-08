@@ -1,0 +1,174 @@
+diff --git a/frontend/src/components/editor_geometry.rs b/frontend/src/components/editor_geometry.rs
+index 507e957..0396611 100644
+--- a/frontend/src/components/editor_geometry.rs
++++ b/frontend/src/components/editor_geometry.rs
+@@ -6,6 +6,37 @@ use openwebide_core::editor::{MAX_VISUAL_CARETS, VisualCaret, VisualLayout, Visu
+ use std::collections::BTreeMap;
+ use wasm_bindgen::JsCast;
+ 
++#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
++export function editorProbeRectangles(nodes, positions) {
++    if (!nodes.length || positions.length % 4) throw new Error('Invalid range batch');
++    const range = nodes[0].ownerDocument.createRange();
++    const result = new Float64Array(positions.length);
++    for (let at = 0; at < positions.length; at += 4) {
++        range.setStart(nodes[positions[at]], positions[at + 1]);
++        range.setEnd(nodes[positions[at + 2]], positions[at + 3]);
++        const rectangles = range.getClientRects();
++        let rectangle;
++        for (let index = 0; index < rectangles.length; index++) {
++            const candidate = rectangles.item(index);
++            if (candidate && candidate.height > 0) { rectangle = candidate; break; }
++        }
++        if (!rectangle) throw new Error('Missing glyph rectangle');
++        result[at] = rectangle.left;
++        result[at + 1] = rectangle.top;
++        result[at + 2] = rectangle.width;
++        result[at + 3] = rectangle.height;
++    }
++    return result;
++}
++"#)]
++extern "C" {
++    #[wasm_bindgen::prelude::wasm_bindgen(catch, js_name = editorProbeRectangles)]
++    fn editor_probe_rectangles(
++        nodes: &js_sys::Array,
++        positions: &[u32],
++    ) -> Result<js_sys::Float64Array, wasm_bindgen::JsValue>;
++}
++
+ /// Range cloning omits its common ancestor. Preserve every inline paint wrapper
+ /// between that ancestor and the logical row, including token color/run spans.
+ fn clone_paint_range(row: &web_sys::Element, range: &web_sys::Range) -> Option<web_sys::Node> {
+@@ -74,12 +105,17 @@ impl TextNodes {
+         Some(Self(result))
+     }
+     fn position(&self, offset: u32) -> Option<(&web_sys::Node, u32)> {
++        let (index, at) = self.position_index(offset)?;
++        Some((&self.0[index].0, at))
++    }
++    fn position_index(&self, offset: u32) -> Option<(usize, u32)> {
+         let index = self
+             .0
+             .partition_point(|(_, start, length)| start + length <= offset);
+-        let (node, start, length) = self.0.get(index).or_else(|| self.0.last())?;
++        let index = index.min(self.0.len().checked_sub(1)?);
++        let (_, start, length) = self.0.get(index)?;
+         let at = offset.checked_sub(*start)?;
+-        (at <= *length).then_some((node, at))
++        (at <= *length).then_some((index, at))
+     }
+ }
+ 
+@@ -238,23 +274,43 @@ pub(super) fn paragraph_rectangles(
+     // checkpoint's prefix; keep general viewport queries on the sparse index.
+     let offsets = openwebide_core::editor::visual_line_offsets(body).ok()?;
+     let nodes = TextNodes::new(row)?;
+-    let range = document().create_range().ok()?;
+-    targets
+-        .iter()
+-        .map(|glyph| {
+-            let local = glyph.checked_sub(glyph_start)?;
+-            let start = offsets.get(local)?.1;
+-            let end = offsets.get(local.checked_add(1)?)?.1;
+-            let rect = range_rectangle(&range, &nodes, start, end)?;
+-            Some(openwebide_core::editor::GlyphRectangle {
++    if targets.is_empty() {
++        return Some(Vec::new());
++    }
++    let mut positions = Vec::with_capacity(targets.len().checked_mul(4)?);
++    for glyph in targets {
++        let local = glyph.checked_sub(glyph_start)?;
++        for coordinate in [local, local.checked_add(1)?] {
++            let native = u32::try_from(offsets.get(coordinate)?.1).ok()?;
++            let (node, at) = nodes.position_index(native)?;
++            positions.extend([u32::try_from(node).ok()?, at]);
++        }
++    }
++    let native_nodes = js_sys::Array::new();
++    for (node, _, _) in &nodes.0 {
++        native_nodes.push(node.as_ref());
++    }
++    // DOM calls stay in one primitive; Rust still selects and validates every
++    // source endpoint, target, scope and overlap. No range measurement is skipped.
++    let rectangles = editor_probe_rectangles(&native_nodes, &positions)
++        .ok()?
++        .to_vec();
++    if rectangles.len() != positions.len() {
++        return None;
++    }
++    Some(
++        targets
++            .iter()
++            .zip(rectangles.as_chunks::<4>().0)
++            .map(|(glyph, rect)| openwebide_core::editor::GlyphRectangle {
+                 glyph: *glyph,
+-                left: rect.left() - bounds.left(),
+-                top: rect.top() - bounds.top(),
+-                width: rect.width(),
+-                height: rect.height(),
++                left: rect[0] - bounds.left(),
++                top: rect[1] - bounds.top(),
++                width: rect[2],
++                height: rect[3],
+             })
+-        })
+-        .collect()
++            .collect(),
++    )
+ }
+ 
+ /// Reuse the styled logical row already laid out by the cold height probe.
+@@ -1196,3 +1252,52 @@ pub(super) fn caret_top(
+     };
+     Some(top + within as f64 * metrics.line_height + metrics.caret_inset)
+ }
++
++#[cfg(test)]
++mod rectangle_batch_tests {
++    use super::*;
++
++    #[wasm_bindgen_test::wasm_bindgen_test]
++    fn batched_ranges_match_every_scalar_glyph_and_reject_invalid_source_endpoints() {
++        let host = document().create_element("div").unwrap();
++        host.set_attribute("style", "font:13px monospace;white-space:pre")
++            .unwrap();
++        let row = document().create_element("span").unwrap();
++        row.set_inner_html("<span class=\"tok-string\">文😀é </span><span class=\"tok-comment\" style=\"font-style:italic\">words 👩‍👩‍👧‍👦 </span><span>\t🇺🇸 tail</span>");
++        host.append_child(&row).unwrap();
++        document().body().unwrap().append_child(&host).unwrap();
++        let body = row.text_content().unwrap();
++        let offsets = openwebide_core::editor::visual_line_offsets(&body).unwrap();
++        let targets = (0..offsets.len() - 1)
++            .map(|glyph| glyph + 500)
++            .collect::<Vec<_>>();
++        let measured = paragraph_rectangles(&row, &body, 500, &targets).unwrap();
++        let bounds = row.get_bounding_client_rect();
++        let nodes = TextNodes::new(&row).unwrap();
++        let range = document().create_range().unwrap();
++        for (local, result) in measured.iter().enumerate() {
++            let scalar =
++                range_rectangle(&range, &nodes, offsets[local].1, offsets[local + 1].1).unwrap();
++            assert_eq!(result.glyph, targets[local]);
++            assert_eq!(
++                result.left.to_bits(),
++                (scalar.left() - bounds.left()).to_bits()
++            );
++            assert_eq!(
++                result.top.to_bits(),
++                (scalar.top() - bounds.top()).to_bits()
++            );
++            assert_eq!(result.width.to_bits(), scalar.width().to_bits());
++            assert_eq!(result.height.to_bits(), scalar.height().to_bits());
++        }
++        assert!(paragraph_rectangles(&row, &body, 500, &[499]).is_none());
++        assert!(paragraph_rectangles(&row, &body, 500, &[500 + offsets.len() - 1]).is_none());
++        assert!(paragraph_rectangles(&row, "replacement", 500, &targets).is_none());
++        assert!(
++            paragraph_rectangles(&row, &body, 500, &[])
++                .unwrap()
++                .is_empty()
++        );
++        host.remove();
++    }
++}
