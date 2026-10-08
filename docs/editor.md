@@ -868,8 +868,11 @@ the minimum indentation of their neighboring nonblank rows, including Unicode
 whitespace and LF/CRLF. The standalone core helper uses the same policy. Files
 above the structural byte limit share zero-guide tables across same-row-count
 edits and setting changes; row-count or limit changes invalidate them. Ordinary
-source edits still reconstruct the smaller-file table. Cached tables remain
-immutable across document clones and undo.
+source edits recompute changed indexed rows and adjacent blank runs through their
+nearest nonblank neighbors. Unchanged guide values retain the original table;
+changed values copy retained columns around the replacement, without rescanning
+unrelated source rows. Setting changes still rebuild the full table. Cached tables
+remain immutable across document clones and undo.
 
 ### Cooperative lexical paint
 

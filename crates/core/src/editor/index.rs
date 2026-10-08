@@ -90,6 +90,7 @@ impl LineIndex {
             replacement.oversized_rows.pop();
             replacement.coordinates.pop();
         }
+        let replacement_rows = replacement.rows.len();
         let (raw_start, native_start, breaks_start) = self.offsets[start_row];
         let (raw_end, native_end, breaks_end) = self.offsets.get(end_row).copied().unwrap_or((
             self.utf16_len,
@@ -124,14 +125,77 @@ impl LineIndex {
         self.offsets.splice(start_row..end_row, replacement.offsets);
         self.coordinates
             .splice(start_row..end_row, replacement.coordinates);
-        // Disabled guides are independent of row text and indentation settings.
-        // Same-row-count edits above the shared structural limit retain the table.
-        if old_len <= super::MAX_STRUCTURE_BYTES
-            || new.len() <= super::MAX_STRUCTURE_BYTES
-            || old_rows != self.rows.len()
-        {
-            self.guides = GuideCache::default();
+        self.update_guides(old_len, new, start_row..end_row, replacement_rows, old_rows);
+    }
+
+    fn guide_edit_rows(&self, source: &str, changed: Range<usize>) -> Range<usize> {
+        let blank = |row: usize| {
+            source[self.rows[row].start..self.rows[row].end]
+                .chars()
+                .all(char::is_whitespace)
+        };
+        // Blank guides depend on the nearest nonblank row in both directions.
+        let mut start = changed.start;
+        while start > 0 {
+            start -= 1;
+            if !blank(start) {
+                break;
+            }
         }
+        let mut end = changed.end;
+        while end < self.rows.len() {
+            let last = !blank(end);
+            end += 1;
+            if last {
+                break;
+            }
+        }
+        start..end
+    }
+
+    fn update_guides(
+        &mut self,
+        old_len: usize,
+        source: &str,
+        changed: Range<usize>,
+        replacement_rows: usize,
+        old_rows: usize,
+    ) {
+        let limit = super::MAX_STRUCTURE_BYTES;
+        if old_len > limit && source.len() > limit && old_rows == self.rows.len() {
+            return;
+        }
+        let cached = self
+            .guides
+            .0
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let Some(mut cached) = cached.filter(|cache| !cache.limited && source.len() <= limit)
+        else {
+            return;
+        };
+        let replacement_end = changed.start + replacement_rows;
+        let rows = self.guide_edit_rows(source, changed.start..replacement_end);
+        let old_end = changed.end + (rows.end - replacement_end);
+        let columns = super::navigation::guide_columns(
+            self.rows[rows.clone()]
+                .iter()
+                .map(|row| &source[row.start..row.end]),
+            cached.indentation,
+        );
+        if cached.columns[rows.start..old_end] != columns {
+            let mut updated = Vec::with_capacity(self.rows.len());
+            updated.extend_from_slice(&cached.columns[..rows.start]);
+            updated.extend(columns);
+            updated.extend_from_slice(&cached.columns[old_end..]);
+            cached.columns = updated.into();
+        }
+        *self
+            .guides
+            .0
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cached);
     }
 
     pub fn guide_columns(
@@ -377,6 +441,83 @@ mod tests {
             document.indent_guide_columns(indentation).as_ref(),
             [4, 4, 0]
         );
+    }
+
+    #[test]
+    fn guide_edits_match_full_policy_across_blank_runs_and_row_changes() {
+        use super::super::Indentation;
+        for source in [
+            "",
+            "  a\n\n    b\n",
+            "\n\t文\r\n\u{2003}\r\n  b\r\n",
+            "\n\n\n",
+            "  a\n \n\t\n    b\n\nlast",
+        ] {
+            let boundaries: Vec<_> = source
+                .char_indices()
+                .map(|(offset, _)| offset)
+                .chain(std::iter::once(source.len()))
+                .collect();
+            for indentation in [
+                Indentation::default(),
+                Indentation {
+                    width: 3,
+                    tab_width: 8,
+                    ..Default::default()
+                },
+            ] {
+                let original = LineIndex::new(source);
+                let retained = original.guide_columns(source, indentation);
+                for (at, start) in boundaries.iter().copied().enumerate() {
+                    for end in boundaries[at..].iter().copied() {
+                        for replacement in ["", "word", "\t", "\n", "\r\n\u{2003}\n", "  x\n\n"] {
+                            let mut next = source.to_owned();
+                            next.replace_range(start..end, replacement);
+                            let mut index = original.clone();
+                            index.update(
+                                source.len(),
+                                &next,
+                                start..end,
+                                start + replacement.len(),
+                            );
+                            assert_eq!(
+                                index.guide_columns(&next, indentation).as_ref(),
+                                reference_guides(&next, indentation),
+                                "source={source:?}, edit={start}..{end}, replacement={replacement:?}"
+                            );
+                            assert_eq!(retained.as_ref(), reference_guides(source, indentation));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn guide_edits_visit_local_rows_and_retain_unchanged_values() {
+        use super::super::Indentation;
+        let source = "    body\r\n".repeat(10_000);
+        let mut index = LineIndex::new(&source);
+        let indentation = Indentation::default();
+        let retained = index.guide_columns(&source, indentation);
+        let at = index.rows[5000].start + 4;
+        let mut next = source.clone();
+        next.replace_range(at..at + 4, "changed");
+        index.update(source.len(), &next, at..at + 4, at + 7);
+        assert!(std::sync::Arc::ptr_eq(
+            &retained,
+            &index.guide_columns(&next, indentation)
+        ));
+        assert_eq!(index.guide_edit_rows(&next, 4999..5001), 4998..5002);
+        let start = index.rows[5000].start;
+        let mut indented = next.clone();
+        indented.insert_str(start, "    ");
+        index.update(next.len(), &indented, start..start, start + 4);
+        let updated = index.guide_columns(&indented, indentation);
+        assert!(!std::sync::Arc::ptr_eq(&retained, &updated));
+        assert_eq!(updated[5000], 8);
+        assert_eq!(updated.as_ref(), reference_guides(&indented, indentation));
+        assert_eq!(retained[5000], 4);
     }
 
     #[test]

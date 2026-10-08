@@ -5203,6 +5203,21 @@ async fn indexed_indent_guides_preserve_paint_config_and_source_in_both_modes() 
             &initial,
             &actions.indent_guides(Indentation::default())
         ));
+        actions
+            .record_selection(openwebide_core::editor::Selection::caret(15))
+            .unwrap();
+        actions.insert_native_text(" words", 100.0).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &initial,
+            &actions.indent_guides(Indentation::default()),
+        ));
+        wait_until("text edit retains indexed guide paint", || {
+            mounted
+                .element(".editor-highlight-content")
+                .text_content()
+                .is_some_and(|text| text.contains("child words"))
+        })
+        .await;
         let changed = Indentation {
             width: 2,
             tab_width: 8,

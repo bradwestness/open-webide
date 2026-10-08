@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Update indentation guides from changed document rows and their neighboring blank runs. Ordinary text edits retain the existing immutable guide table when indentation is unchanged; edits that change guide values reuse retained columns without scanning unrelated source rows.
+
 - Query indentation guides from shared indexed document rows and cache immutable results across repeated queries. Reuse disabled-guide tables for same-row-count edits above the structural limit, and resolve blank-row continuation in one pass while preserving tabs, Unicode whitespace and LF/CRLF behavior.
 
 - Install shared editor document rows before syntax preparation and publish bounded neutral unwrapped frames before animation callbacks. Revalidate source-owned native input without reinstalling identical paint; preserve source/font/account guards and deferred styled, wrapped and oversized paint. Release old native window bindings when complete short text fits, restoring current source scroll extents.
