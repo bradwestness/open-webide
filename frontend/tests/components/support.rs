@@ -27,6 +27,8 @@ use wasm_bindgen_futures::JsFuture;
 #[derive(Clone)]
 pub struct TestState {
     pub auth: AuthState,
+    pub memories: openwebide_frontend::state::memories::MemoriesState,
+    pub memory_actions: openwebide_frontend::project_memory::ProjectMemoryActions,
     pub api: Api,
     pub fake: Rc<FakeBackend>,
     pub chat: ChatState,
@@ -61,6 +63,12 @@ impl TestState {
         provide_context(workspace);
         provide_context(git);
         provide_context(chat);
+        let memories = openwebide_frontend::state::memories::MemoriesState::new();
+        provide_context(memories);
+        let memory_actions = openwebide_frontend::project_memory::ProjectMemoryActions::new(
+            api, memories, auth, projects, chat,
+        );
+        provide_context(memory_actions);
         let session_management =
             openwebide_frontend::state::sessions::SessionsState::new(chat, projects.active_project);
         provide_context(session_management);
@@ -73,6 +81,8 @@ impl TestState {
         ));
         Self {
             auth,
+            memories,
+            memory_actions,
             api,
             fake,
             chat,

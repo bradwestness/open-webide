@@ -126,7 +126,7 @@ pub fn plan(runtime: &ModelRuntime, input: PlanInput) -> openwebide_core::RunPla
         Some(root) if !request.tools.is_empty() => openwebide_core::RunKind::Agent {
             project_path: root.clone(),
         },
-        _ if projectless && !request.tools.is_empty() => openwebide_core::RunKind::WebChat,
+        _ if !request.tools.is_empty() => openwebide_core::RunKind::WebChat,
         _ => openwebide_core::RunKind::Chat,
     };
     openwebide_core::RunPlan {

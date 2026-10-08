@@ -85,3 +85,5 @@ reloads and device changes through session-scoped database storage. Returning to
 an active goal shows review/continue controls; recovery does not replay tools or
 start work automatically. A forked conversation starts without the source session's
 goal. Concurrent changes from another window require a refresh before updating.
+
+Project-wide knowledge and the Sessions memory toggle are described in [Project memory](project-memory.md).

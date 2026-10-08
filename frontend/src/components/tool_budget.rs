@@ -7,7 +7,10 @@ use leptos::prelude::*;
 use openwebide_core::{ToolDefinition, ToolSelection};
 
 pub fn catalog() -> Vec<ToolDefinition> {
-    let mut tools = openwebide_agent::vfs_tools();
+    let mut tools = openwebide_agent::tools::ToolName::ALL
+        .iter()
+        .map(|tool| tool.definition())
+        .collect::<Vec<_>>();
     tools.push(openwebide_agent::tasks::executor::definition());
     tools
 }

@@ -41,6 +41,10 @@ enum Route {
     CreateSystemPrompt,
     UpdateSystemPrompt,
     DeleteSystemPrompt,
+    GetProjectMemories,
+    ProjectMemoryCommand,
+    GetSessionMemories,
+    SessionMemoryCommand,
     ListProjects,
     GetEditorRecovery,
     SaveEditorRecovery,
@@ -163,6 +167,14 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         }
         ("PUT", ["projects", id, "editor-recovery"]) if numeric_id(id) => {
             Some(Route::SaveEditorRecovery)
+        }
+        ("GET", ["projects", id, "memories"]) if numeric_id(id) => Some(Route::GetProjectMemories),
+        ("POST", ["projects", id, "memories"]) if numeric_id(id) => {
+            Some(Route::ProjectMemoryCommand)
+        }
+        ("GET", ["sessions", id, "memories"]) if numeric_id(id) => Some(Route::GetSessionMemories),
+        ("POST", ["sessions", id, "memories"]) if numeric_id(id) => {
+            Some(Route::SessionMemoryCommand)
         }
         ("GET", ["projects"]) => Some(Route::ListProjects),
         ("POST", ["projects"]) => Some(Route::CreateProject),
@@ -360,6 +372,18 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::SetToolStreamUnsupported), Some(user)) => {
             api::connections::set_tool_stream_unsupported(req, &state, &path, user).await
+        }
+        (Some(Route::GetProjectMemories), Some(user)) => {
+            api::memories::get(&state, &path, user, false).await
+        }
+        (Some(Route::ProjectMemoryCommand), Some(user)) => {
+            api::memories::command(req, &state, &path, user, false).await
+        }
+        (Some(Route::GetSessionMemories), Some(user)) => {
+            api::memories::get(&state, &path, user, true).await
+        }
+        (Some(Route::SessionMemoryCommand), Some(user)) => {
+            api::memories::command(req, &state, &path, user, true).await
         }
         (Some(Route::GetEditorRecovery), Some(user)) => {
             api::editor_recovery::get(&state, &path, user).await
@@ -795,6 +819,10 @@ mod tests {
                 );
             }
             for route in [
+                Route::GetProjectMemories,
+                Route::ProjectMemoryCommand,
+                Route::GetSessionMemories,
+                Route::SessionMemoryCommand,
                 Route::Me,
                 Route::ListConnections,
                 Route::FilesGet,
@@ -834,6 +862,10 @@ mod tests {
             ("POST", "system-prompts", Route::CreateSystemPrompt),
             ("PUT", "system-prompts/5", Route::UpdateSystemPrompt),
             ("DELETE", "system-prompts/5", Route::DeleteSystemPrompt),
+            ("GET", "projects/5/memories", Route::GetProjectMemories),
+            ("POST", "projects/5/memories", Route::ProjectMemoryCommand),
+            ("GET", "sessions/5/memories", Route::GetSessionMemories),
+            ("POST", "sessions/5/memories", Route::SessionMemoryCommand),
             ("GET", "projects", Route::ListProjects),
             (
                 "GET",

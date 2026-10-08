@@ -4,6 +4,7 @@ mod branches;
 mod chat_queue;
 mod editor_recovery;
 mod goals;
+mod memories;
 mod model_setup;
 mod push;
 mod reviews;

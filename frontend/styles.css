@@ -3470,3 +3470,14 @@ button.browser-item {
   .tui-statusline:has(.tui-goal-status) .tui-model-picker { min-width: 0; }
   .tui-statusline:has(.tui-goal-status) .approval-mode-picker .ui-dropdown-label { max-width: 88px; overflow: hidden; text-overflow: ellipsis; }
 }
+
+/* Project memories share the Sessions sidebar and standard form controls. */
+.project-memories { border-top: 1px solid var(--border); padding-top: var(--space-3); }
+.project-memories .section-header h2 { margin: 0; }
+.project-memories .ui-check { align-items: center; color: var(--text-muted); font-size: var(--font-control); }
+.memory-editor { display: grid; gap: var(--space-2); margin: var(--space-2) 0; }
+.memory-editor .form-input { width: 100%; min-width: 0; box-sizing: border-box; }
+.memory-entry { margin-top: var(--space-2); }
+.memory-title { min-width: 0; overflow-wrap: anywhere; }
+.memory-entry .ui-disclosure-content { padding: var(--space-2); }
+.memory-content { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--text-muted); }

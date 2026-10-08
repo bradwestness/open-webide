@@ -943,6 +943,32 @@ impl BackendApi {
         )
         .await
     }
+    pub async fn memories(
+        &self,
+        id: i64,
+        session: bool,
+    ) -> Result<openwebide_core::ProjectMemories, String> {
+        self.get(&format!(
+            "/{}/{id}/memories",
+            if session { "sessions" } else { "projects" }
+        ))
+        .await
+    }
+    pub async fn memory_command(
+        &self,
+        id: i64,
+        command: &openwebide_core::MemoryCommand,
+        session: bool,
+    ) -> Result<openwebide_core::ProjectMemories, String> {
+        self.post(
+            &format!(
+                "/{}/{id}/memories",
+                if session { "sessions" } else { "projects" }
+            ),
+            command,
+        )
+        .await
+    }
     pub async fn get_todo_plan(
         &self,
         session: i64,

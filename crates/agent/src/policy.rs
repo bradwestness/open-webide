@@ -16,6 +16,8 @@ use crate::tools::ToolName;
 /// `fetch_web_page`, shell execution, git mutations) requires user approval.
 pub const AUTO_APPROVED: &[&str] = &[
     "todo_write",
+    "memory_search",
+    "memory_read",
     "host_info",
     "read_file",
     "list_dir",
@@ -192,6 +194,9 @@ mod tests {
     #[test]
     fn every_builtin_tool_is_classified() {
         const GATED: &[&str] = &[
+            "memory_create",
+            "memory_update",
+            "memory_delete",
             "write_file",
             "run_command",
             "git_commit",

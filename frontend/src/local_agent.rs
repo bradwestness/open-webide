@@ -825,17 +825,25 @@ pub async fn run_local_agent(
         .with_value(Clone::clone)
         .model_runtime(connection_id, model.as_deref())
         .await?;
-    let plan = openwebide_agent::session::plan(
-        &runtime,
-        openwebide_agent::session::PlanInput {
-            environment: environment.clone(),
-            system_prompt,
-            messages: openwebide_agent::session::conversation_history(history_entries),
-            tools: local_tools(cwd.as_deref()),
-            content: user_content,
-            editor: editor_context,
-        },
+    let memories = api
+        .with_value(Clone::clone)
+        .session_memories(session_id)
+        .await?;
+    let mut input = openwebide_agent::session::PlanInput {
+        environment: environment.clone(),
+        system_prompt,
+        messages: openwebide_agent::session::conversation_history(history_entries),
+        tools: local_tools(cwd.as_deref()),
+        content: user_content,
+        editor: editor_context,
+    };
+    openwebide_agent::memory::configure(
+        &mut input.tools,
+        &mut input.system_prompt,
+        &memories,
+        runtime.settings.context_limit,
     );
+    let plan = openwebide_agent::session::plan(&runtime, input);
     if !current() {
         return Err("Project access changed".into());
     }
@@ -1089,9 +1097,31 @@ impl openwebide_agent::todo::TodoStore for TodoPersistence {
     }
 }
 
-type BrowserTaskExecutor = openwebide_agent::todo::TodoTools<
-    VfsToolExecutor<BrowserFsaVfs, BrowserWebClient, Option<BrowserBridgeClient>>,
-    TodoPersistence,
+struct BrowserMemoryPersistence {
+    api: SendWrapper<Api>,
+    session: i64,
+}
+impl openwebide_agent::memory::MemoryStore for BrowserMemoryPersistence {
+    async fn execute(
+        &self,
+        command: &openwebide_core::MemoryCommand,
+    ) -> Result<openwebide_core::ProjectMemories, String> {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .memory_command(self.session, command, true)
+                .await
+        })
+        .await
+    }
+}
+
+type BrowserTaskExecutor = openwebide_agent::memory::MemoryTools<
+    openwebide_agent::todo::TodoTools<
+        VfsToolExecutor<BrowserFsaVfs, BrowserWebClient, Option<BrowserBridgeClient>>,
+        TodoPersistence,
+    >,
+    BrowserMemoryPersistence,
 >;
 type BrowserTaskGate = openwebide_agent::policy::PolicyGate<LocalPermissionGate, ApprovalAdapter>;
 #[derive(Clone)]
@@ -1107,17 +1137,23 @@ struct BrowserTaskFactory {
 }
 impl BrowserTaskFactory {
     fn executor(&self) -> BrowserTaskExecutor {
-        openwebide_agent::todo::TodoTools::new(
-            VfsToolExecutor::with_web_and_bridge(
-                self.vfs.clone(),
-                BrowserWebClient::new(*self.api),
-                self.bridge.clone(),
-            )
-            .with_context(self.environment.clone()),
-            TodoPersistence {
+        openwebide_agent::memory::MemoryTools::new(
+            openwebide_agent::todo::TodoTools::new(
+                VfsToolExecutor::with_web_and_bridge(
+                    self.vfs.clone(),
+                    BrowserWebClient::new(*self.api),
+                    self.bridge.clone(),
+                )
+                .with_context(self.environment.clone()),
+                TodoPersistence {
+                    api: self.api.clone(),
+                    session: self.session,
+                    anchor: self.anchor,
+                },
+            ),
+            BrowserMemoryPersistence {
                 api: self.api.clone(),
                 session: self.session,
-                anchor: self.anchor,
             },
         )
     }

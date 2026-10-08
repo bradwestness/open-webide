@@ -101,3 +101,5 @@ mod configuration;
 pub use configuration::Configuration;
 
 pub mod editor_chrome;
+
+pub mod memories;
