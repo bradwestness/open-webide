@@ -1386,7 +1386,7 @@ body {
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   user-select: none;
 }
 
@@ -3351,6 +3351,8 @@ button.browser-item {
 .app-navigation .tabbar-wrap, .app-navigation .tabbar { height: auto; min-height: 40px; border: 0; }
 .app-navigation .tabbar { overflow-x: auto; }
 .app-navigation .tabbar .tab { flex: none; max-width: 220px; }
+.app-navigation .tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.app-navigation .tab-mode, .app-navigation .tab-close { flex: none; }
 .app-navigation .logo { font-size: var(--font-control); padding: 4px; }
 .app-navigation .logo-mark { width: 28px; height: 28px; }
 .app-navigation .logo .ui-dropdown-label { display: inline-flex; align-items: center; gap: var(--space-2); }
@@ -3390,7 +3392,13 @@ button.browser-item {
 .editor-header .ui-action-menu, .editor-header .ui-action-menu-context { order: 5; }
 .editor-header .changes-display { order: 2; }
 .editor-header .changes-baseline { order: 2; font-size: var(--font-caption); color: var(--text-muted); }
-.editor-view-narrow { display: none; }
+/* Reserve the full three-choice width even when this file has no preview.
+   Labels and availability must not resize the neighboring file tab strip. */
+.editor-view-selector { flex: none; }
+.editor-view-desktop { font: 500 11px var(--mono); inline-size: calc(18ch + 70px); }
+.editor-view-narrow { display: none; inline-size: 112px; }
+.editor-view-narrow .ui-dropdown-trigger { width: 100%; box-sizing: border-box; }
+.editor-view-narrow .ui-dropdown-label { flex: 1; text-align: left; }
 .status-editor-slot, .status-editor-slot > div { display: contents; }
 .statusbar .editor-footer { border: 0; padding: 0; background: transparent; flex-wrap: nowrap; }
 .statusbar { height: auto; min-height: 36px; flex-wrap: wrap; gap: var(--space-2); }

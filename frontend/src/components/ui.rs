@@ -87,6 +87,7 @@ pub struct SegmentOption<T: Clone + PartialEq + Send + Sync + 'static> {
     pub value: T,
     pub glyph: Option<String>,
     pub disabled: Option<Signal<bool>>,
+    pub visible: Option<Signal<bool>>,
 }
 
 impl<T: Clone + PartialEq + Send + Sync + 'static> SegmentOption<T> {
@@ -96,7 +97,12 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> SegmentOption<T> {
             value,
             glyph: None,
             disabled: None,
+            visible: None,
         }
+    }
+    pub fn visible_when(mut self, visible: Signal<bool>) -> Self {
+        self.visible = Some(visible);
+        self
     }
     pub fn disabled_when(mut self, disabled: Signal<bool>) -> Self {
         self.disabled = Some(disabled);
@@ -117,34 +123,26 @@ pub fn SegmentedControl<T: Clone + PartialEq + Send + Sync + 'static>(
     view! {
         <div class=format!("ui-segmented-control {extra_class}") role="group">
             {options.into_iter().map(|opt| {
-                let opt_val = opt.value.clone();
-                let opt_val_click = opt.value.clone();
-                let is_active = {
-                    let opt_val = opt_val.clone();
-                    move || value.get() == opt_val
-                };
-
+                let visible = opt.visible;
                 view! {
-                    <button
-                        type="button"
-                        disabled=move || opt.disabled.is_some_and(|disabled| disabled.get())
-                        aria-pressed=move || (value.get() == opt_val).to_string()
-                        class=move || {
-                            if is_active() {
-                                "ui-seg-btn active"
-                            } else {
-                                "ui-seg-btn"
-                            }
+                    <Show when=move || visible.is_none_or(|visible| visible.get())>{
+                        let opt = opt.clone();
+                        let opt_val = opt.value.clone();
+                        let opt_val_click = opt.value.clone();
+                        let is_active = { let opt_val = opt.value.clone(); move || value.get() == opt_val };
+                        view! {
+                            <button type="button"
+                                disabled=move || opt.disabled.is_some_and(|disabled| disabled.get())
+                                aria-pressed=move || (value.get() == opt_val).to_string()
+                                class=move || if is_active() { "ui-seg-btn active" } else { "ui-seg-btn" }
+                                on:click=move |_| on_change.run(opt_val_click.clone())>
+                                {if let Some(g) = &opt.glyph {
+                                    view! { <span class="ui-seg-glyph">{g.clone()}</span> }.into_any()
+                                } else { ().into_any() }}
+                                <span class="ui-seg-label">{opt.label}</span>
+                            </button>
                         }
-                        on:click=move |_| on_change.run(opt_val_click.clone())
-                    >
-                        {if let Some(g) = &opt.glyph {
-                            view! { <span class="ui-seg-glyph">{g.clone()}</span> }.into_any()
-                        } else {
-                            ().into_any()
-                        }}
-                        <span class="ui-seg-label">{opt.label}</span>
-                    </button>
+                    }</Show>
                 }
             }).collect::<Vec<_>>()}
         </div>

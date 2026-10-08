@@ -626,3 +626,127 @@ async fn grouped_file_tab_actions_match_menu_rows_and_selected_tab_click_is_a_no
         }
     }
 }
+
+#[wasm_bindgen_test]
+async fn file_switches_retain_tab_geometry_scroll_and_view_controls() {
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.projects.projects.update(|items| items[0].mode = mode);
+            for path in [
+                "source.rs",
+                "README.md",
+                "third.txt",
+                "fourth.txt",
+                "fifth.txt",
+            ] {
+                state.workspace.register_editor_tab(1, path.into());
+            }
+            state.workspace.open_file.set(Some("source.rs".into()));
+            state.workspace.content.set("Source".into());
+            view! { <style>{include_str!("../../styles.css")}</style>{super::support::editor_view(state)} }
+        });
+        settle().await;
+        let editor = mounted.element(".editor");
+        for width in [380, 520, 760, 1000] {
+            editor
+                .style()
+                .set_property("width", &format!("{width}px"))
+                .unwrap();
+            editor.style().set_property("flex", "none").unwrap();
+            settle().await;
+            let strip = mounted.element(".editor-file-tabs");
+            strip.set_scroll_left(60.0);
+            let original = strip.get_bounding_client_rect();
+            let height = mounted
+                .element(".editor-header")
+                .get_bounding_client_rect()
+                .height();
+            let scroll = strip.scroll_left();
+            let tab = mounted.element("[data-editor-tab='README.md']");
+            let position = tab.get_bounding_client_rect();
+            let control = mounted.element(".editor-view-desktop .ui-seg-btn");
+            for path in ["README.md", "source.rs", "README.md", "source.rs"] {
+                mounted.state.workspace.open_file.set(Some(path.into()));
+                settle().await;
+                let current = strip.get_bounding_client_rect();
+                assert!(
+                    (current.width() - original.width()).abs() < 0.1,
+                    "strip width changed at {width}: {} -> {}",
+                    original.width(),
+                    current.width()
+                );
+                assert!(
+                    (mounted
+                        .element(".editor-header")
+                        .get_bounding_client_rect()
+                        .height()
+                        - height)
+                        .abs()
+                        < 0.1,
+                    "header height changed at {width}"
+                );
+                assert_eq!(strip.scroll_left(), scroll, "tab scroll changed at {width}");
+                assert!(tab.is_same_node(Some(&mounted.element("[data-editor-tab='README.md']"))));
+                assert!(
+                    (tab.get_bounding_client_rect().x() - position.x()).abs() < 0.1,
+                    "tab moved at {width}"
+                );
+                assert!(
+                    control
+                        .is_same_node(Some(&mounted.element(".editor-view-desktop .ui-seg-btn"))),
+                    "view controls remounted at {width}"
+                );
+            }
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn long_project_tabs_keep_close_buttons_inside_their_bounds() {
+    for mode in [
+        openwebide_core::WorkspaceMode::Local,
+        openwebide_core::WorkspaceMode::Remote,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.projects.projects.update(|items| {
+                items[0].name = "Carvana.ClaudeCloud.Api.with.a.long.name".into();
+                items[0].mode = mode;
+                let mut second = items[0].clone();
+                second.id = 2;
+                second.name = "open-webide".into();
+                items.push(second);
+            });
+            state.projects.open_tab_ids.set(vec![1, 2]);
+            let projects = state.projects;
+            view! { <style>{include_str!("../../styles.css")}</style><div class="app-navigation" style="width:720px">
+                <openwebide_frontend::components::TabBar on_select=Callback::new(move |id| projects.active_project.set(Some(id))) on_select_chat=Callback::new(|()| ()) on_close=Callback::new(|_| ()) />
+            </div> }
+        });
+        settle().await;
+        let first = mounted.element("[data-project-tab='1']");
+        let second = mounted.element("[data-project-tab='2']");
+        let first_position = first.get_bounding_client_rect();
+        let second_position = second.get_bounding_client_rect();
+        for project in [2, 1, 2, 1] {
+            mounted.state.projects.active_project.set(Some(project));
+            settle().await;
+            assert!(first.is_same_node(Some(&mounted.element("[data-project-tab='1']"))));
+            assert!(
+                (first.get_bounding_client_rect().width() - first_position.width()).abs() < 0.1
+            );
+            assert!((second.get_bounding_client_rect().x() - second_position.x()).abs() < 0.1);
+            let close = mounted
+                .element("[data-project-tab='1'] .tab-close")
+                .get_bounding_client_rect();
+            assert!(
+                close.right() <= first.get_bounding_client_rect().right(),
+                "close button overlaps next project"
+            );
+        }
+    }
+}

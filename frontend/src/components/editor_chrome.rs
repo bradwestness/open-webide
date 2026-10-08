@@ -42,11 +42,13 @@ pub(super) fn EditorViewSelector(
         }
     });
     view! { <div class="editor-view-selector">
-        <div class="editor-view-desktop">{move || {
-            let mut options = vec![SegmentOption::new("Edit", ViewMode::Code), SegmentOption::new("Changes", ViewMode::InlineDiff)];
-            if preview_supported.get() { options.push(SegmentOption::new("Preview", ViewMode::Preview)); }
-            view! { <SegmentedControl options=options value=normalized on_change=on_change /> }
-        }}</div>
+        <div class="editor-view-desktop">
+            <SegmentedControl options=vec![
+                SegmentOption::new("Edit", ViewMode::Code),
+                SegmentOption::new("Changes", ViewMode::InlineDiff),
+                SegmentOption::new("Preview", ViewMode::Preview).visible_when(preview_supported),
+            ] value=normalized on_change=on_change />
+        </div>
         <div class="editor-view-narrow"><DropdownSelect label="Editor view" trigger_class="btn ghost sm" value=Signal::derive(move || match normalized.get() { ViewMode::Code => "edit", ViewMode::Preview => "preview", _ => "changes" }.to_string()) options=Signal::derive(move || {
             let mut options = vec![SelectOption::new("edit", "Edit"), SelectOption::new("changes", "Changes")];
             if preview_supported.get() { options.push(SelectOption::new("preview", "Preview")); }
