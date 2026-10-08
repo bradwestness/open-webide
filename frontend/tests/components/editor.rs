@@ -15447,3 +15447,69 @@ async fn editor_save_completion_retains_root_and_account_ownership_in_both_modes
         }
     }
 }
+
+#[wasm_bindgen_test]
+async fn paragraph_global_origin_preserves_exact_overflow_rounding_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
+        let source = format!("const VALUE: &str = \"a{}\";", "word 文😀  ".repeat(12000));
+        let original = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("origin.rs".into()));
+            state.workspace.content.set(source.into());
+            EditorActions::new(state.workspace).install_syntax_transport(installed);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        let scope = std::cell::RefCell::new(None);
+        super::support::wait_until_with_timeout(
+            "styled global-origin measurements",
+            30_000,
+            || {
+                if !transport.pending.borrow().is_empty() {
+                    transport.respond(true);
+                }
+                mounted
+                    .state
+                    .workspace
+                    .editor_row_cache
+                    .with_untracked(|cache| {
+                        cache.as_ref().is_some_and(|cache| {
+                            let ready = cache.paint.prepared_source
+                                && cache.paint.projection.line_body(0) == Some(original.as_str())
+                                && cache.paint.tokens.iter().flat_map(|row| row.iter()).any(
+                                    |token| {
+                                        token.kind == openwebide_core::highlight::TokenKind::String
+                                    },
+                                )
+                                && mounted
+                                    .root
+                                    .query_selector(".editor-code.highlight-ready")
+                                    .unwrap()
+                                    .is_some();
+                            if ready {
+                                *scope.borrow_mut() = Some(cache.paint.clone());
+                            }
+                            ready
+                        })
+                    })
+            },
+        )
+        .await;
+        let scope = scope.into_inner().unwrap();
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert!(
+            openwebide_frontend::components::bounded_paragraph_matches_complete(&input, &scope, 0)
+                .await,
+            "{mode:?} exact complete scroll extent and every glyph anchor"
+        );
+    }
+}

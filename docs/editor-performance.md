@@ -1549,6 +1549,24 @@ from local overlap agreement. Native shaping and shifted/wrapped/bidi reuse
 remain open. [Rejected patch](editor-performance/suffix-reconnection-rejected.patch),
 [oracle output](editor-performance/suffix-reconnection-failure.txt).
 
+### Fractional global offset correction
+
+The original fresh-source counterexample is now a dedicated browser regression
+in both workspace modes, still comparing every glyph and the rounded scroll
+extent against the complete production renderer. It failed before the fix with
+the same 1,028,352 versus 1,028,351 px mismatch.
+
+The DOM adapter keeps the fractional origin in its own inline-block spacer and
+adds integer spacers of at most 1,048,576 px, rather than assigning the whole
+large fractional origin to one CSS length. Local glyph measurement, overlap
+validation and the complete-renderer oracle are unchanged. The focused optimized
+Chrome run passes both adapters (1.83 seconds). The full optimized-WASM suite
+passes all 424 checks: 422 ordinary checks, the font matrix (14.66 seconds) and
+the near-1-MiB matrix (21.18 seconds). Strict frontend WASM lint and formatting
+also pass. This establishes the correction
+for the regression fixture; it does not ship or prove suffix reconnection,
+wrapped/tabbed/bidi preparation or initial native shaping.
+
 ## Browser CI module footprint
 
 The `faf1040` CI run passed all 421 ordinary browser checks and the separate
@@ -1567,3 +1585,10 @@ check 18.88 seconds in this local run;
 these timings do not prove Linux CI reliability. The full CI run must verify the
 profile change on its own Chrome/host. Native tests and strict debug-target lint
 remain unchanged.
+
+The optimized-profile CI run `37767455776` passed all 421 ordinary checks and
+the font matrix, then failed the near-1-MiB test's unchanged 30-second readiness
+deadline (`admitted paragraph measurements`). The boundary geometry comparison
+was not reached. Optimized module loading alone therefore does not establish CI
+reliability; investigate the preparation delay without relaxing its geometry
+or readiness assertions.

@@ -259,9 +259,22 @@ fn measure_paragraph_probe(
         let gap = row.first_element_child().ok_or(())?;
         gap.set_attribute(
             "style",
-            &format!("display:inline-block;width:{}px", probe.origin),
+            &format!("display:inline-block;width:{}px", probe.origin.fract()),
         )
         .map_err(|_| ())?;
+        // Keep the fractional phase separate from large CSS lengths: a single
+        // large fractional width can lose subpixel precision before layout.
+        let mut remaining = probe.origin.floor();
+        while remaining > 0.0 {
+            let width = remaining.min(1_048_576.0);
+            let integer_gap = document().create_element("span").map_err(|_| ())?;
+            integer_gap
+                .set_attribute("style", &format!("display:inline-block;width:{width}px"))
+                .map_err(|_| ())?;
+            row.insert_before(&integer_gap, Some(&gap))
+                .map_err(|_| ())?;
+            remaining -= width;
+        }
     }
     let source_width = f64::from(row.scroll_width());
     if let (Some(trace), Some(started)) = (&timing, started) {

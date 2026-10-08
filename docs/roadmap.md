@@ -73,9 +73,10 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   Changed paragraphs now replay validated unchanged probe prefixes with matching
   source, paint runs and styles; the first changed probe retains fresh overlap
   checks. Incremental changed suffixes and remaining long-row latency remain.
-  The exact-origin suffix experiment exposed whole-paragraph overflow rounding
-  in fresh styled preparation; fix that precision boundary before relying on
-  reconnection alone. See the [candidate check](editor-performance.md#exact-origin-suffix-candidate-check).
+  Global overflow probes now preserve fractional phase separately from large
+  integer CSS lengths; the styled rounding counterexample matches complete
+  geometry in both adapters. Exact-origin suffix reconnection still needs its
+  own proof. See the [candidate check](editor-performance.md#exact-origin-suffix-candidate-check).
   Cold probes briefly await the selected font, with bounded fallback and fresh ownership checks.
   The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)
   records why Rust shaping and canvas widths cannot replace current DOM geometry directly.
