@@ -127,10 +127,17 @@ impl openwebide_agent::CancelCheck for ChatCancel {
 /// request (arriving as a separate Spin request) and the tail persists the
 /// reply, so the response body outlives the request handler.
 struct ChatPersistence {
+    user: openwebide_core::UserId,
     store: Arc<Store<AppDb>>,
     session: i64,
 }
 impl openwebide_agent::session::ChatPersistence for ChatPersistence {
+    async fn notify(&self, event: &openwebide_core::push::RunNotification) -> Result<(), String> {
+        self.store
+            .queue_run_notification(self.user, self.session, event, crate::state::now())
+            .await
+            .map_err(|error| error.to_string())
+    }
     async fn save_reply(
         &self,
         content: &str,
@@ -151,6 +158,7 @@ impl openwebide_agent::session::ChatPersistence for ChatPersistence {
 
 pub fn message_stream(
     store: Arc<Store<AppDb>>,
+    user: openwebide_core::UserId,
     session_id: i64,
     user_message: ChatMessage,
     chunks: Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>,
@@ -165,6 +173,7 @@ pub fn message_stream(
     };
     let machine = openwebide_agent::session::chat_events(
         ChatPersistence {
+            user,
             store,
             session: session_id,
         },
@@ -304,6 +313,7 @@ mod tests {
             .unwrap();
         let events = message_stream(
             store,
+            openwebide_core::UserId::new(1),
             session_id,
             user_message,
             fake_chunks(items),

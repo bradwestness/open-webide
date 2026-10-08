@@ -48,6 +48,8 @@ pub mod turn_summary;
 #[cfg(target_arch = "wasm32")]
 pub mod util;
 #[cfg(target_arch = "wasm32")]
+pub mod web_push;
+#[cfg(target_arch = "wasm32")]
 pub mod workspace;
 
 #[cfg(target_arch = "wasm32")]

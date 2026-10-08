@@ -253,7 +253,14 @@ async fn actual_local_remote_and_projectless_run_completions_use_the_shared_noti
             "{mode:?}: {:?}",
             mounted.state.chat.error.get_untracked()
         );
-        assert_eq!(host.shown.borrow()[0].0, "Run finished");
+        assert_eq!(
+            host.shown.borrow()[0].0,
+            if mode.is_some() {
+                "Run finished · test"
+            } else {
+                "Run finished"
+            }
+        );
     }
 }
 
@@ -325,4 +332,53 @@ async fn browser_notification_adapter_requests_shows_clicks_closes_and_reports_f
     assert!(host.show("fail", "body", "tag", Rc::new(|| {})).is_err());
     host.close();
     assert!(mock_closed());
+}
+
+#[wasm_bindgen_test]
+async fn background_push_avoids_duplicate_remote_alerts_and_retains_local_fallback() {
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let host = Host::new(NotificationPermission::Granted);
+        let installed = host.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_session();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.settings.browser_notifications.set(true);
+            let notifications = RunNotifications::new(installed, state.auth, Callback::new(|_| ()));
+            notifications.push_ready.set(true);
+            notifications.event(
+                openwebide_frontend::notifications::NotificationContext {
+                    auth: state.auth,
+                    chat: state.chat,
+                    settings: state.settings,
+                    ui: state.ui,
+                    chat_visible: false,
+                },
+                1,
+                &openwebide_core::RunEvent::Done {
+                    message: openwebide_core::ChatMessage {
+                        id: 5,
+                        session_id: 1,
+                        role: openwebide_core::Role::Assistant,
+                        content: "done".into(),
+                        created_at: 1,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        usage: None,
+                    },
+                },
+                false,
+            );
+            view! { <div /> }
+        });
+        settle().await;
+        assert_eq!(
+            host.shown.borrow().len(),
+            usize::from(mode == WorkspaceMode::Local)
+        );
+        drop(mounted);
+    }
 }

@@ -188,3 +188,5 @@ Further reference: [architecture](docs/architecture.md),
 ## License
 
 [MIT](LICENSE).
+
+Browser notifications support [Web Push](docs/web-push.md) for remote and projectless runs.

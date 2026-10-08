@@ -127,6 +127,7 @@ pub(crate) mod model_setup;
 mod paths;
 pub(super) mod projects;
 pub(super) mod prompts;
+pub(super) mod push;
 mod query;
 pub(super) mod reviews;
 pub(super) mod sessions;

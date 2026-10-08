@@ -505,6 +505,20 @@ struct SessionPersistence<'a, B> {
     backend: &'a B,
 }
 impl<B: RunBackend> openwebide_agent::session::RunPersistence for SessionPersistence<'_, B> {
+    async fn notify(&self, event: &openwebide_core::push::RunNotification) -> Result<(), String> {
+        let result = self
+            .backend
+            .notify(self.run.owner, self.run.session_id, event)
+            .await;
+        if result.is_err() {
+            eprintln!(
+                "Could not queue Web Push for session {}",
+                self.run.session_id
+            );
+        }
+        result
+    }
+
     async fn task(
         &self,
         anchor: i64,

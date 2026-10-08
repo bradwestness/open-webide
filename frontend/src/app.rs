@@ -252,6 +252,15 @@ pub fn App() -> impl IntoView {
         navigation.open_session,
     );
     provide_context(notifications);
+    crate::web_push::install(
+        api,
+        auth,
+        settings,
+        chat_state,
+        layout,
+        notifications,
+        navigation.open_session,
+    );
 
     let settings_actions = build_settings_actions(SettingsActionContext { api, settings, ui });
     let SettingsActions {

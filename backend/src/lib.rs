@@ -11,6 +11,7 @@ mod files;
 mod git;
 mod http_client;
 mod mime;
+mod push;
 mod router;
 mod sse;
 mod state;
