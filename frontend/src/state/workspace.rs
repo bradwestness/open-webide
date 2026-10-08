@@ -171,6 +171,13 @@ pub struct EditorParagraphCache {
     pub rows: Vec<(usize, Arc<openwebide_core::editor::ParagraphMeasurements>)>,
 }
 
+/// Original styled paint runs, independent of completed DOM geometry.
+#[derive(Clone, Debug)]
+pub struct EditorPaintRuns {
+    pub paint: EditorRowPaint,
+    pub rows: Vec<(usize, Arc<[usize]>)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct EditorRowCache {
     pub paint: EditorRowPaint,
@@ -400,6 +407,7 @@ pub struct WorkspaceState {
     pub editor_rows: RwSignal<Option<EditorRowMeasurements>>,
     pub editor_row_cache: RwSignal<Option<EditorRowCache>>,
     pub editor_paragraph_cache: RwSignal<Option<EditorParagraphCache>>,
+    pub editor_paint_runs: RwSignal<Option<EditorPaintRuns>>,
     pub editor_row_preparation: RwSignal<Option<EditorRowPreparation>>,
     pub editor_row_ticket: RwSignal<u64>,
     pub editor_group: RwSignal<u64>,
@@ -501,6 +509,7 @@ impl WorkspaceState {
             editor_rows: RwSignal::new(None),
             editor_row_cache: RwSignal::new(None),
             editor_paragraph_cache: RwSignal::new(None),
+            editor_paint_runs: RwSignal::new(None),
             editor_row_preparation: RwSignal::new(None),
             editor_row_ticket: RwSignal::new(0),
             editor_group: RwSignal::new(0),
@@ -903,6 +912,7 @@ impl WorkspaceState {
         self.editor_rows.set(None);
         self.editor_row_cache.set(None);
         self.editor_paragraph_cache.set(None);
+        self.editor_paint_runs.set(None);
         self.editor_row_preparation.set(None);
         self.editor_row_ticket
             .update(|ticket| *ticket = ticket.wrapping_add(1));

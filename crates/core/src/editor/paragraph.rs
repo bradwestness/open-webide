@@ -57,7 +57,7 @@ pub struct ParagraphMeasurementPlan<'a> {
     has_tabs: bool,
     local_origin: f64,
     retried: bool,
-    runs: Vec<usize>,
+    runs: Arc<[usize]>,
     records: Vec<ParagraphMeasurement>,
     retained_rectangles: usize,
 }
@@ -70,6 +70,15 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         body: &'a str,
         index: VisualLineIndex,
         runs: Vec<usize>,
+    ) -> Option<Self> {
+        Self::with_shared_run_boundaries(body, index, runs.into())
+    }
+    /// Original paint boundaries can be shared with source-owned viewport paint
+    /// before any dimensions or glyph measurements have been completed.
+    pub fn with_shared_run_boundaries(
+        body: &'a str,
+        index: VisualLineIndex,
+        runs: Arc<[usize]>,
     ) -> Option<Self> {
         if body.len() <= MAX_MEASURE_BYTES
             || !index.source_paint_eligible()
@@ -491,7 +500,7 @@ impl<'a> ParagraphMeasurementPlan<'a> {
             self.scroll_width,
             HorizontalGeometry::new(self.index.len() - 1, width, height, self.anchors)?,
             ParagraphMeasurements {
-                runs: self.runs.into(),
+                runs: self.runs,
                 records: self.records,
             },
         ))
@@ -531,6 +540,29 @@ mod tests {
         }
         plan.finish_with_measurements().unwrap()
     }
+    #[test]
+    fn completed_geometry_keeps_shared_original_run_boundaries() {
+        let body = "word 文😀 ".repeat(8000);
+        let index = VisualLineIndex::new(&body).unwrap();
+        let runs: Arc<[usize]> = index.text_run_boundaries().collect::<Vec<_>>().into();
+        let mut plan =
+            ParagraphMeasurementPlan::with_shared_run_boundaries(&body, index, runs.clone())
+                .unwrap();
+        assert!(Arc::ptr_eq(&plan.runs, &runs));
+        while let Some(probe) = plan.probe().cloned() {
+            let end = plan.index.index_at_byte(&body, probe.bytes.end).unwrap();
+            let rects = rectangles(&plan);
+            assert!(plan.record(
+                244.0,
+                15.0,
+                (f64::from(u32::try_from(end).unwrap()) * 7.0).max(244.0),
+                &rects,
+            ));
+        }
+        let (_, _, completed) = plan.finish_with_measurements().unwrap();
+        assert!(Arc::ptr_eq(&completed.runs, &runs));
+    }
+
     #[test]
     fn retained_paint_runs_locate_original_unicode_boundaries() {
         let source = format!(

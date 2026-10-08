@@ -11759,6 +11759,57 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
 
 #[wasm_bindgen_test]
 async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
+    #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+    export function auditParagraphReadiness() {
+        const previous = window.__openwebideEditorProbeTiming;
+        const started = performance.now(), probes = new Map();
+        window.__openwebideEditorProbeTiming = (paint, phase, elapsed, units) => {
+            let probe = probes.get(paint);
+            if (!probe) {
+                probe = { node: paint, phases: new Map() };
+                probes.set(paint, probe);
+            }
+            const value = probe.phases.get(phase) ?? {calls:0, milliseconds:0, units:0};
+            value.calls++; value.milliseconds += elapsed; value.units += units;
+            probe.phases.set(phase, value);
+            previous?.(paint, phase, elapsed, units);
+        };
+        return {
+            progress(root) {
+                const input = root.querySelector('.editor-textarea');
+                return JSON.stringify({
+                    elapsed: performance.now() - started,
+                    classes: root.querySelector('.editor-code')?.className,
+                    nativeUnits: input?.value.length,
+                    bound: input?.dataset.editorNativeBound,
+                    fonts: [...document.fonts].map(face => ({family:face.family,status:face.status})),
+                    probes: [...probes.values()].map(({node, phases}) => ({
+                        connected:node.isConnected,
+                        scope: {...node.parentElement?.dataset},
+                        phases: Object.fromEntries(phases)
+                    }))
+                });
+            },
+            restore() {
+                if (previous === undefined) delete window.__openwebideEditorProbeTiming;
+                else window.__openwebideEditorProbeTiming = previous;
+            }
+        };
+    }
+    "#)]
+    extern "C" {
+        fn auditParagraphReadiness() -> wasm_bindgen::JsValue;
+    }
+    struct Audit(wasm_bindgen::JsValue);
+    impl Drop for Audit {
+        fn drop(&mut self) {
+            let _ = js_sys::Reflect::get(&self.0, &"restore".into())
+                .unwrap()
+                .unchecked_into::<js_sys::Function>()
+                .call0(&wasm_bindgen::JsValue::NULL);
+        }
+    }
+
     use openwebide_core::WorkspaceMode;
     let font = loadEditorFont(
         "Neon",
@@ -11767,6 +11818,9 @@ async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
     .await
     .unwrap();
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let audit = Audit(auditParagraphReadiness());
+        let clock = web_sys::window().unwrap().performance().unwrap();
+        let next_report = std::cell::Cell::new(clock.now() + 5_000.0);
         let unit = "文😀 words ";
         let source = unit.repeat(1_048_576 / unit.len());
         let mounted = mount_test(move |state| {
@@ -11781,6 +11835,18 @@ async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
         });
         let scope = std::cell::RefCell::new(None);
         super::support::wait_until_with_timeout("admitted paragraph measurements", 30_000, || {
+            if clock.now() >= next_report.get() {
+                next_report.set(clock.now() + 5_000.0);
+                let progress = js_sys::Reflect::get(&audit.0, &"progress".into())
+                    .unwrap()
+                    .unchecked_into::<js_sys::Function>()
+                    .call1(&wasm_bindgen::JsValue::NULL, mounted.root.as_ref())
+                    .unwrap();
+                wasm_bindgen_test::console_log!(
+                    "paragraph readiness {mode:?}: {}",
+                    progress.as_string().unwrap()
+                );
+            }
             mounted
                 .state
                 .workspace
@@ -11875,71 +11941,155 @@ async fn styled_horizontal_slices_resume_original_runs_without_scanning_token_pr
         let scroll = openwebide_frontend::viewport::editor_scroll(&input);
         let width = scroll.scroll_width();
         assert!(width > 100_000);
-        for fraction in [0.3, 0.7, 0.98] {
-            take_highlight_segment_bytes();
-            take_highlight_source_bytes();
-            openwebide_frontend::viewport::set_editor_scroll_left(
-                &input,
-                f64::from(width) * fraction,
-            );
-            input
-                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
-                .unwrap();
-            wait_until("styled viewport follows horizontal source interval", || {
-                mounted
-                    .root
-                    .query_selector(".editor-source-line[data-paint-left]")
+        for uncached in [false, true] {
+            if uncached {
+                mounted.state.workspace.editor_paragraph_cache.set(None);
+                mounted.state.workspace.editor_paint_runs.set(None);
+            }
+            let mut retained_runs = None;
+            let fractions = if uncached {
+                [0.2, 0.6, 0.92]
+            } else {
+                [0.3, 0.7, 0.98]
+            };
+            for fraction in fractions {
+                openwebide_frontend::state_actions::editor::take_paint_run_segment_bytes();
+                take_highlight_segment_bytes();
+                take_highlight_source_bytes();
+                openwebide_frontend::viewport::set_editor_scroll_left(
+                    &input,
+                    f64::from(width) * fraction,
+                );
+                input
+                    .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                    .unwrap();
+                wait_until("styled viewport follows horizontal source interval", || {
+                    mounted
+                        .root
+                        .query_selector(".editor-source-line[data-paint-left]")
+                        .unwrap()
+                        .and_then(|row| row.get_attribute("data-paint-left"))
+                        .and_then(|left| left.parse::<f64>().ok())
+                        .is_some_and(|left| {
+                            left <= scroll.scroll_left() + 30.0
+                                && scroll.scroll_left() - left
+                                    < f64::from(input.client_width()) * 2.0 + 30.0
+                        })
+                })
+                .await;
+                let segmented = take_highlight_segment_bytes();
+                let painted = take_highlight_source_bytes();
+                assert!(
+                    segmented > 0 && segmented <= 65_536 + 1024,
+                    "{mode:?} fraction={fraction} segmented={segmented}"
+                );
+                assert!(
+                    painted > 0 && painted <= 65_536,
+                    "{mode:?} painted={painted}"
+                );
+                let row = mounted.element(".editor-source-line");
+                let fragment = row
+                    .query_selector(":scope > .editor-source-fragment")
                     .unwrap()
-                    .and_then(|row| row.get_attribute("data-paint-left"))
-                    .and_then(|left| left.parse::<f64>().ok())
-                    .is_some_and(|left| {
-                        left <= scroll.scroll_left() + 30.0
-                            && scroll.scroll_left() - left
-                                < f64::from(input.client_width()) * 2.0 + 30.0
-                    })
-            })
-            .await;
-            let segmented = take_highlight_segment_bytes();
-            let painted = take_highlight_source_bytes();
-            assert!(
-                segmented > 0 && segmented <= 65_536 + 1024,
-                "{mode:?} fraction={fraction} segmented={segmented}"
-            );
-            assert!(
-                painted > 0 && painted <= 65_536,
-                "{mode:?} painted={painted}"
-            );
-            let row = mounted.element(".editor-source-line");
-            let fragment = row
-                .query_selector(":scope > .editor-source-fragment")
-                .unwrap()
-                .unwrap();
-            let start: usize = fragment
-                .get_attribute("data-paint-start")
-                .unwrap()
-                .parse()
-                .unwrap();
-            let end: usize = fragment
-                .get_attribute("data-paint-end")
-                .unwrap()
-                .parse()
-                .unwrap();
-            assert_eq!(
-                fragment.text_content().unwrap(),
-                String::from_utf16(&native[start..end]).unwrap()
-            );
-            assert!(fragment.query_selector(".tok-string").unwrap().is_some());
-            assert_eq!(scroll.scroll_width(), width);
-            assert_editor_native_source(&input, mounted.state.workspace, &original);
-            let bounds = input.get_bounding_client_rect();
-            let hit = openwebide_frontend::viewport::editor_caret_from_point(
-                &input,
-                bounds.left() + 8.0,
-                bounds.top() + 20.0,
-            )
-            .unwrap() as usize;
-            assert!((start..end).contains(&hit));
+                    .unwrap();
+                let start: usize = fragment
+                    .get_attribute("data-paint-start")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                let end: usize = fragment
+                    .get_attribute("data-paint-end")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert_eq!(
+                    fragment.text_content().unwrap(),
+                    String::from_utf16(&native[start..end]).unwrap()
+                );
+                assert!(fragment.query_selector(".tok-string").unwrap().is_some());
+                assert_eq!(scroll.scroll_width(), width);
+                assert_editor_native_source(&input, mounted.state.workspace, &original);
+                let bounds = input.get_bounding_client_rect();
+                let hit = openwebide_frontend::viewport::editor_caret_from_point(
+                    &input,
+                    bounds.left() + 8.0,
+                    bounds.top() + 20.0,
+                )
+                .unwrap() as usize;
+                assert!((start..end).contains(&hit));
+                if uncached {
+                    let scanned =
+                        openwebide_frontend::state_actions::editor::take_paint_run_segment_bytes();
+                    let runs = mounted
+                        .state
+                        .workspace
+                        .editor_paint_runs
+                        .get_untracked()
+                        .unwrap()
+                        .rows[0]
+                        .1
+                        .clone();
+                    if let Some(previous) = &retained_runs {
+                        assert!(std::sync::Arc::ptr_eq(previous, &runs));
+                        assert_eq!(scanned, 0, "{mode:?} warm styled run boundaries");
+                    } else {
+                        assert!(scanned > 65_536 && scanned <= original.len());
+                    }
+                    retained_runs = Some(runs);
+                    assert!(
+                        mounted
+                            .state
+                            .workspace
+                            .editor_paragraph_cache
+                            .get_untracked()
+                            .is_none()
+                    );
+                }
+            }
         }
+        let cache = mounted
+            .state
+            .workspace
+            .editor_paint_runs
+            .get_untracked()
+            .unwrap();
+        let actions =
+            openwebide_frontend::state_actions::editor::EditorActions::new(mounted.state.workspace);
+        for case in 0..8 {
+            let mut stale = cache.paint.clone();
+            match case {
+                0 => stale.font_epoch += 1,
+                1 => stale.layout_epoch += 1,
+                2 => stale.view_revision += 1,
+                3 => stale.read_revision += 1,
+                4 => stale.epoch += 1,
+                5 => stale.account_generation += 1,
+                6 => stale.key.0 += 1,
+                _ => stale.key.1 = "other.rs".into(),
+            }
+            assert!(actions.prepare_paragraph_measurements(&stale, 0).is_none());
+            assert!(std::sync::Arc::ptr_eq(
+                &cache.rows[0].1,
+                &mounted
+                    .state
+                    .workspace
+                    .editor_paint_runs
+                    .get_untracked()
+                    .unwrap()
+                    .rows[0]
+                    .1
+            ));
+        }
+        openwebide_frontend::state_actions::editor::take_paint_run_segment_bytes();
+        assert!(
+            actions
+                .prepare_paragraph_measurements(&cache.paint, 0)
+                .is_some()
+        );
+        assert_eq!(
+            openwebide_frontend::state_actions::editor::take_paint_run_segment_bytes(),
+            0
+        );
     }
 }
 

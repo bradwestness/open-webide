@@ -32,6 +32,10 @@ mod motion;
 pub use input::{EditorNativeCommit, EditorNativeContext};
 mod preparation;
 mod rows;
+#[cfg(feature = "test-support")]
+pub fn take_paint_run_segment_bytes() -> usize {
+    rows::take_paint_run_segment_bytes()
+}
 pub use rows::{
     EditorFragmentCache, EditorFragmentWindow, EditorParagraphSuffix, EditorRowSourceSlice,
 };

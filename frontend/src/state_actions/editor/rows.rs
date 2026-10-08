@@ -182,6 +182,51 @@ fn paint_suffix_start(old: &PaintRow<'_>, new: &PaintRow<'_>) -> Option<usize> {
     }
     Some(start)
 }
+const MAX_PAINT_RUN_ROWS: usize = 8;
+const MAX_RETAINED_PAINT_RUNS: usize = 16 * 1024;
+#[cfg(feature = "test-support")]
+thread_local! { static PAINT_RUN_SEGMENT_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(feature = "test-support")]
+pub(super) fn take_paint_run_segment_bytes() -> usize {
+    PAINT_RUN_SEGMENT_BYTES.replace(0)
+}
+fn styled_paint_runs(body: &str, row: &PaintRow<'_>, max_runs: usize) -> Option<Arc<[usize]>> {
+    use openwebide_core::editor::visual_text_run_ranges;
+    if row.plain.is_some() {
+        return None;
+    }
+    let mut runs = Vec::new();
+    let mut offset = 0;
+    for (at, token) in row.tokens.iter().enumerate() {
+        let text = if row.normalize_cr && at + 1 == row.tokens.len() {
+            token.text.strip_suffix('\r').unwrap_or(&token.text)
+        } else {
+            &token.text
+        };
+        if text.len() > 512 {
+            runs.extend(visual_text_run_ranges(text).map(|run| {
+                #[cfg(feature = "test-support")]
+                PAINT_RUN_SEGMENT_BYTES.set(PAINT_RUN_SEGMENT_BYTES.get() + run.len());
+                offset + run.end
+            }));
+        } else if token.kind != openwebide_core::highlight::TokenKind::Plain
+            || row.tokens.get(at + 1).is_none_or(|next| {
+                next.kind != openwebide_core::highlight::TokenKind::Plain || next.text.len() > 512
+            })
+        {
+            runs.push(offset + text.len());
+        }
+        if runs.len() > max_runs {
+            return None;
+        }
+        offset += text.len();
+    }
+    if offset != body.len() {
+        return None;
+    }
+    runs.dedup();
+    Some(runs.into())
+}
 fn same_measurement_environment(old: &EditorRowPaint, paint: &EditorRowPaint) -> bool {
     old.font_epoch == paint.font_epoch
         && old.key == paint.key
@@ -232,7 +277,7 @@ impl EditorActions {
         paint: &EditorRowPaint,
         row: usize,
     ) -> Option<openwebide_core::editor::ParagraphMeasurementPlan<'_>> {
-        use openwebide_core::editor::{ParagraphMeasurementPlan, visual_text_run_ranges};
+        use openwebide_core::editor::ParagraphMeasurementPlan;
         let body = paint.projection.line_body(row)?;
         // A local tab overlap can agree while the complete paragraph's rounded
         // extent differs. Retain complete preparation until the adapter proves
@@ -247,32 +292,33 @@ impl EditorActions {
                 .then(|| ParagraphMeasurementPlan::new(body, index))
                 .flatten();
         }
-        let mut runs = Vec::new();
-        let mut offset = 0;
-        for (at, token) in row.tokens.iter().enumerate() {
-            let text = if row.normalize_cr && at + 1 == row.tokens.len() {
-                token.text.strip_suffix('\r').unwrap_or(&token.text)
-            } else {
-                &token.text
-            };
-            if text.len() > 512 {
-                runs.extend(visual_text_run_ranges(text).map(|run| offset + run.end));
-            } else if token.kind != openwebide_core::highlight::TokenKind::Plain
-                || row.tokens.get(at + 1).is_none_or(|next| {
-                    next.kind != openwebide_core::highlight::TokenKind::Plain
-                        || next.text.len() > 512
-                })
-            {
-                runs.push(offset + text.len());
-            }
-            offset += text.len();
-        }
-        if offset != body.len() {
+        let runs = styled_paint_runs(body, &row, usize::MAX)?;
+        ParagraphMeasurementPlan::with_shared_run_boundaries(body, index, runs)
+    }
+    /// DOM preparation and viewport paint share the same original styled runs.
+    /// Cached boundaries publish no dimensions or partially measured geometry.
+    pub fn prepare_paragraph_measurements<'a>(
+        self,
+        paint: &'a EditorRowPaint,
+        row: usize,
+    ) -> Option<openwebide_core::editor::ParagraphMeasurementPlan<'a>> {
+        if !self.row_paint_current(paint) {
             return None;
         }
-        runs.dedup();
-        ParagraphMeasurementPlan::with_run_boundaries(body, index, runs)
+        let body = paint.projection.line_body(row)?;
+        if body.as_bytes().contains(&b'\t') {
+            return None;
+        }
+        if let Some(runs) = self.cached_styled_paint_runs(paint, row) {
+            return openwebide_core::editor::ParagraphMeasurementPlan::with_shared_run_boundaries(
+                body,
+                paint.projection.visual_line_index(row)?,
+                runs,
+            );
+        }
+        Self::paragraph_measurements(paint, row)
     }
+
     pub fn resume_paragraph_measurements(
         self,
         paint: &EditorRowPaint,
@@ -682,13 +728,60 @@ impl EditorActions {
             starts_paint_run,
         })
     }
+    fn cached_styled_paint_runs(self, paint: &EditorRowPaint, row: usize) -> Option<Arc<[usize]>> {
+        if !self.row_paint_current(paint) {
+            return None;
+        }
+        if let Some(runs) = self.workspace.editor_paint_runs.with_untracked(|cache| {
+            let cache = cache
+                .as_ref()
+                .filter(|old| same_paint_runs(&old.paint, paint))?;
+            cache
+                .rows
+                .iter()
+                .find(|(index, _)| *index == row)
+                .map(|(_, runs)| runs.clone())
+        }) {
+            return Some(runs);
+        }
+        if self.workspace.editor_paint_runs.with_untracked(|cache| {
+            cache
+                .as_ref()
+                .is_some_and(|old| !same_paint_runs(&old.paint, paint))
+        }) {
+            self.workspace.editor_paint_runs.set(None);
+        }
+        let body = paint.projection.line_body(row)?;
+        if body.len() <= openwebide_core::editor::MAX_MEASURE_BYTES
+            || body.len() > openwebide_core::editor::MAX_EDITOR_LINE_BYTES
+        {
+            return None;
+        }
+        let runs = styled_paint_runs(body, &paint_row(paint, row)?, MAX_RETAINED_PAINT_RUNS)?;
+        self.workspace.editor_paint_runs.update(|cache| {
+            let cache = cache.get_or_insert_with(|| crate::state::workspace::EditorPaintRuns {
+                paint: paint.clone(),
+                rows: Vec::new(),
+            });
+            if !same_paint_runs(&cache.paint, paint) {
+                cache.paint = paint.clone();
+                cache.rows.clear();
+            }
+            if cache.rows.len() == MAX_PAINT_RUN_ROWS {
+                cache.rows.remove(0);
+            }
+            cache.rows.push((row, runs.clone()));
+        });
+        Some(runs)
+    }
     fn paragraph_paint_run_start(
         self,
         paint: &EditorRowPaint,
         row: usize,
         byte: usize,
     ) -> Option<usize> {
-        self.workspace
+        let retained = self
+            .workspace
             .editor_paragraph_cache
             .with_untracked(|cache| {
                 let cache = cache.as_ref()?;
@@ -704,7 +797,16 @@ impl EditorActions {
                     .find(|(index, _)| *index == row)?
                     .1
                     .paint_run_start(byte)
-            })
+            });
+        if retained.is_some() {
+            return retained;
+        }
+        let runs = self.cached_styled_paint_runs(paint, row)?;
+        if byte > *runs.last()? {
+            return None;
+        }
+        let end = runs.partition_point(|end| *end <= byte);
+        Some(end.checked_sub(1).map_or(0, |index| runs[index]))
     }
     pub fn forget_measured_row_geometry(self, cache: &mut EditorFragmentCache, row: usize) {
         cache.geometry.retain(|(index, _)| *index != row);

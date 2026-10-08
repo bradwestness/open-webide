@@ -65,18 +65,21 @@ reading/navigation and Find/Replace use the same engine. See [editor controls](e
   use complete measurement. Continuation probes and indexed plain viewport
   slices resume segmentation at proven original run boundaries. Eligible styled
   viewport slices now reuse retained paragraph run boundaries with exact immutable
-  source/token/guide and environment ownership; uncached styled slices retain the
-  original scan. Cropped ranges retain token wrappers, including italic comments.
+  source/token/guide and environment ownership. Styled rows without completed
+  geometry now retain bounded original-run tables and share them with paragraph
+  preparation; the first build still scans the row, subsequent slices reuse it.
+  Over-limit run tables retain the original scan. Cropped ranges retain token
+  wrappers, including italic comments.
   Prepared grammar rows retain colors beyond the lexical fallback's 10 KB cutoff,
   within unchanged source/work admission. Tabbed/wrapped/bidi preparation,
-  uncached styled viewport prefix segmentation and initial native shaping remain.
+  over-limit styled viewport prefix segmentation and initial native shaping remain.
   Changed paragraphs now replay validated unchanged probe prefixes with matching
   source, paint runs and styles; the first changed probe retains fresh overlap
   checks. Unchanged suffix probes now replay only after exact incoming overlap,
   measured origin, dimensions, source offsets and paint runs reconnect; retained
   rectangle allocations remain shared. Shifted suffixes and remaining long-row
-  latency remain. Global overflow probes now preserve fractional phase separately from large
-  integer CSS lengths; the styled rounding counterexample matches complete
+  latency remain. Global overflow probes now preserve fractional phase separately
+  from large integer CSS lengths; the styled rounding counterexample matches complete
   geometry in both adapters. See the [candidate check](editor-performance.md#exact-origin-suffix-candidate-check).
   Cold probes briefly await the selected font, with bounded fallback and fresh ownership checks.
   The [cold layout candidate check](editor-performance.md#cold-layout-candidate-check)

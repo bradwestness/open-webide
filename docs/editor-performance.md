@@ -1625,3 +1625,43 @@ and browser storage measurements. The near-limit test took 69.16 seconds across
 both adapters and differential oracles, retaining each unchanged 30-second
 readiness deadline. This is one Linux success; the previous readiness timeout
 still requires repeat verification before claiming reliable CI.
+
+## Original styled runs without completed geometry
+
+Original-run boundaries now have a separate source-owned cache, available before
+paragraph geometry finishes and for styled rows that retain complete preparation.
+The DOM adapter calls the editor facade; shared policy builds exact token/run
+boundaries once, caps retained tables at eight rows and 16,384 ends per row, and
+keeps the existing uncached path when retention limits do not fit. Paragraph
+plans and completed measurements share the same immutable boundary allocation.
+The cache does not publish dimensions, estimated glyph anchors or partial layout.
+
+The browser regression clears both paragraph measurements and run metadata, then
+visits three new horizontal positions in a grammar-styled Unicode/CRLF row. The
+first table build segments the long token; later paints segment zero source bytes
+for run-table construction and share its allocation. Actual cropped HTML still
+segments its small selected runs, with the unchanged 65,536-byte source-paint and
+65,536 + 1,024-byte segmentation ceilings. It checks exact UTF-16 source text,
+String wrappers, unchanged complete scroll width and pointer hits in each slice.
+Both workspace modes pass the focused run (0.96 seconds). Stale font, layout,
+view, read, pending-source, account, project and file scopes cannot replace the
+current table; paragraph preparation reuses it without another segmentation pass.
+
+This is source-work and geometry-contract evidence, not application latency
+percentiles. First-build segmentation, over-limit tables, cold native shaping
+and tabbed/wrapped/bidi preparation still require further work.
+
+Verification: 449 native core tests, all 426 browser checks, strict native core
+and WASM frontend lint, formatting and the Trunk/PWA release build pass. The font matrix took 14.84 seconds;
+the near-limit contract took 21.52 seconds locally. Neither this metadata change
+nor the earlier suffix change establishes CI reliability: run `37771757040`
+passed four jobs and the ordinary/font browser checks, then again hit the
+unchanged near-limit readiness deadline before the differential oracle.
+
+The near-limit test now logs opt-in row-probe phase/scope totals and native/font
+readiness every five seconds, retaining all deadlines and geometry assertions.
+Its local sample at 5,832 ms had 748,980 native UTF-16 units installed, loaded Neon
+fonts, no row probes yet and no bounded-native declaration. That points to cold
+startup/native layout before row preparation; it is not proof of the Linux
+failure's cause. The next CI failure can show whether probes started, were
+cancelled, or fell back to complete measurement.

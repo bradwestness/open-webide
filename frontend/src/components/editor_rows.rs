@@ -108,7 +108,11 @@ async fn measure_paragraph(
     render: &impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
     actions: Option<EditorActions>,
 ) -> Result<Option<(f64, openwebide_core::editor::HorizontalGeometry)>, ()> {
-    let Some(mut plan) = EditorActions::paragraph_measurements(scope, logical) else {
+    let plan = actions.map_or_else(
+        || EditorActions::paragraph_measurements(scope, logical),
+        |actions| actions.prepare_paragraph_measurements(scope, logical),
+    );
+    let Some(mut plan) = plan else {
         return Ok(None);
     };
     if let Some(actions) = actions {
