@@ -10,6 +10,17 @@ pub fn LogoMark(#[prop(default = "")] class: &'static str) -> impl IntoView {
     }
 }
 
+/// Compact, accessible progress for an operation with no percentage to report.
+#[component]
+pub fn LoadingStatus(label: &'static str) -> impl IntoView {
+    view! {
+        <span class="ui-loading-status" role="status">
+            <span class="ui-spinner" aria-hidden="true" />
+            <span>{label}</span>
+        </span>
+    }
+}
+
 /// Visual variant for buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ButtonVariant {

@@ -19,6 +19,14 @@ pub const LANGUAGE_CASES: &[(&str, &str, FoldRange)] = &[
         },
     ),
     (
+        "numeric.ts",
+        "function main(): number {\n    // 文😀\n    return 1;\n}\n",
+        FoldRange {
+            start_line: 0,
+            end_line: 3,
+        },
+    ),
+    (
         "view.tsx",
         "const view = <section>\n    <span>文😀</span>\n</section>;\n",
         FoldRange {

@@ -2056,3 +2056,30 @@ rather than loosening the oracle. Complete native height and exact glyph/source
 comparisons remain independent. No wrapped/bidirectional startup, physical IME,
 Linux memory percentile or whole-goal completion claim follows from these passes.
 Linux/runtime and physical-input evidence remain separate roadmap gates.
+
+### Parser-only colors: production worker follow-up (2026-10-08)
+
+CI exposed an overlapping TypeScript primitive-type span: its named type wrapper
+and anonymous `number` terminal both selected the same bytes. The shared provider
+now gives the wrapper sole ownership and excludes anonymous type terminals from
+string-context classification. Regression fixtures cover TypeScript/TSX, C#,
+Java, C/C++ and Go, including fresh/incremental equivalence; the numeric
+TypeScript fixture also participates in both-mode browser contracts.
+
+The rebuilt production worker passes 15 code-language providers, six config/prose
+languages, one unsupported/plain fallback, six nested incremental/fresh metadata
+comparisons, Unicode/CRLF source deltas, compact row/structural patches, eviction
+resynchronization and oversize fallback. All 465 core tests and strict core lint
+pass. The first ordinary UI run found file-tab vertical overflow and a later
+focus failure. Including the classic scroll track and the shared one-pixel bottom
+border in the strip's height fixes the overflow; the subsequent full run passes
+all 430 ordinary components, 18 WASM unit tests and the adapter checks. The
+font/feature/whitespace matrix passes in 16.29 seconds with the unchanged exact
+geometry oracle. Focused tests cover current-file progress while preparation is
+paused and its removal after terminal plain fallback in both workspace modes.
+
+The final release/PWA build succeeds. One direct worker launch reported a generic
+module-load event before preparation; the same assets then loaded in an
+instrumented worker and passed two fresh direct checks with all protocol
+assertions retained. This does not close the reliable-CI or runtime completion
+gates; worker load failures now report an explicit error rather than a null value.

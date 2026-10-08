@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Show compact syntax-preparation progress in the editor status bar; hide it when
+  grammar colors or terminal plain fallback are ready in either workspace mode.
+- Preserve TypeScript primitive-type colors without overlapping spans or treating
+  type names as string literals. Reserve classic scrollbar space in file tabs.
+
 - Keep source-wrapped spaces highlighted in added and removed Markdown preview
   sections, including list items, in both workspace modes.
 

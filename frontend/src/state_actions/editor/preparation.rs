@@ -106,6 +106,14 @@ impl EditorActions {
                     .map(|paint| (paint.prepared_source, paint.tokens.clone()))
             })
     }
+    /// Reactive progress for the current file, independent of transport choice.
+    pub fn syntax_preparation_pending(self) -> bool {
+        self.workspace.content.track();
+        let scope = self.presentation_scope();
+        self.preparation_revision();
+        scope.is_some() && self.syntax_is_pending()
+    }
+
     pub fn syntax_is_pending(self) -> bool {
         if self.worker_syntax_pending() {
             return true;

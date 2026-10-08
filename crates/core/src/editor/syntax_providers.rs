@@ -40,6 +40,10 @@ pub enum SyntaxHighlightScope {
 }
 
 fn built_in_context(node: tree_sitter::Node<'_>) -> Option<SyntaxContextKind> {
+    // Anonymous terminals such as TypeScript's `string` type are not literals.
+    if !node.is_named() {
+        return None;
+    }
     match node.kind() {
         "string"
         | "string_literal"
@@ -519,8 +523,31 @@ pub type HighlightSelector =
 
 fn built_in_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::TokenKind> {
     use crate::highlight::TokenKind;
+    // Grammar type wrappers own their complete span, including anonymous
+    // terminals named `number` or `string`. Their children cannot also paint it.
+    if node.parent().is_some_and(|parent| {
+        matches!(
+            parent.kind(),
+            "type_identifier"
+                | "predefined_type"
+                | "primitive_type"
+                | "integral_type"
+                | "floating_point_type"
+                | "boolean_type"
+                | "void_type"
+                | "lifetime"
+        )
+    }) {
+        return None;
+    }
     match node.kind() {
-        "type_identifier" | "predefined_type" | "primitive_type" => return Some(TokenKind::Type),
+        "type_identifier"
+        | "predefined_type"
+        | "primitive_type"
+        | "integral_type"
+        | "floating_point_type"
+        | "boolean_type"
+        | "void_type" => return Some(TokenKind::Type),
         "tag_name" => return Some(TokenKind::Keyword),
         "attribute_name" | "property_name" => return Some(TokenKind::Attribute),
         "function_name" | "command_name" => return Some(TokenKind::Function),
@@ -533,7 +560,10 @@ fn built_in_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::T
         | "decimal_floating_point_literal"
         | "hex_integer_literal"
         | "hex_floating_point_literal"
-        | "real_literal" => {
+        | "real_literal"
+        | "number_literal"
+        | "int_literal"
+        | "imaginary_literal" => {
             return Some(TokenKind::Number);
         }
         "true" | "false" | "null" | "none" | "None" | "True" | "False" => {

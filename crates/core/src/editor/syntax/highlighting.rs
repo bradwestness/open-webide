@@ -730,6 +730,79 @@ mod tests {
     }
 
     #[test]
+    fn primitive_type_terminals_do_not_overlap_paint_or_become_strings() {
+        for (language, source, name) in [
+            (
+                Language::TypeScript,
+                "function main(): number { return 1; }",
+                "number",
+            ),
+            (
+                Language::Tsx,
+                "function main(): number { return 1; }",
+                "number",
+            ),
+            (
+                Language::TypeScript,
+                "const name: string = \"value\";",
+                "string",
+            ),
+            (Language::CSharp, "class A { int value = 1; }", "int"),
+            (
+                Language::CSharp,
+                "class A { string name = \"value\"; }",
+                "string",
+            ),
+            (Language::Java, "class A { int value = 1; }", "int"),
+            (Language::Cpp, "int main() { return 1; }", "int"),
+            (Language::C, "int main() { return 1; }", "int"),
+            (
+                Language::Go,
+                "package main\nfunc main() { var value int = 1 }",
+                "int",
+            ),
+        ] {
+            let mut document = SyntaxDocument::new(language).unwrap();
+            let analysis = document.prepare(source, 4, || true).1.unwrap();
+            let rows = analysis
+                .highlights()
+                .unwrap_or_else(|| panic!("{language:?}: missing paint"));
+            let tokens = rows.iter().flat_map(|row| row.iter()).collect::<Vec<_>>();
+            assert!(
+                tokens
+                    .iter()
+                    .any(|token| token.kind == TokenKind::Type && token.text == name),
+                "{language:?}: {tokens:?}"
+            );
+            if source.contains("return 1") || source.contains("= 1") {
+                assert!(
+                    tokens
+                        .iter()
+                        .any(|token| token.kind == TokenKind::Number && token.text == "1"),
+                    "{language:?}: {tokens:?}"
+                );
+            }
+            let at = source.find(name).unwrap();
+            assert!(
+                !analysis
+                    .structure()
+                    .unwrap()
+                    .protected
+                    .iter()
+                    .any(|(range, _, _)| range.contains(&at)),
+                "{language:?}: type is not a string literal"
+            );
+            let changed = format!("\n{source}");
+            let warm = document.prepare(&changed, 4, || true).1.unwrap();
+            let mut fresh = SyntaxDocument::new(language).unwrap();
+            assert_eq!(
+                warm.highlights(),
+                fresh.prepare(&changed, 4, || true).1.unwrap().highlights()
+            );
+        }
+    }
+
+    #[test]
     fn paint_preserves_all_provider_sources_and_line_endings() {
         for &(path, source, _) in crate::editor::syntax_contracts::LANGUAGE_CASES {
             let language = crate::highlight::language_from_path(path);

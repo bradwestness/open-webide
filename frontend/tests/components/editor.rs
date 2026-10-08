@@ -361,6 +361,38 @@ async fn grammar_highlights_paint_embedded_code_and_preserve_crlf_overlay_in_bot
             source.replace("\r\n", "\n")
         );
         assert_eq!(mounted.state.workspace.content.get_untracked(), source);
+        let typed =
+            "function main(): number {\r\n return 1;\r\n}\r\nconst name: string = \"value\";";
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("paint.ts".into()));
+        mounted.state.workspace.content.set(typed.into());
+        wait_until("primitive type colors", || {
+            mounted
+                .root
+                .query_selector(".tok-type")
+                .unwrap()
+                .is_some_and(|token| token.text_content().as_deref() == Some("number"))
+        })
+        .await;
+        assert_eq!(
+            mounted.element(".tok-number").text_content().as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            mounted.element(".tok-string").text_content().as_deref(),
+            Some("\"value\"")
+        );
+        assert_eq!(
+            mounted
+                .element(".editor-highlight-content")
+                .text_content()
+                .as_deref(),
+            Some(typed.replace("\r\n", "\n").as_str())
+        );
+        assert_eq!(mounted.state.workspace.content.get_untracked(), typed);
         drop(mounted);
         settle().await;
     }
@@ -8291,7 +8323,7 @@ async fn cooperative_terminal_plain_paint_preserves_source_and_rejects_stale_sco
                     let actions = EditorActions::new(state.workspace);
                     actions.install_syntax_worker();
                     *slot.borrow_mut() = Some(actions);
-                    view! { <div/> }
+                    view! { <Show when=move || actions.syntax_preparation_pending()><openwebide_frontend::components::ui::LoadingStatus label="Preparing syntax…" /></Show> }
                 }
             });
             let actions = slot.borrow_mut().take().unwrap();
@@ -8299,6 +8331,13 @@ async fn cooperative_terminal_plain_paint_preserves_source_and_rejects_stale_sco
                 actions.syntax_is_pending()
             })
             .await;
+            assert_eq!(
+                mounted
+                    .element(".ui-loading-status")
+                    .text_content()
+                    .as_deref(),
+                Some("Preparing syntax…")
+            );
             assert!(
                 !actions.full_row_paint_ready(),
                 "fallback must resolve before full-row probes allocate neutral paint"
@@ -8315,6 +8354,14 @@ async fn cooperative_terminal_plain_paint_preserves_source_and_rejects_stale_sco
                         .editor_fallback_paint
                         .get_untracked()
                         .is_some()
+            })
+            .await;
+            wait_until("terminal preparation hides progress", || {
+                mounted
+                    .root
+                    .query_selector(".ui-loading-status")
+                    .unwrap()
+                    .is_none()
             })
             .await;
             let painted = actions.syntax_paint();
@@ -10579,6 +10626,13 @@ async fn pending_wheel_intent_reaches_complete_measured_width_in_both_modes() {
         })
         .await;
         assert!(actions.measured_rows().is_none());
+        assert_eq!(
+            mounted
+                .element(".editor-footer .ui-loading-status")
+                .text_content()
+                .as_deref(),
+            Some("Preparing syntax…")
+        );
         assert!(
             mounted
                 .element(".editor-scroll-extent")
@@ -10603,6 +10657,14 @@ async fn pending_wheel_intent_reaches_complete_measured_width_in_both_modes() {
                     .get_attribute("data-source-width")
                     .is_some()
                 && (scroll.scroll_left() - 450.0).abs() <= 0.25
+        })
+        .await;
+        wait_until("syntax progress finishes", || {
+            mounted
+                .root
+                .query_selector(".editor-footer .ui-loading-status")
+                .unwrap()
+                .is_none()
         })
         .await;
         assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
@@ -14068,7 +14130,11 @@ async fn overflowing_file_tabs_keep_height_scroll_and_nodes_stable_in_both_modes
             assert!((tabs.get_bounding_client_rect().height() - height).abs() < 0.5);
             assert!(
                 tabs.scroll_height() <= tabs.client_height(),
-                "file tabs must not overflow vertically"
+                "{mode:?}: file tabs must not overflow vertically: scroll={} client={} height={} tab_height={}",
+                tabs.scroll_height(),
+                tabs.client_height(),
+                tabs.get_bounding_client_rect().height(),
+                first.get_bounding_client_rect().height()
             );
             assert!((tabs.scroll_left() - 120.0).abs() < 0.5);
             tabs.set_scroll_top(10.0);

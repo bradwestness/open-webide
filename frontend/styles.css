@@ -2353,7 +2353,9 @@ button.browser-item {
   color: var(--accent);
 }
 
-.tui-spinner {
+.ui-loading-status { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--text-muted); font-size: var(--font-caption); white-space: nowrap; }
+
+.ui-spinner, .tui-spinner {
   display: inline-block;
   min-width: 1ch;
   color: var(--accent);
@@ -2361,10 +2363,12 @@ button.browser-item {
 
 /* Braille frame cycling; browsers without animatable `content` show the
    static base frame. */
-.tui-spinner::after {
+.ui-spinner::after, .tui-spinner::after {
   content: "⠋";
   animation: tui-spin 1s step-end infinite;
 }
+
+@media (prefers-reduced-motion: reduce) { .ui-spinner::after, .tui-spinner::after { animation: none; } }
 
 @keyframes tui-spin {
   0% { content: "⠋"; }
@@ -3271,8 +3275,12 @@ button.browser-item {
 .ui-check:has(input:disabled) { opacity: .45; cursor: default; }
 
 /* File tabs share project tab selection and standard inline icon actions. */
-.editor-file-tabs { flex: none; padding: 0 8px; min-height: 36px; }
-.editor-file-tab { flex: none; height: 35px; gap: 2px; padding: 0 4px 0 0; }
+/* Reserve room for classic horizontal scrollbars as well as overlay ones.
+   A flex strip's intrinsic height otherwise excludes the native scroll track.
+   Include its shared one-pixel bottom border in the reserved space. */
+.editor-file-tabs { --editor-tab-height: 35px; flex: none; padding: 0 8px; height: calc(var(--editor-tab-height) + 11px); min-height: calc(var(--editor-tab-height) + 11px); }
+.phone-layout .editor-file-tabs { --editor-tab-height: 44px; }
+.editor-file-tab { flex: none; height: var(--editor-tab-height); gap: 2px; padding: 0 4px 0 0; }
 .btn.tab-select { display: flex; align-items: center; gap: 6px; min-width: 0; align-self: stretch; padding: 0 10px; border: 0; border-radius: 6px 0 0 0; background: transparent; color: inherit; }
 .tab-select .tab-name { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .editor-tab-dirty { flex: none; width: 1em; text-align: center; visibility: hidden; font-size: 9px; color: var(--warn); }

@@ -52,7 +52,7 @@ tracks the remaining work rather than every optimization already shipped.
 | Navigation and review | Find/Replace; line numbers; horizontal scrolling and linked split scrolling; Edit/Inline/Split diffs; supported previews and Markdown change gutters/word differences; pending-edit review and agent context. |
 | Tabs, appearance and recovery | Tab context actions; five Monaspace families; texture healing and ligature toggles enabled by default; retained caret/selection/scroll and database-backed editor recovery. Real folder-permission recovery still needs device verification. |
 | Selection and browser input | Multiple/rectangular selections and clipboard transactions; scoped native windows for eligible unwrapped views; automated Chromium composition and pointer checks. The recorded line-end caret bug is fixed and user-verified in the localhost PWA. |
-| Preparation and ownership | Rust/WASM worker and cooperative fallback; retained source/token/structure allocations; bounded eligible unwrapped paragraph probes, exact overlap validation and conservative complete-layout fallback. Matching trusted font notifications retain current in-flight work. |
+| Preparation and ownership | Rust/WASM worker and cooperative fallback; retained source/token/structure allocations; bounded eligible unwrapped paragraph probes, exact overlap validation and conservative complete-layout fallback. Current-file progress is shown during preparation. Matching trusted font notifications retain current in-flight work. |
 
 **Remaining implementation**:
 
