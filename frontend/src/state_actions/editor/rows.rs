@@ -713,6 +713,51 @@ impl EditorActions {
         cache.geometry.push_back(entry);
         Some(result)
     }
+    /// Return only an exactly retained caret within the current source/style
+    /// scope. Runtime adapters translate these row-relative pixels into the view.
+    pub fn measured_source_caret(
+        self,
+        cache: &mut EditorFragmentCache,
+        offset: usize,
+        metrics: &str,
+    ) -> Option<(usize, openwebide_core::editor::GlyphRectangle)> {
+        if cache.scope.as_ref()?.0.metrics != metrics {
+            return None;
+        }
+        if self.preferences().word_wrap {
+            return None;
+        }
+        let projection = self.projection()?;
+        let visible = projection.visible_offset(offset).ok()?;
+        let row = projection
+            .lines()
+            .partition_point(|line| line.visible_start <= visible)
+            .checked_sub(1)?;
+        let line = projection.lines().get(row)?;
+        let body = projection.line_body(row)?;
+        let local = visible.checked_sub(line.visible_start)?;
+        let index = projection.visual_line_index(row)?;
+        if !index.source_paint_eligible() {
+            return None;
+        }
+        let glyph = if local == 0 {
+            0
+        } else if local == body.len() {
+            index.len().checked_sub(1)?
+        } else {
+            let glyph = index.index_at_byte(body, local)?;
+            if index.at(body, glyph)?.0 != local {
+                return None;
+            }
+            glyph
+        };
+        let geometry = self.measured_row_geometry(cache, row)?;
+        let openwebide_core::editor::MeasuredRowGeometry::Horizontal(geometry) = geometry.as_ref()
+        else {
+            return None;
+        };
+        Some((row, geometry.caret(glyph)?))
+    }
     pub fn row_source_slice(
         self,
         cache: &mut EditorFragmentCache,

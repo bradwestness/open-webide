@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse exact retained caret anchors before preparing a complete movement layout.
+  Preserve source, account, project, font and layout ownership; sparse gaps and
+  unsupported layouts retain the complete-renderer fallback. Verify benchmark
+  beginning/end input against the full saved document.
+
 - Skip known opaque text and languages without brackets during the final parsed
   bracket pass, while preserving each embedded body's separate bracket ancestry.
   Validate scope ranges before traversing their boundaries.

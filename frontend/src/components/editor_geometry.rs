@@ -1087,6 +1087,37 @@ pub(super) fn neighborhood_layout(
     VisualLayout::neighborhood(&source, projection, identity, &lines, carets).ok()
 }
 
+/// Translate source-owned exact anchors without preparing a complete movement
+/// neighborhood. Unsupported or absent anchors retain the existing DOM fallback.
+pub(super) fn measured_caret_rect(
+    actions: EditorActions,
+    input: &web_sys::HtmlTextAreaElement,
+    cache: &mut crate::state_actions::editor::EditorFragmentCache,
+    offset: usize,
+) -> Option<web_sys::DomRect> {
+    if !current_editor_target(actions, input) {
+        return None;
+    }
+    let revision = actions.view_revision();
+    let identity = super::editor_rows::metrics_identity(input)?;
+    let (row, caret) = actions.measured_source_caret(cache, offset, &identity)?;
+    let metrics = visual_metrics(actions, input)?;
+    let top = actions.measured_rows()?.rows.top(row)?;
+    if actions.view_revision() != revision
+        || !current_editor_target(actions, input)
+        || super::editor_rows::metrics_identity(input).as_ref() != Some(&identity)
+    {
+        return None;
+    }
+    web_sys::DomRect::new_with_x_and_y_and_width_and_height(
+        metrics.left + caret.left,
+        metrics.top + top + caret.top,
+        0.0,
+        caret.height,
+    )
+    .ok()
+}
+
 /// Reveal an omitted source caret using the same validated neighborhood layout
 /// as wrapped movement, translated from probe coordinates into the viewport.
 pub(super) fn layout_caret_rect(

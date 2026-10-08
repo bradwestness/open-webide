@@ -16963,3 +16963,164 @@ async fn config_and_documentation_grammars_share_both_workspace_modes_without_pr
         }
     }
 }
+
+#[wasm_bindgen_test]
+fn retained_source_carets_are_sparse_and_scope_owned_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{GlyphRectangle, HorizontalGeometry, Indentation, MeasuredRowGeometry, Selection},
+        highlight::{Language, highlight_lines},
+    };
+    use openwebide_frontend::state_actions::editor::{EditorActions, EditorFragmentCache};
+    use std::sync::Arc;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for change in 0..8 {
+            let source = "e\u{301}😀".repeat(12_000);
+            let initial = source.clone();
+            let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let actions_slot = slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("carets.txt".into()));
+                state.workspace.content.set(initial.into());
+                *actions_slot.borrow_mut() = Some(EditorActions::new(state.workspace));
+                view! { <div/> }
+            });
+            let actions = slot.borrow_mut().take().unwrap();
+            actions.prepare_edit(Selection::caret(0)).unwrap();
+            let tokens = Arc::new(openwebide_core::highlight::share_token_rows(
+                highlight_lines(&source, Language::Plain),
+            ));
+            let guides: Arc<[usize]> = Arc::from([0]);
+            let mut cache = EditorFragmentCache::default();
+            assert!(actions.fragment_scope(
+                &mut cache,
+                "metrics".into(),
+                (false, tokens.clone()),
+                guides.clone(),
+                Indentation::default(),
+                false
+            ));
+            let (paint, _) = actions
+                .prepare_row_measurements(
+                    "metrics".into(),
+                    actions.projection().unwrap(),
+                    (false, tokens),
+                    guides,
+                    Indentation::default(),
+                    false,
+                )
+                .unwrap();
+            let count = paint.projection.visual_line_index(0).unwrap().len() - 1;
+            let first = GlyphRectangle {
+                glyph: 0,
+                left: 0.0,
+                top: 2.0,
+                width: 8.0,
+                height: 15.0,
+            };
+            let last = GlyphRectangle {
+                glyph: count - 1,
+                left: ((count - 1) * 8) as f64,
+                ..first
+            };
+            let geometry =
+                HorizontalGeometry::new(count, (count * 8) as f64, 19.5, vec![first, last])
+                    .unwrap();
+            actions.retain_preparation_geometry(
+                &mut cache,
+                &paint,
+                0,
+                MeasuredRowGeometry::Horizontal(geometry),
+            );
+            assert_eq!(
+                actions.measured_source_caret(&mut cache, 0, "metrics"),
+                Some((
+                    0,
+                    GlyphRectangle {
+                        width: 0.0,
+                        ..first
+                    }
+                ))
+            );
+            assert_eq!(
+                actions.measured_source_caret(&mut cache, source.len(), "metrics"),
+                Some((
+                    0,
+                    GlyphRectangle {
+                        glyph: count,
+                        left: (count * 8) as f64,
+                        width: 0.0,
+                        ..last
+                    }
+                ))
+            );
+            assert!(
+                actions
+                    .measured_source_caret(&mut cache, 1, "metrics")
+                    .is_none(),
+                "inside a combining cluster"
+            );
+            assert!(
+                actions
+                    .measured_source_caret(&mut cache, 4, "metrics")
+                    .is_none(),
+                "inside UTF-8"
+            );
+            assert!(
+                actions
+                    .measured_source_caret(&mut cache, 3, "metrics")
+                    .is_none(),
+                "unmeasured sparse glyph"
+            );
+            assert!(
+                actions
+                    .measured_source_caret(&mut cache, 0, "changed metrics")
+                    .is_none()
+            );
+            match change {
+                0 => {
+                    actions.paste("z", Selection::caret(0)).unwrap();
+                }
+                1 => mounted
+                    .state
+                    .workspace
+                    .open_file
+                    .set(Some("other.txt".into())),
+                2 => mounted.state.projects.active_project.set(Some(2)),
+                3 => actions.invalidate_measured_font(),
+                4 => mounted
+                    .state
+                    .workspace
+                    .editor_layout_epoch
+                    .update(|epoch| *epoch += 1),
+                5 => mounted
+                    .state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = true),
+                6 => mounted
+                    .state
+                    .workspace
+                    .pending_epoch
+                    .update(|epoch| *epoch += 1),
+                7 => mounted
+                    .state
+                    .auth
+                    .generation
+                    .update(|generation| *generation += 1),
+                _ => unreachable!(),
+            }
+            assert!(
+                actions
+                    .measured_source_caret(&mut cache, 0, "metrics")
+                    .is_none(),
+                "{mode:?}: stale context {change}"
+            );
+        }
+    }
+}

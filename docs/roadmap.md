@@ -52,7 +52,7 @@ tracks the remaining work rather than every optimization already shipped.
 | Navigation and review | Find/Replace; line numbers; horizontal scrolling and linked split scrolling; Edit/Inline/Split diffs; supported previews and Markdown change gutters/word differences; pending-edit review and agent context. |
 | Tabs, appearance and recovery | Tab context actions; five Monaspace families; texture healing and ligature toggles enabled by default; retained caret/selection/scroll and database-backed editor recovery. Real folder-permission recovery still needs device verification. |
 | Selection and browser input | Multiple/rectangular selections and clipboard transactions; scoped native windows for eligible unwrapped views; automated Chromium composition and pointer checks. The recorded line-end caret bug is fixed and user-verified in the localhost PWA. |
-| Preparation and ownership | Rust/WASM worker and cooperative fallback; retained source/token/structure allocations; bounded eligible unwrapped paragraph probes, exact overlap validation and conservative complete-layout fallback. Current-file progress is shown during preparation. Matching trusted font notifications retain current in-flight work. |
+| Preparation and ownership | Rust/WASM worker and cooperative fallback; retained source/token/structure allocations; bounded eligible unwrapped paragraph probes, exact overlap validation, retained exact caret anchors and conservative complete-layout fallback. Current-file progress is shown during preparation. Matching trusted font notifications retain current in-flight work. |
 
 **Remaining implementation**:
 
@@ -107,7 +107,9 @@ tracks the remaining work rather than every optimization already shipped.
   edit samples. Existing multi-second results do not satisfy this gate.
 - [ ] **Exact geometry and fallbacks:** retain complete-renderer extent/anchor/hit
   comparisons, font/feature/whitespace matrices, Unicode/caret mapping and failed-proof
-  fallback contracts. Improvements must preserve source/account/project ownership,
+  fallback contracts. Exact retained caret anchors avoid complete movement probes;
+  sparse gaps and unsupported layouts still require complete-renderer fallback.
+  Improvements must preserve source/account/project ownership,
   pending edits, themes, supported previews, agent context and both adapter contracts.
 - [ ] **Reliable CI and release/PWA checks:** pass the complete native/WASI/WASM,
   platform, browser and release-app checks reliably. Repeat near-limit Linux

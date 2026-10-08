@@ -1677,10 +1677,16 @@ fn HighlightOverlay(
         neighborhood,
         caret: Callback::new(move |offset| {
             let input = textarea_ref.get_untracked()?;
-            neighborhood
-                .run(())
-                .and_then(|layout| {
-                    super::editor_geometry::layout_caret_rect(actions, &input, &layout, offset)
+            let mut retained = None;
+            fragment_cache.update_value(|cache| {
+                retained =
+                    super::editor_geometry::measured_caret_rect(actions, &input, cache, offset);
+            });
+            retained
+                .or_else(|| {
+                    neighborhood.run(()).and_then(|layout| {
+                        super::editor_geometry::layout_caret_rect(actions, &input, &layout, offset)
+                    })
                 })
                 .or_else(|| {
                     super::editor_geometry::probe_caret_rect(

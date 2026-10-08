@@ -67,6 +67,30 @@ impl HorizontalGeometry {
             height,
         })
     }
+    /// Exact caret boundaries from retained LTR glyph rectangles. A sparse gap
+    /// has no geometry; never interpolate a caret through unmeasured glyphs.
+    pub fn caret(&self, glyph: usize) -> Option<GlyphRectangle> {
+        if glyph > self.glyphs {
+            return None;
+        }
+        let (anchor, left) = if glyph == self.glyphs {
+            let anchor = *self.anchors.last()?;
+            (anchor, anchor.left + anchor.width)
+        } else {
+            let at = self
+                .anchors
+                .binary_search_by_key(&glyph, |anchor| anchor.glyph)
+                .ok()?;
+            let anchor = self.anchors[at];
+            (anchor, anchor.left)
+        };
+        Some(GlyphRectangle {
+            glyph,
+            left,
+            width: 0.0,
+            ..anchor
+        })
+    }
     /// Include a measured anchor before the window for shaping context and a
     /// complete anchor glyph after it for validation. The adapter can reject an
     /// exceptional source slice (for example an indivisible huge cluster).
@@ -233,6 +257,42 @@ mod tests {
             width: 8.0,
             height: 15.0,
         }
+    }
+    #[test]
+    fn retained_carets_use_exact_anchors_and_reject_sparse_gaps() {
+        let geometry = HorizontalGeometry::new(
+            1001,
+            8010.0,
+            20.0,
+            vec![anchor(0, 0.0), anchor(250, 2000.0), anchor(1000, 8000.0)],
+        )
+        .unwrap();
+        assert_eq!(
+            geometry.caret(0),
+            Some(GlyphRectangle {
+                width: 0.0,
+                ..anchor(0, 0.0)
+            })
+        );
+        assert_eq!(
+            geometry.caret(250),
+            Some(GlyphRectangle {
+                width: 0.0,
+                ..anchor(250, 2000.0)
+            })
+        );
+        assert!(geometry.caret(249).is_none());
+        assert_eq!(
+            geometry.caret(1001),
+            Some(GlyphRectangle {
+                glyph: 1001,
+                left: 8008.0,
+                width: 0.0,
+                ..anchor(1000, 8000.0)
+            })
+        );
+        assert!(geometry.caret(1002).is_none());
+        assert!(geometry.caret(usize::MAX).is_none());
     }
     #[test]
     fn anchored_windows_keep_source_context_validation_and_offscreen_gaps() {

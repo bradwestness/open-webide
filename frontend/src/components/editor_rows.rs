@@ -634,7 +634,7 @@ pub(super) async fn check_paragraph_geometry(
     let glyphs = index.len() - 1;
     let bounds = row.get_bounding_client_rect();
     let Some(openwebide_core::editor::MeasuredRowGeometry::Horizontal(complete)) =
-        super::editor_geometry::preparation_geometry(&row, body, index, &bounds, false)
+        super::editor_geometry::preparation_geometry(&row, body, index.clone(), &bounds, false)
     else {
         return Ok(false);
     };
@@ -653,6 +653,22 @@ pub(super) async fn check_paragraph_geometry(
             .into(),
         );
         return Ok(false);
+    }
+    // Independent browser collapsed ranges prove the cached endpoint rectangles
+    // are carets, not merely glyph boxes that happen to match another probe.
+    for glyph in [0, glyphs] {
+        let cached = bounded.caret(glyph).ok_or(())?;
+        let (_, native) = index.at(body, glyph).ok_or(())?;
+        let caret =
+            super::editor::caret_rect(&row, u32::try_from(native).map_err(|_| ())?).ok_or(())?;
+        if (cached.left - (caret.left() - bounds.left())).abs() > 0.25
+            || (cached.top - (caret.top() - bounds.top())).abs() > 0.25
+            || (cached.height - caret.height()).abs() > 0.25
+        {
+            web_sys::console::error_1(&format!("retained endpoint caret mismatch glyph={glyph} cached={cached:?} actual={}/{}/{}",
+                caret.left()-bounds.left(), caret.top()-bounds.top(), caret.height()).into());
+            return Ok(false);
+        }
     }
     let a = bounded.anchors(0..glyphs).ok_or(())?;
     let b = complete.anchors(0..glyphs).ok_or(())?;

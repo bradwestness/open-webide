@@ -2396,3 +2396,56 @@ and YAML sources contain String spans exceeding 1,000,000 bytes and satisfy thei
 14-yield gates. The complete check still reports 1,552 cooperative yields.
 No main-editor latency or process-memory completion claim follows from this
 traversal/worker evidence. Full CI for this checkpoint remains required.
+
+### Retained exact caret anchors (2026-10-08)
+
+Home/End navigation now asks the shared editor facade for a retained exact caret
+boundary before constructing a complete movement neighborhood. Sparse anchors
+never interpolate missing glyphs. Source/account/project, view, font, pending-edit
+and layout ownership remain required; wrapped/bidirectional or missing geometry
+retains the complete-renderer fallback. The DOM adapter only translates the
+row-relative measured rectangle into viewport coordinates. Other sparse movement
+positions still need bounded exact geometry; this is not a general navigation
+performance completion claim.
+
+The benchmark now distinguishes native-window start from verified document
+beginning. Beginning/end cases navigate with trusted Chrome input and require
+source-owned persisted selections plus the complete saved source before and after
+insertion, rather than checking only a native input fragment.
+
+The following single pair of instrumented Linux runs uses a 1,048,567-byte styled
+Rust String, 4 CPUs, 10 GiB and the existing arm64 measurement image. Both bundles
+were built from base 3714b44: before module f4db4ce92e67c02d, after module
+1c363e9f2efa8035 with this draft. The same base backend artifact was pinned during
+measurement to avoid replacement by concurrent development builds. Both runs
+retain String styling through load, scrolling and beginning insertion and verify
+complete source recovery. Local uses a database recovery fixture with no native
+directory handle; these runs do not prove folder permissions or filesystem writes.
+
+| Mode / version | Cold paint ms | Scroll paint ms | Beginning input paint ms | Peak Chrome PSS KiB | Largest task ms | Full navigation probes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Local before | 4079.3 | 21.4 | 2647.6 | 812530 | 8489 | 2 |
+| Local after | 3857.9 | 19.6 | 2556.2 | 760204 | 101 | 0 |
+| Remote before | 4057.8 | 25.4 | 2694.7 | 800223 | 8109 | 2 |
+| Remote after | 3856.7 | 17.5 | 2550.4 | 797945 | 109 | 0 |
+
+[Before trace](editor-performance/retained-caret-before-linux-trace.jsonl) and
+[after trace](editor-performance/retained-caret-after-linux-trace.jsonl) are
+untruncated. Before navigation shaped two complete 748,983-UTF-16-unit rows per
+mode; after navigation created no measurement probes. These instrumented samples
+are not a latency distribution or a general memory guarantee. Cold load and
+beginning-edit repaint remain multi-second and fail the full responsiveness gate.
+
+Validation passed: 489 all-feature and 385 no-default-feature core tests; the full
+ordinary Chrome suite (18 unit, 445 component and four adapter tests), separate
+font/feature/whitespace geometry matrix, source-ownership caret regression, strict
+core lint and the release build. Endpoint pixel checks compare retained geometry
+against independent collapsed browser ranges across all five Monaspace families.
+The release worker check reports 1,552 cooperative yields and exact publication
+for near-1-MiB Rust and YAML String spans. The separate near-limit geometry matrix and final strict WASM lint also pass.
+Explicit account invalidation passes alongside seven other scope changes in both
+modes. This checkpoint's CI remains required.
+
+All five CI jobs passed for e061d68 (37856267663), 47c5cbb (37857374089) and
+3714b44 (37858160328). Those results do not replace this draft's CI or the full
+editor completion gates.

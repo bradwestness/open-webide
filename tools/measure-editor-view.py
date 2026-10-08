@@ -384,24 +384,29 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                 requestAnimationFrame(check);
             """, "args": ["\n" not in native, require_styled]})
             assert "error" not in scroll, scroll
+            verified_source_caret = None
             if input_position == "start":
                 browser.script("const input=document.querySelector('textarea[data-editor-path]'); input.focus(); input.setSelectionRange(0,0);")
             else:
                 phase = "input navigation"
                 browser.script("editorViewMeasurement.phase = 'navigate'; document.querySelector('textarea[data-editor-path]').focus();")
+                key = "Home" if input_position == "beginning" else "End"
+                key_code = 36 if input_position == "beginning" else 35
+                verified_source_caret = 0 if input_position == "beginning" else len(source.encode())
                 for kind in ["keyDown", "keyUp"]:
                     browser.call("POST", "/goog/cdp/execute", {"cmd": "Input.dispatchKeyEvent", "params": {
-                        "type": kind, "key": "End", "code": "End", "modifiers": 2,
-                        "windowsVirtualKeyCode": 35, "nativeVirtualKeyCode": 35,
+                        "type": kind, "key": key, "code": key, "modifiers": 2,
+                        "windowsVirtualKeyCode": key_code, "nativeVirtualKeyCode": key_code,
                     }})
                 deadline = time.monotonic() + 10
                 while True:
                     recovered = runtime.request("GET", f"/api/projects/{project['id']}/editor-recovery")
                     document = recovered["state"]["files"][0]["document"]
-                    if document["selections"][0]["head"] == len(source.encode()):
-                        assert document["text"] == encoded, "End navigation changed source"
+                    if document["selections"][0]["head"] == verified_source_caret:
+                        assert document["selections"][0]["anchor"] == verified_source_caret, "Navigation retained a selection"
+                        assert document["text"] == encoded, "Document navigation changed source"
                         break
-                    assert time.monotonic() < deadline, "Source caret did not reach document end"
+                    assert time.monotonic() < deadline, "Source caret did not reach the requested document boundary"
                     time.sleep(0.1)
             phase = "input paint"
             browser.script("editorViewMeasurement.phase = 'input';")
@@ -424,15 +429,22 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
             browser.script("editorViewMeasurement.phase = 'deferred';")
             # Include deferred syntax preparation and queued recovery saves.
             browser.call("POST", "/execute/async", {"script": "setTimeout(arguments[0], 1200);", "args": []})
-            if input_position == "end":
-                recovered = runtime.request("GET", f"/api/projects/{project['id']}/editor-recovery")
-                actual = base64.b64decode(recovered["state"]["files"][0]["document"]["text"]).decode()
-                assert actual == source + "z", "End input did not preserve complete source"
+            if input_position in {"beginning", "end"}:
+                expected_source = "z" + source if input_position == "beginning" else source + "z"
+                deadline = time.monotonic() + 10
+                while True:
+                    recovered = runtime.request("GET", f"/api/projects/{project['id']}/editor-recovery")
+                    actual = base64.b64decode(recovered["state"]["files"][0]["document"]["text"]).decode()
+                    if actual == expected_source:
+                        break
+                    assert time.monotonic() < deadline, "Boundary input did not preserve complete source"
+                    time.sleep(.1)
             sampled = samples.finish()
             samples = None
             tasks = browser.script("return {...window.editorViewMeasurement, wasmBytes: window.editorViewWasmMemory.buffer.byteLength};")
             return {"case": case, "mode": mode, "wrap": wrapped, "repetition": repetition, "sourceBytes": len(source.encode()),
-                    "inputPosition": input_position, "loadToPaintMs": load_ms, **snapshot, **scroll, **edited, **memory,
+                    "inputPosition": input_position, "verifiedSourceCaretBeforeInput": verified_source_caret,
+                    "completeSourceAfterInputVerified": input_position in {"beginning", "end"}, "loadToPaintMs": load_ms, **snapshot, **scroll, **edited, **memory,
                     "afterInputMemory": process_memory(browser.process.pid), **sampled,
                     "afterInputWasmCommittedBytes": tasks["wasmBytes"],
                     "longTasks": tasks["longTasks"], "longTaskMs": tasks["longTaskMs"],
@@ -462,7 +474,7 @@ if __name__ == "__main__":
     parser.add_argument("--modes", nargs="+", choices=["local", "remote"], default=["local", "remote"])
     parser.add_argument("--wrap", action="store_true")
     parser.add_argument("--trace", action="store_true", help="Record bounded probe/worker diagnostics; timings include instrumentation overhead")
-    parser.add_argument("--input-position", choices=["start", "end"], default="start", help="Use native-window start or verified complete-source End navigation before typing")
+    parser.add_argument("--input-position", choices=["start", "beginning", "end"], default="start", help="Use native-window start or verified complete-source Home/End navigation before typing")
     parser.add_argument("--repeat", type=int, default=1, help="Fresh browser/runtime runs for each case and mode")
     parser.add_argument("--require-pss", action="store_true", help="Fail if apportioned Chrome process memory cannot be measured")
     args = parser.parse_args()
