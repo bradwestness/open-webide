@@ -1741,3 +1741,57 @@ lint, formatting and the Trunk/PWA release build pass. The aggregate invocation
 passed all runtime checks but failed dependent-crate resolution during doctests;
 a separate current-artifact doctest invocation passed. This startup checkpoint
 still needs Linux CI verification.
+
+
+### Restored long-row startup and admitted Rust String verification
+
+Startup CI `37787470871` passed all five jobs. Its Linux browser job passed 427
+ordinary checks (190.69 seconds), the font matrix (41.67 seconds), and the
+near-limit plain-text contract (44.29 seconds). Those are complete test-run times,
+including both modes and their renderer oracles; passing output suppresses the
+per-mode trace. They do not establish Linux startup percentiles or memory bounds.
+
+The shared startup eligibility policy now also admits a restored source caret in
+a later long row. Uniform, unwrapped, supported geometry remains required; short
+initial selections preserve their existing complete-native cold-frame fallback.
+The DOM regression records every native value installation, requires a maximum of
+12 KiB, verifies the original source selection and 24,500-pixel horizontal scroll,
+and compares the later row with complete-renderer geometry in both modes. The
+shared failure/ownership regression also covers this later-row selection.
+
+The styled viewport contract now uses a Rust string literal within 128 bytes of
+the 1-MiB line limit, with headroom for a beginning edit. It loads Monaspace Neon
+explicitly, requires prepared Rust String tokens, compares initial and edited
+paragraph geometry with the complete renderer, and retains the original cached
+and uncached scroll, source-slice, paint/segmentation budget and stale-owner checks.
+This replaces the earlier 6,000-repeat workload; an initial test incorrectly used
+the separate 8-MiB document cap and was corrected to the existing 1-MiB line cap.
+
+The [focused Mac Chrome sample](editor-performance/styled-limit-neon.jsonl)
+passed in 16.46 seconds. Initial styled paint was ready
+at 1,424.705 ms Local and 1,424.915 ms Remote; complete paint after a beginning edit
+was ready after 1,291.275/1,263.180 ms. These are single load-to-paint and
+transaction-to-paint observations, not synchronous input latency, repeated
+percentiles, Linux evidence or completion of the responsiveness/memory gate.
+Broader cold startup, wrapped/touch layout, incremental shifted-source preparation,
+source ownership, memory and physical input verification remain open.
+
+
+The combined browser run initially passed the new editor contracts but exposed
+two branch-menu regressions in the incorporated UI changes: cached options were
+hidden on reopening while background discovery ran, and a ready open menu was
+unmounted on a later loading transition. The shared dropdown now retains a
+surface once displayed until it closes; the shared branch picker can present
+cached choices during discovery. The existing checkout, stale-result and retained
+menu contracts pass unchanged in both modes. Strict lint also caught two modal/tab
+test numeric comparisons; infallible conversion and exact bit comparisons retain
+their assertions. These integration corrections do not relax editor readiness or
+geometry requirements.
+
+
+Final combined verification passes all 439 browser checks: 437 ordinary checks
+(140.66 seconds), the font matrix (15.16 seconds) and the near-limit plain-text
+contract (14.22 seconds). The 114 native frontend tests, strict WASM frontend lint,
+formatting and Trunk/PWA release build also pass. Linux CI for this combined
+checkpoint is still pending; the previously green startup checkpoint does not
+verify these later changes.

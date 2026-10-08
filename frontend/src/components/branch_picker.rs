@@ -50,6 +50,6 @@ pub fn BranchPicker(
         options.push(SelectOption::new("new", "New branch…"));
         options
     });
-    view! { <DropdownSelect label="Git branch" class="branch-picker" trigger_class="btn ghost git-branch-select" value=current options=options above=above ready=Signal::derive(move || !git.branches_loading.get()) on_open=on_load disabled=Signal::derive(move || git.branch_busy.get() || git.status.get().is_none())
+    view! { <DropdownSelect label="Git branch" class="branch-picker" trigger_class="btn ghost git-branch-select" value=current options=options above=above ready=Signal::derive(move || !git.branches_loading.get() || git.branches.with(|branches| !branches.is_empty())) on_open=on_load disabled=Signal::derive(move || git.branch_busy.get() || git.status.get().is_none())
     on_change=Callback::new(move |value: String| { if value == "new" { on_new.run(()); } else if let Some(branch) = value.strip_prefix("branch:") && value != current.get_untracked() { on_select.run(branch.to_string()); } }) /> }
 }

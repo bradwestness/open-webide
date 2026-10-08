@@ -75,13 +75,26 @@ impl EditorActions {
         if self.preferences().word_wrap || !projection.has_uniform_rows() {
             return false;
         }
-        // Existing cold short-row frames use complete native dimensions before
-        // the height table is ready. Keep that contract for short initial rows.
-        if projection
+        // Preserve complete-native cold frames for short initial selections.
+        // A restored caret in a long row can start with the same bounded input
+        // as a long first row, while complete document geometry remains pending.
+        let first_large = projection
             .lines()
             .first()
-            .is_none_or(|line| line.source.len() <= openwebide_core::editor::MAX_MEASURE_BYTES)
-        {
+            .is_some_and(|line| line.source.len() > openwebide_core::editor::MAX_MEASURE_BYTES);
+        let selected_large = !first_large
+            && self
+                .current_selection()
+                .and_then(|selection| projection.visible_selection(selection).ok())
+                .and_then(|selection| {
+                    projection
+                        .lines()
+                        .partition_point(|line| line.visible_start <= selection.head)
+                        .checked_sub(1)
+                })
+                .and_then(|row| projection.lines().get(row))
+                .is_some_and(|line| line.source.len() > openwebide_core::editor::MAX_MEASURE_BYTES);
+        if !first_large && !selected_large {
             return false;
         }
         let mut large = false;

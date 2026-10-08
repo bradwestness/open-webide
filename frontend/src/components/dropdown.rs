@@ -38,6 +38,14 @@ pub fn Dropdown(
     children: ChildrenFn,
 ) -> impl IntoView {
     let open = open.unwrap_or_else(|| RwSignal::new(false));
+    let displayed = RwSignal::new(false);
+    Effect::new(move |_| {
+        if !open.get() {
+            displayed.set(false);
+        } else if ready.is_none_or(|ready| ready.get()) {
+            displayed.set(true);
+        }
+    });
     let trigger = NodeRef::<leptos::html::Button>::new();
     let menu = NodeRef::<leptos::html::Div>::new();
     let content_id = format!(
@@ -182,7 +190,7 @@ pub fn Dropdown(
             <Show when=move || open.get()>
                 <div class="ui-dropdown-backdrop recent-backdrop" on:click=move |event| { event.stop_propagation(); event.prevent_default(); close.run(()); } />
             </Show>
-            <Show when=move || open.get() && ready.is_none_or(|ready| ready.get())>
+            <Show when=move || open.get() && (displayed.get() || ready.is_none_or(|ready| ready.get()))>
                 <div class=format!("ui-dropdown-menu recent-menu {menu_class}") role=menu_role aria-label=aria_label id=content_id.clone() node_ref=menu style="visibility:hidden" on:click=move |event| { event.prevent_default(); event.stop_propagation(); }>{children()}</div>
             </Show>
         </span>

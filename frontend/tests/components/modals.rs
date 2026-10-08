@@ -464,7 +464,7 @@ async fn responsive_dialog_sizes_keep_headers_actions_and_scroll_inside_viewport
             });
             settle().await;
             let panel = mounted.element(".modal").get_bounding_client_rect();
-            let width = document().document_element().unwrap().client_width() as f64;
+            let width = f64::from(document().document_element().unwrap().client_width());
             let gutter = if phone || width < 800.0 {
                 8.0
             } else if width <= 1100.0 {
@@ -689,7 +689,11 @@ async fn file_switches_retain_tab_geometry_scroll_and_view_controls() {
                         < 0.1,
                     "header height changed at {width}"
                 );
-                assert_eq!(strip.scroll_left(), scroll, "tab scroll changed at {width}");
+                assert_eq!(
+                    strip.scroll_left().to_bits(),
+                    scroll.to_bits(),
+                    "tab scroll changed at {width}"
+                );
                 assert!(tab.is_same_node(Some(&mounted.element("[data-editor-tab='README.md']"))));
                 assert!(
                     (tab.get_bounding_client_rect().x() - position.x()).abs() < 0.1,

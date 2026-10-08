@@ -11758,6 +11758,108 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
 }
 
 #[wasm_bindgen_test]
+async fn restored_long_row_caret_uses_bounded_initial_input_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    use std::{cell::Cell, rc::Rc};
+    let unit = "文😀 words ";
+    let source = format!("header\r\n{}\r\ntail", unit.repeat(6000));
+    let selected = Selection::caret("header\r\n".len() + unit.len() * 1200);
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let audit = js_sys::Function::new_no_args(r"
+            const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+            const state = {maximum: 0};
+            Object.defineProperty(HTMLTextAreaElement.prototype, 'value', {...descriptor, set(value) {
+                if (this.closest('.editor') && this.hasAttribute('data-editor-path')) state.maximum = Math.max(state.maximum, value.length);
+                descriptor.set.call(this, value);
+            }});
+            state.restore = () => Object.defineProperty(HTMLTextAreaElement.prototype, 'value', descriptor);
+            return state;
+        ").call0(&wasm_bindgen::JsValue::NULL).unwrap();
+        struct Audit(wasm_bindgen::JsValue);
+        impl Drop for Audit {
+            fn drop(&mut self) {
+                js_sys::Reflect::get(&self.0, &"restore".into())
+                    .unwrap()
+                    .unchecked_into::<js_sys::Function>()
+                    .call0(&wasm_bindgen::JsValue::NULL)
+                    .unwrap();
+            }
+        }
+        let audit = Audit(audit);
+        let saved = Rc::new(Cell::new(None::<EditorActions>));
+        let slot = saved.clone();
+        let initial = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state
+                .workspace
+                .open_file
+                .set(Some("restored-long-row.txt".into()));
+            state.workspace.content.set(initial.into());
+            let actions = EditorActions::new(state.workspace);
+            actions.record_selection(selected).unwrap();
+            actions.record_scroll(1, "restored-long-row.txt", 0.0, 24_500.0);
+            slot.set(Some(actions));
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+        });
+        let actions = saved.get().unwrap();
+        super::support::wait_until_with_timeout(
+            "restored long-row source geometry",
+            30_000,
+            || {
+                actions.measured_rows().is_some()
+                    && !actions.native_geometry_pending()
+                    && mounted
+                        .root
+                        .query_selector(".editor-code.highlight-ready")
+                        .unwrap()
+                        .is_some()
+            },
+        )
+        .await;
+        let maximum = js_sys::Reflect::get(&audit.0, &"maximum".into())
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!(
+            maximum > 0.0 && maximum <= 12.0 * 1024.0,
+            "{mode:?} restored native window installed {maximum} units"
+        );
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        assert!(actions.bound_native_context().is_some());
+        assert_eq!(actions.current_selection(), Some(selected));
+        assert_editor_native_source(&input, mounted.state.workspace, &source);
+        let scroll = openwebide_frontend::viewport::editor_scroll(&input);
+        assert!(
+            (scroll.scroll_left() - 24_500.0).abs() <= 0.25,
+            "{mode:?} restored horizontal scroll: {}",
+            scroll.scroll_left()
+        );
+        let cache = mounted
+            .state
+            .workspace
+            .editor_row_cache
+            .get_untracked()
+            .unwrap();
+        assert!(
+            openwebide_frontend::components::bounded_paragraph_matches_complete(
+                &input,
+                &cache.paint,
+                1
+            )
+            .await,
+            "{mode:?} restored long-row complete geometry"
+        );
+    }
+}
+
+#[wasm_bindgen_test]
 fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_modes() {
     use openwebide_core::{
         WorkspaceMode,
@@ -11766,9 +11868,9 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
     use openwebide_frontend::state_actions::editor::EditorActions;
     use std::{cell::Cell, rc::Rc, sync::Arc};
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
-        for case in 0..10 {
+        for case in 0..11 {
             let source = match case {
-                1 => "short\n".to_string() + &"a".repeat(70_000),
+                1 | 10 => "short\n".to_string() + &"a".repeat(70_000),
                 2 => "a\t".repeat(35_000),
                 3 => "אב".repeat(35_000),
                 _ => "a".repeat(70_000),
@@ -11792,7 +11894,8 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                 view! { <div/> }
             });
             let actions = slot.get().unwrap();
-            actions.prepare_edit(Selection::caret(0)).unwrap();
+            let selected = Selection::caret(if case == 10 { 35_006 } else { 0 });
+            actions.prepare_edit(selected).unwrap();
             actions.record_scroll(1, "startup.txt", 120.0, 450.0);
             if (1..=4).contains(&case) {
                 assert!(
@@ -11815,7 +11918,7 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                 context
                     .source_selection(context.native_selection().unwrap())
                     .unwrap(),
-                Selection::caret(0)
+                selected
             );
             if case == 5 {
                 let value = "日😀".to_string() + context.projection().textarea_text();
@@ -11878,11 +11981,11 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                 actions.prepare_edit(Selection::caret(0)).unwrap();
                 assert!(actions.begin_initial_native_context());
             }
-            if case >= 8 {
+            if (8..=9).contains(&case) {
                 actions.begin_composition();
             }
             let message = actions.finish_row_preparation(ticket, paint, Err(()));
-            if case >= 8 {
+            if (8..=9).contains(&case) {
                 assert!(message.is_some());
                 assert!(actions.native_geometry_pending());
                 let value = "日😀".to_string() + context.projection().textarea_text();
@@ -11910,7 +12013,7 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                 assert!(actions.bound_native_context().is_none());
                 continue;
             }
-            if case == 0 {
+            if case == 0 || case == 10 {
                 assert!(message.is_some());
                 assert!(!actions.native_geometry_pending());
                 assert!(actions.bound_native_context().is_none());
@@ -12254,15 +12357,24 @@ async fn styled_horizontal_slices_resume_original_runs_without_scanning_token_pr
     use openwebide_frontend::components::{
         take_highlight_segment_bytes, take_highlight_source_bytes,
     };
+    let font = loadEditorFont(
+        "Neon",
+        include_bytes!("../../fonts/MonaspaceNeon-v1.400.woff2"),
+    )
+    .await
+    .unwrap();
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         let transport = std::rc::Rc::new(DeferredSyntax::default());
         let installed = transport.clone();
+        let unit = "word 文😀e\u{301} -> == tail ";
         let source = format!(
             "let value = \"{}\";\r\n",
-            "word 文😀e\u{301} -> == tail ".repeat(6000)
+            unit.repeat((openwebide_core::editor::MAX_EDITOR_LINE_BYTES - 64) / unit.len())
         );
+        assert!(source.len() > openwebide_core::editor::MAX_EDITOR_LINE_BYTES - 128);
         let original = source.clone();
         let native: Vec<_> = source.replace("\r\n", "\n").encode_utf16().collect();
+        let started = web_sys::window().unwrap().performance().unwrap().now();
         let mounted = mount_test(move |state| {
             state.seed_project();
             state
@@ -12306,8 +12418,33 @@ async fn styled_horizontal_slices_resume_original_runs_without_scanning_token_pr
             },
         )
         .await;
+        wasm_bindgen_test::console_log!(
+            "near-limit styled initial paint {mode:?}: {} ms",
+            web_sys::window().unwrap().performance().unwrap().now() - started
+        );
         let input: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
+        let initial = mounted
+            .state
+            .workspace
+            .editor_row_cache
+            .get_untracked()
+            .unwrap();
+        assert!(initial.paint.prepared_source);
+        assert!(
+            initial.paint.tokens[0]
+                .iter()
+                .any(|token| token.kind == openwebide_core::highlight::TokenKind::String)
+        );
+        assert!(
+            openwebide_frontend::components::bounded_paragraph_matches_complete(
+                &input,
+                &initial.paint,
+                0
+            )
+            .await,
+            "{mode:?} near-limit styled initial geometry"
+        );
         let scroll = openwebide_frontend::viewport::editor_scroll(&input);
         let width = scroll.scroll_width();
         assert!(width > 100_000);
@@ -12460,7 +12597,58 @@ async fn styled_horizontal_slices_resume_original_runs_without_scanning_token_pr
             openwebide_frontend::state_actions::editor::take_paint_run_segment_bytes(),
             0
         );
+        let started = web_sys::window().unwrap().performance().unwrap().now();
+        actions
+            .paste(" ", openwebide_core::editor::Selection::caret(0))
+            .unwrap();
+        let expected = " ".to_string() + &original;
+        assert_eq!(actions.source(), expected);
+        super::support::wait_until_with_timeout("near-limit styled beginning edit", 30_000, || {
+            if !transport.pending.borrow().is_empty() {
+                transport.respond(true);
+            }
+            mounted
+                .state
+                .workspace
+                .editor_row_cache
+                .with_untracked(|cache| {
+                    cache.as_ref().is_some_and(|cache| {
+                        cache.paint.view_revision == actions.view_revision()
+                            && cache.paint.prepared_source
+                            && cache.paint.tokens[0].iter().any(|token| {
+                                token.kind == openwebide_core::highlight::TokenKind::String
+                            })
+                    })
+                })
+                && mounted
+                    .root
+                    .query_selector(".editor-code.highlight-ready")
+                    .unwrap()
+                    .is_some()
+        })
+        .await;
+        wasm_bindgen_test::console_log!(
+            "near-limit styled beginning edit {mode:?}: {} ms",
+            web_sys::window().unwrap().performance().unwrap().now() - started
+        );
+        let edited = mounted
+            .state
+            .workspace
+            .editor_row_cache
+            .get_untracked()
+            .unwrap();
+        assert!(
+            openwebide_frontend::components::bounded_paragraph_matches_complete(
+                &input,
+                &edited.paint,
+                0
+            )
+            .await,
+            "{mode:?} near-limit styled edited geometry"
+        );
+        assert_editor_native_source(&input, mounted.state.workspace, &expected);
     }
+    removeEditorFont(&font);
 }
 
 #[wasm_bindgen_test]

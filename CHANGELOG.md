@@ -9,6 +9,17 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Use bounded startup input when restoring a caret in an eligible later long row,
+  retaining its source selection, saved scroll and exact full-document geometry.
+  Verify actual near-1-MiB Rust String highlighting through load, cached/uncached
+  horizontal scrolling and a beginning edit with Monaspace Neon in both modes.
+
+- Keep modal and file-tab browser regressions compatible with strict CI lint,
+  preserving the exact tab-scroll assertion.
+
+- Preserve open dropdown surfaces and cached branch choices during background
+  option refreshes, while retaining the initial loading gate.
+
 - Install source-owned native input windows before initial layout for eligible
   unwrapped files with large first rows. Keep complete source dimensions behind
   measured paint, preserve saved scroll during preparation, and restore complete
