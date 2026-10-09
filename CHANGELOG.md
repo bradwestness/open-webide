@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse completed wrapped paragraph measurements for unchanged prefixes and
+  reconnecting source/style-owned suffixes in both workspace modes. Keep final
+  dimensions freshly measured and preserve fresh layout when changed wrapping,
+  missing anchors or overflow cannot be proved safe to reuse.
+
 - Reveal omitted wrapped caret endpoints from exact retained glyph geometry in
   both workspace modes. Align source paint with the current scroll position
   before caret measurements, preserving consecutive Home/End jumps. Sparse gaps

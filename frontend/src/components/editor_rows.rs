@@ -223,6 +223,8 @@ async fn measure_wrapped_paragraph(
     let Some(mut plan) = actions.prepare_wrapped_paragraph(scope, logical) else {
         return Ok(None);
     };
+    actions.resume_paragraph_measurements(scope, logical, &mut plan);
+    let suffix = actions.paragraph_suffix(scope, logical);
     let source_line = scope.projection.lines()[logical].source_line;
     let body = scope.projection.line_body(logical).ok_or(())?;
     let timing = ProbeTiming::installed();
@@ -230,6 +232,15 @@ async fn measure_wrapped_paragraph(
     while let Some(probe) = plan.probe().cloned() {
         if !current() {
             return Ok(None);
+        }
+        if let Some(suffix) = suffix.as_ref() {
+            let reused = actions.resume_paragraph_suffix_batch(suffix, &mut plan);
+            #[cfg(feature = "test-support")]
+            SUFFIX_PROBES.set(SUFFIX_PROBES.get() + reused);
+            if reused > 0 {
+                crate::util::yield_task().await;
+                continue;
+            }
         }
         let Some(targets) = plan.targets() else {
             return Ok(None);
@@ -315,7 +326,14 @@ async fn measure_wrapped_paragraph(
             crate::util::yield_task().await;
         }
     }
-    Ok(current().then(|| plan.finish()).flatten())
+    if !current() {
+        return Ok(None);
+    }
+    let Some((width, geometry, measurements)) = plan.finish_with_measurements() else {
+        return Ok(None);
+    };
+    actions.retain_paragraph_measurements(scope, logical, measurements);
+    Ok(Some((width, geometry)))
 }
 
 struct ParagraphLayout {
@@ -785,20 +803,15 @@ pub(super) async fn check_wrapped_paragraph_geometry(
     let bounds = row.get_bounding_client_rect();
     let body = scope.projection.line_body(logical).ok_or(())?;
     let index = scope.projection.visual_line_index(logical).ok_or(())?;
-    let Some(complete) = super::editor_geometry::preparation_geometry(
+    let actual = bounded.anchors(0..index.len() - 1).ok_or(())?;
+    let Some(expected) = super::editor_geometry::paragraph_rectangles(
         &row,
         body,
-        index.clone(),
-        &bounds,
-        true,
-        &|| true,
-    )
-    .await
-    else {
+        0,
+        &actual.iter().map(|anchor| anchor.glyph).collect::<Vec<_>>(),
+    ) else {
         return Ok(false);
     };
-    let actual = bounded.anchors(0..index.len() - 1).ok_or(())?;
-    let expected = complete.anchors(0..index.len() - 1).ok_or(())?;
     if (width - f64::from(row.scroll_width())).abs() > 0.25
         || (bounded.height - bounds.height()).abs() > 0.25
     {
@@ -813,7 +826,7 @@ pub(super) async fn check_wrapped_paragraph_geometry(
         );
         return Ok(false);
     }
-    if let Some((a, b)) = actual.iter().zip(expected).find(|(a, b)| {
+    if let Some((a, b)) = actual.iter().zip(&expected).find(|(a, b)| {
         (a.left - b.left).abs() > 0.25
             || (a.top - b.top).abs() > 0.25
             || (a.width - b.width).abs() > 0.25
