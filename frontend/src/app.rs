@@ -55,6 +55,18 @@ pub fn App() -> impl IntoView {
     provide_context(workspace_state);
     provide_context(git_state);
     provide_context(chat_state);
+    provide_context(crate::state::questions::QuestionsState::new(
+        api,
+        auth,
+        chat_state,
+        projects_state,
+    ));
+    provide_context(crate::host_admin::HostState::new(
+        api,
+        auth,
+        chat_state,
+        projects_state,
+    ));
     let skills = crate::state::skills::SkillsState::new();
     provide_context(skills);
     provide_context(crate::project_skills::ProjectSkillActions::new(

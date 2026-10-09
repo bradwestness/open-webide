@@ -17,6 +17,7 @@ mod editor_selections;
 mod editor_tabs;
 mod file_browser;
 mod file_tree;
+pub mod host_admin;
 pub(crate) mod modal;
 mod panel_resizer;
 mod prompt_dialog;
@@ -108,3 +109,5 @@ pub mod editor_chrome;
 
 pub mod memories;
 pub mod skills;
+
+pub mod questions;

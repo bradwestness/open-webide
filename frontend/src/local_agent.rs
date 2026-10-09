@@ -953,6 +953,7 @@ pub async fn run_local_agent(
                 &mut request,
                 &cancel,
                 SessionPersistence {
+                    anchor: anchor_id,
                     api: SendWrapper::new(api),
                     session: session_id,
                 },
@@ -968,6 +969,7 @@ pub async fn run_local_agent(
             }
             let mut events = Box::pin(openwebide_agent::session::chat_events(
                 SessionPersistence {
+                    anchor: anchor_id,
                     api: SendWrapper::new(api),
                     session: session_id,
                 },
@@ -1019,6 +1021,7 @@ pub async fn run_local_agent(
 
         let mut stream = Box::pin(openwebide_agent::session::events(
             SessionPersistence {
+                anchor: anchor_id,
                 api: SendWrapper::new(api),
                 session: session_id,
             },
@@ -1038,10 +1041,26 @@ pub async fn run_local_agent(
 }
 
 struct SessionPersistence {
+    anchor: i64,
     api: SendWrapper<Api>,
     session: i64,
 }
 impl openwebide_agent::session::RunPersistence for SessionPersistence {
+    fn finish(&self) -> impl Future<Output = ()> + Send {
+        SendWrapper::new(async move {
+            let _ = self
+                .api
+                .with_value(Clone::clone)
+                .question_command(
+                    self.session,
+                    &openwebide_core::questions::QuestionCommand::CancelRun {
+                        anchor: self.anchor,
+                    },
+                )
+                .await;
+        })
+    }
+
     fn task(
         &self,
         anchor: i64,
@@ -1228,7 +1247,7 @@ impl openwebide_agent::skills::SkillStore for BrowserSkillPersistence {
         .await
     }
 }
-type BrowserTaskExecutor =
+type BrowserBaseTaskExecutor =
     openwebide_agent::skills::SkillTools<BrowserScheduledExecutor, BrowserSkillPersistence>;
 type BrowserTaskGate = openwebide_agent::policy::PolicyGate<LocalPermissionGate, ApprovalAdapter>;
 #[derive(Clone)]
@@ -1244,6 +1263,16 @@ struct BrowserTaskFactory {
 }
 impl BrowserTaskFactory {
     fn executor(&self) -> BrowserTaskExecutor {
+        openwebide_agent::questions::QuestionTools::new(
+            self.base_executor(),
+            BrowserQuestionPersistence {
+                api: self.api.clone(),
+                session: self.session,
+            },
+            self.anchor,
+        )
+    }
+    fn base_executor(&self) -> BrowserBaseTaskExecutor {
         openwebide_agent::skills::SkillTools::new(
             openwebide_agent::scheduled::ScheduledTools::new(
                 openwebide_agent::memory::MemoryTools::new(
@@ -1320,3 +1349,30 @@ impl openwebide_agent::tasks::host::TaskFactory for BrowserTaskFactory {
         })
     }
 }
+
+struct BrowserQuestionPersistence {
+    api: SendWrapper<Api>,
+    session: i64,
+}
+impl openwebide_agent::questions::QuestionStore for BrowserQuestionPersistence {
+    fn command(
+        &self,
+        command: &openwebide_core::questions::QuestionCommand,
+    ) -> impl Future<Output = Result<openwebide_core::questions::QuestionResult, String>> + Send
+    {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .question_command(self.session, command)
+                .await
+        })
+    }
+    fn wait(&self) -> impl Future<Output = ()> + Send {
+        SendWrapper::new(async {
+            sleep_ms(500).await;
+        })
+    }
+}
+
+type BrowserTaskExecutor =
+    openwebide_agent::questions::QuestionTools<BrowserBaseTaskExecutor, BrowserQuestionPersistence>;

@@ -109,6 +109,41 @@ impl BackendApi {
         }
     }
 
+    pub async fn host_connection(
+        &self,
+    ) -> Result<openwebide_core::host_admin::HostConnection, String> {
+        self.get("/host/connection").await
+    }
+    pub async fn save_host_connection(
+        &self,
+        connection: &openwebide_core::host_admin::HostConnection,
+    ) -> Result<openwebide_core::host_admin::HostConnection, String> {
+        self.put("/host/connection", connection).await
+    }
+    pub async fn probe_host_connection(
+        &self,
+    ) -> Result<openwebide_core::host_admin::HostEnvironment, String> {
+        self.post("/host/probe", &serde_json::json!({})).await
+    }
+    pub async fn host_view(
+        &self,
+        session: i64,
+        request: &openwebide_core::host_admin::HostRequest,
+    ) -> Result<openwebide_core::host_admin::HostResponse, String> {
+        self.post(&format!("/sessions/{session}/host"), request)
+            .await
+    }
+    pub async fn host_input(
+        &self,
+        session: i64,
+        input: &openwebide_core::host_admin::HostInput,
+    ) -> Result<(), String> {
+        let _: serde_json::Value = self
+            .post(&format!("/sessions/{session}/host-input"), input)
+            .await?;
+        Ok(())
+    }
+
     pub async fn push_config(&self) -> Result<openwebide_core::push::PushConfig, String> {
         self.get("/push/config").await
     }
@@ -1071,6 +1106,15 @@ impl BackendApi {
         )
         .await
     }
+    pub async fn question_command(
+        &self,
+        session: i64,
+        command: &openwebide_core::questions::QuestionCommand,
+    ) -> Result<openwebide_core::questions::QuestionResult, String> {
+        self.post(&format!("/sessions/{session}/questions"), command)
+            .await
+    }
+
     pub async fn get_todo_plan(
         &self,
         session: i64,

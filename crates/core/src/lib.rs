@@ -1,6 +1,7 @@
 //! Shared domain types used across the Open WebIDE frontend, backend, and crates.
 
 pub mod assistance;
+pub mod questions;
 pub use assistance::{AssistanceKind, AssistanceRequest, BackgroundCompletion};
 pub mod goal;
 pub mod memory;
@@ -29,6 +30,7 @@ pub mod file_type;
 pub mod git;
 pub mod highlight;
 pub mod host;
+pub mod host_admin;
 pub mod html;
 pub use host::*;
 pub mod reviews;

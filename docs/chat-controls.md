@@ -119,3 +119,8 @@ A forked conversation starts without the source session's goal. Concurrent chang
 from another window require a refresh before updating.
 
 Project-wide knowledge and the Sessions memory toggle are described in [Project memory](project-memory.md).
+
+## Agent questions
+
+Agents can pause for structured choices or free-text replies using `ask_user_question`.
+See [agent questions](agent-questions.md) for answering, cancellation and reconnects.

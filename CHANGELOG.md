@@ -30,6 +30,10 @@ for what's still ahead.
 - Import skill Markdown files, folders, ZIP/.skill, tar and tar.gz/tgz archives for
   review before saving; export portable ZIPs preserving frontmatter and supporting
   text/binary resources. Decode in the app without requiring a bridge.
+- Add `ask_user_question` for explicit choices and free-text replies in local,
+  remote and project-less chat. Persist questions and answers across reconnects
+  and devices, reject stale replies, and support cancellation, keyboard submission
+  and phone layouts. Interrupted local runs resume from their saved answers.
 
 - Yield during parser-free warm-source entry comparison and pass its validated
   replacement into plain-row reuse, preserving exact-base checks and avoiding
@@ -45,6 +49,14 @@ for what's still ahead.
 - Compare retained plain sources across cooperative preparation batches in the
   syntax worker and browser fallback, preserving exact Unicode boundaries,
   complete publication and cancellation during warm edits.
+
+- Configure SSH host administration in Settings and inspect a live homelab
+  environment map from project-less chat. Approve immutable host plans, reply
+  privately to interactive prompts, and retain operation results across browser
+  disconnects, with reboot verification that never replays changes. Linux/macOS
+  support per-command sudo; Windows uses the SSH account's privileges. Included
+  by default in standard deployments; SSH credentials and a configured connection
+  are required. Project sessions and paired companion bridges cannot use these tools.
 
 - Yield within long plain rows while scanning, validating retained rows and
   copying fallback text, preserving complete publication and cancellation in

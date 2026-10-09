@@ -6,9 +6,11 @@ mod chat_queue;
 mod editor_recovery;
 mod goals;
 pub use goals::GoalTurnAssessment;
+mod host_admin;
 mod memories;
 mod model_setup;
 mod push;
+mod questions;
 mod reviews;
 mod rewind;
 mod rows;
@@ -934,12 +936,15 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "DELETE FROM sessions WHERE id = ? AND user_id = ?",
+                "DELETE FROM sessions WHERE id = ? AND user_id = ? AND NOT EXISTS (SELECT 1 FROM host_operations WHERE session_id=sessions.id AND state IN ('running','awaiting_reconnect'))",
                 &[DbValue::Int(id), DbValue::Int(user_id.get())],
             )
             .await?;
         if res.changes == 0 {
-            return Err(StorageError::NotFound(format!("session {id}")));
+            self.get_session(id, user_id).await?;
+            return Err(StorageError::Conflict(
+                "Host maintenance is still active; finish it before deleting this session.".into(),
+            ));
         }
         Ok(())
     }
@@ -1186,6 +1191,7 @@ impl<D: Db> Store<D> {
                           diff_json.map(DbValue::Text).unwrap_or(DbValue::Null),
                           DbValue::Int(session_id), DbValue::Text(tool_call_id.into())],
                     ).await?;
+                    store.db.execute("UPDATE agent_questions SET reply=? WHERE session_id=? AND tool_call_id=? AND reply IS NULL", &[DbValue::Text(serde_json::to_string(&openwebide_core::questions::QuestionReply::Cancel).expect("reply serializes")),DbValue::Int(session_id),DbValue::Text(tool_call_id.into())]).await?;
                     if let Some(project_id) = session.project_id {
                         if let Some(checkpoint) = row.get_text_opt(1) {
                             let checkpoint: openwebide_core::rewind::ProjectCheckpoint = serde_json::from_str(checkpoint).map_err(|e| StorageError::Db(e.to_string()))?;

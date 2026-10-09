@@ -226,11 +226,36 @@ impl PermissionGate for BridgeGate {
     }
 }
 
-/// Project-independent read-only bridge capability.
-pub struct HostInfoClient(pub Arc<dyn crate::exec::ToolExecution>);
-impl BridgeClient for HostInfoClient {
+/// Project-independent inspection and project-less host administration capability.
+pub struct HostInfoClient<B> {
+    pub host_administration: bool,
+    pub execution: Arc<dyn crate::exec::ToolExecution>,
+    pub backend: Arc<B>,
+    pub user: i64,
+    pub session: i64,
+}
+impl<B: RunBackend + 'static> BridgeClient for HostInfoClient<B> {
     async fn host_info(&self) -> Result<openwebide_core::HostInfo, String> {
-        self.0.host_info().await.map_err(|error| error.to_string())
+        self.execution
+            .host_info()
+            .await
+            .map_err(|error| error.to_string())
+    }
+    async fn host_admin(
+        &self,
+        request: &openwebide_core::host_admin::HostRequest,
+    ) -> Result<openwebide_core::host_admin::HostResponse, String> {
+        if !self.host_administration {
+            return Err("Host administration requires the authenticated server bridge.".into());
+        }
+        crate::host_admin::request(
+            self.backend.clone(),
+            self.execution.clone(),
+            self.user,
+            self.session,
+            request.clone(),
+        )
+        .await
     }
     async fn execute_command(
         &self,

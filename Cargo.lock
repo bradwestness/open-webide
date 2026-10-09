@@ -2504,6 +2504,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spin-sdk",
+ "tempfile",
  "thiserror 2.0.20",
 ]
 

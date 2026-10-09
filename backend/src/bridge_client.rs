@@ -14,19 +14,22 @@ use openwebide_core::CommandOutcome;
 pub struct SpinBridgeClient<S = std::sync::Arc<openwebide_storage::Store<crate::state::AppDb>>> {
     store: S,
     project_dir: String,
+    host_session: Option<(i64, i64)>,
 }
 
 impl<S> SpinBridgeClient<S> {
-    pub fn for_host(store: S) -> Self {
+    pub fn for_host(store: S, user: i64, session: i64) -> Self {
         Self {
             store,
             project_dir: String::new(),
+            host_session: Some((user, session)),
         }
     }
     pub fn for_project(store: S, dir: String) -> Self {
         Self {
             store,
             project_dir: dir,
+            host_session: None,
         }
     }
 }
@@ -35,6 +38,31 @@ impl<
     S: Clone + std::ops::Deref<Target = openwebide_storage::Store<crate::state::AppDb>> + Send + Sync,
 > BridgeClient for SpinBridgeClient<S>
 {
+    async fn host_admin(
+        &self,
+        request: &openwebide_core::host_admin::HostRequest,
+    ) -> Result<openwebide_core::host_admin::HostResponse, String> {
+        let (user, session) = self
+            .host_session
+            .ok_or("Host administration is available only in project-less chat.")?;
+        self.store
+            .require_host_session(user, session)
+            .await
+            .map_err(|error| error.to_string())?;
+        let payload =
+            serde_json::json!({"user":user, "session":session, "request":request}).to_string();
+        let (status, body) = crate::bridge::send(&self.store, "/host/admin", payload)
+            .await
+            .map_err(|error| format!("{error:?}"))?;
+        if status != 200 {
+            return Err(format!(
+                "Host administration bridge HTTP {status}: {}",
+                String::from_utf8_lossy(&body)
+            ));
+        }
+        serde_json::from_slice(&body).map_err(|error| error.to_string())
+    }
+
     async fn host_info(&self) -> Result<openwebide_core::HostInfo, String> {
         let (status, body) = crate::bridge::send(&self.store, "/host/info", "{}".into())
             .await

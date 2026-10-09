@@ -102,3 +102,9 @@ mod skills;
 
 #[path = "components/chat_details.rs"]
 mod chat_details;
+
+#[path = "components/host_admin.rs"]
+mod host_admin;
+
+#[path = "components/questions.rs"]
+mod questions;

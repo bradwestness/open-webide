@@ -39,6 +39,13 @@ enum Route {
     ScheduledCommand,
     ScheduledSessionCommand,
     ScheduledDue,
+    HostJournal,
+    HostInspect,
+    HostConnection,
+    SaveHostConnection,
+    HostProbe,
+    HostInput,
+    Questions,
     ScheduledResult,
     SessionRunLease,
     GetSettings,
@@ -173,6 +180,12 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("POST", ["sessions", id, "notifications"]) if numeric_id(id) => Some(Route::PushNotify),
         ("GET", ["scheduled-tasks"]) => Some(Route::ScheduledList),
         ("POST", ["scheduled-tasks"]) => Some(Route::ScheduledCommand),
+        ("GET", ["host", "connection"]) => Some(Route::HostConnection),
+        ("PUT", ["host", "connection"]) => Some(Route::SaveHostConnection),
+        ("POST", ["host", "probe"]) => Some(Route::HostProbe),
+        ("POST", ["sessions", id, "host-input"]) if numeric_id(id) => Some(Route::HostInput),
+        ("POST", ["host", "journal"]) => Some(Route::HostJournal),
+        ("POST", ["sessions", id, "host"]) if numeric_id(id) => Some(Route::HostInspect),
         ("POST", ["scheduled-tasks", "due"]) => Some(Route::ScheduledDue),
         ("POST", ["scheduled-tasks", "result"]) => Some(Route::ScheduledResult),
         ("POST", ["sessions", id, "scheduled-tasks"]) if numeric_id(id) => {
@@ -243,6 +256,7 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("GET", ["sessions", _, "goal"]) => Some(Route::GetGoal),
         ("POST", ["sessions", _, "goal"]) => Some(Route::UpdateGoal),
         ("POST", ["sessions", _, "compact"]) => Some(Route::CompactSession),
+        ("POST", ["sessions", id, "questions"]) if numeric_id(id) => Some(Route::Questions),
         ("GET", ["sessions", _, "todos"]) => Some(Route::GetTodoPlan),
         ("POST", ["sessions", _, "todos"]) => Some(Route::WriteTodoPlan),
         ("POST", ["sessions", _, "tool-steps", "upsert"]) => Some(Route::UpsertToolStep),
@@ -333,10 +347,13 @@ pub async fn route(req: Request) -> JsonResp {
     };
     if matches!(
         route,
-        Some(Route::PushDispatch | Route::ScheduledDue | Route::ScheduledResult)
+        Some(
+            Route::PushDispatch | Route::ScheduledDue | Route::ScheduledResult | Route::HostJournal
+        )
     ) {
         let result = match crate::auth::require_bridge_service(&state, req.headers()).await {
             Ok(()) => match route {
+                Some(Route::HostJournal) => api::host_admin::journal(req, &state).await,
                 Some(Route::ScheduledDue) => api::scheduled::due(req, &state).await,
                 Some(Route::ScheduledResult) => api::scheduled::result(req, &state).await,
                 _ => api::push::dispatch(&state).await,
@@ -454,6 +471,19 @@ pub async fn route(req: Request) -> JsonResp {
         (Some(Route::ScheduledCommand), Some(user)) => {
             api::scheduled::command(req, &state, user).await
         }
+        (Some(Route::HostConnection), Some(user)) => {
+            api::host_admin::connection(req, &state, user, false).await
+        }
+        (Some(Route::SaveHostConnection), Some(user)) => {
+            api::host_admin::connection(req, &state, user, true).await
+        }
+        (Some(Route::HostProbe), Some(user)) => api::host_admin::probe(&state, user).await,
+        (Some(Route::HostInput), Some(user)) => {
+            api::host_admin::input(req, &state, &path, user).await
+        }
+        (Some(Route::HostInspect), Some(user)) => {
+            api::host_admin::inspect(req, &state, &path, user).await
+        }
         (Some(Route::ScheduledSessionCommand), Some(user)) => {
             api::scheduled::session_command(req, &state, &path, user).await
         }
@@ -559,6 +589,9 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::CompactSession), Some(user)) => {
             api::sessions::compact_session(req, state, &path, user).await
+        }
+        (Some(Route::Questions), Some(user)) => {
+            api::questions::command(req, &state, &path, user).await
         }
         (Some(Route::GetTodoPlan), Some(user)) => {
             api::sessions::get_todo_plan(&state, &path, user).await
@@ -993,6 +1026,7 @@ mod tests {
             ("DELETE", "sessions/5/queue", Route::RemoveQueuedPrompt),
             ("POST", "sessions/5/queue/send", Route::ConsumeQueuedPrompt),
             ("POST", "sessions/5/fork", Route::ForkSession),
+            ("POST", "sessions/5/questions", Route::Questions),
             ("GET", "sessions/5/todos", Route::GetTodoPlan),
             ("POST", "sessions/5/todos", Route::WriteTodoPlan),
             (

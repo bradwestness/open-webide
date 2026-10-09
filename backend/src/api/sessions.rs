@@ -487,7 +487,28 @@ pub(super) async fn build_run_plan(
         runtime.settings.context_limit,
     );
     openwebide_agent::scheduled::configure(&mut input.tools);
-    let plan = openwebide_agent::session::plan(&runtime, input);
+    let mut plan = openwebide_agent::session::plan(&runtime, input);
+    if session.project_id.is_none()
+        && state
+            .store
+            .get_user(user_id)
+            .await?
+            .is_some_and(|user| user.role == openwebide_core::UserRole::Admin)
+        && runtime.settings.tools != Some(false)
+        && state.store.host_connection().await?.is_configured()
+    {
+        plan.request
+            .tools
+            .extend(openwebide_agent::host_admin::definitions());
+        plan.connection
+            .tool_selection
+            .apply(&mut plan.request.tools);
+        plan.kind = if plan.request.tools.is_empty() {
+            RunKind::Chat
+        } else {
+            RunKind::WebChat
+        };
+    }
     plan.validate_prompt().map_err(ApiError::bad_request)?;
     Ok(plan)
 }

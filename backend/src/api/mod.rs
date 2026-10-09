@@ -2,6 +2,7 @@
 
 pub(crate) mod assistance;
 pub(crate) mod completion;
+pub(crate) mod host_admin;
 pub(crate) mod naming;
 pub(crate) mod scheduled;
 pub(crate) mod session_search;
@@ -147,3 +148,5 @@ use query::query;
 mod tests;
 
 pub(crate) mod approvals;
+
+pub(crate) mod questions;

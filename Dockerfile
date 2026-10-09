@@ -37,6 +37,7 @@ RUN cargo build -p openwebide-bridge --release --locked
 # --- runtime: Spin + prebuilt components ---
 FROM ghcr.io/spinframework/spin:v4.1.0
 
+# SSH client is included for Git and app-configured host administration.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends openssh-client && \
     rm -rf /var/lib/apt/lists/*
