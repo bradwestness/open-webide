@@ -54,6 +54,21 @@ impl ProjectHost {
         }
     }
 
+    /// Mode selection for unattended work stays at the host capability boundary.
+    pub async fn background_binding(
+        self,
+        project: Option<i64>,
+        current: impl Fn() -> bool + Clone + 'static,
+    ) -> Result<Option<openwebide_core::scheduled::HostBinding>, String> {
+        match project.and_then(|id| self.projects.project(id)) {
+            Some(project) if project.mode == WorkspaceMode::Local => {
+                self.scheduled_binding(project.id, current).await.map(Some)
+            }
+            Some(_) => Ok(None),
+            None if project.is_none() => Ok(None),
+            None => Err("Project is no longer available".into()),
+        }
+    }
     pub async fn scheduled_binding(
         self,
         id: i64,

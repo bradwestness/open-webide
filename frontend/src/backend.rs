@@ -431,6 +431,15 @@ pub trait Backend {
         revision: u64,
         command: &'a openwebide_core::GoalCommand,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::Goal, String>>;
+    fn dispatch_goal<'a>(
+        &'a self,
+        session: i64,
+        revision: u64,
+        command: &'a openwebide_core::GoalCommand,
+        _binding: Option<&'a openwebide_core::scheduled::HostBinding>,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::Goal, String>> {
+        self.update_goal(session, revision, command)
+    }
     fn compact_session<'a>(
         &'a self,
         session: i64,
@@ -1207,6 +1216,17 @@ impl Backend for BackendApi {
         command: &'a openwebide_core::GoalCommand,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::Goal, String>> {
         Box::pin(BackendApi::update_goal(self, session, revision, command))
+    }
+    fn dispatch_goal<'a>(
+        &'a self,
+        session: i64,
+        revision: u64,
+        command: &'a openwebide_core::GoalCommand,
+        binding: Option<&'a openwebide_core::scheduled::HostBinding>,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::Goal, String>> {
+        Box::pin(BackendApi::dispatch_goal(
+            self, session, revision, command, binding,
+        ))
     }
     fn compact_session<'a>(
         &'a self,

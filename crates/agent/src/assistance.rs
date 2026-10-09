@@ -96,7 +96,12 @@ async fn generate_bounded(
             crate::session::request(&runtime, Some(instruction), input.clone(), Vec::new());
         request.model_settings.max_output_tokens = Some(if kind.limit() <= 240 { 96 } else { 512 });
         request.model_settings.thinking = Some(false);
-        match source.complete_with_timeout(&request, 5).await {
+        let timeout = if kind == AssistanceKind::GoalEvaluation {
+            30
+        } else {
+            5
+        };
+        match source.complete_with_timeout(&request, timeout).await {
             Ok(completion) => {
                 if let ChatResponse::Text(text) = completion.response
                     && let Some(text) = kind.normalize(&text)

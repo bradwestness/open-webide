@@ -5,6 +5,7 @@ mod branches;
 mod chat_queue;
 mod editor_recovery;
 mod goals;
+pub use goals::GoalTurnAssessment;
 mod memories;
 mod model_setup;
 mod push;

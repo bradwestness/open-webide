@@ -36,6 +36,9 @@ pub async fn serve(config: ServerConfig) {
             continue;
         }
         for host in &hosts {
+            if running.len() >= 10 {
+                break;
+            }
             let deliveries = match backend.due_tasks(host).await {
                 Ok(deliveries) => deliveries,
                 Err(error) => {
@@ -43,7 +46,7 @@ pub async fn serve(config: ServerConfig) {
                     continue;
                 }
             };
-            for delivery in deliveries {
+            for delivery in deliveries.into_iter().take(10 - running.len()) {
                 let backend = backend.clone();
                 let config = config.clone();
                 let host = host.clone();
@@ -91,7 +94,7 @@ pub async fn serve(config: ServerConfig) {
                                     &DispatchResult {
                                         run_id: delivery.run_id,
                                         status: status.into(),
-                                        detail,
+                                        detail: detail.chars().take(256).collect(),
                                         permission_id: None,
                                     },
                                 )
@@ -120,18 +123,18 @@ pub async fn serve(config: ServerConfig) {
                                 ),
                                 _ => ("running", String::new()),
                             };
-                            let _ = backend
+                            let delivered = backend
                                 .task_result(
                                     &host.id,
                                     &DispatchResult {
                                         run_id: delivery.run_id,
                                         status: status.into(),
-                                        detail: detail.chars().take(1024).collect(),
+                                        detail: detail.chars().take(256).collect(),
                                         permission_id: permission.map(|step| step.id),
                                     },
                                 )
                                 .await;
-                            if finished.is_some() {
+                            if finished.is_some() && delivered.is_ok() {
                                 break;
                             }
                             tokio::time::sleep(Duration::from_secs(5)).await;

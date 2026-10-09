@@ -21,7 +21,7 @@ impl<D: Db> Store<D> {
         if let Some(project) = project {
             self.get_project(project, user).await?;
         }
-        let rows = self.db.execute(&format!("SELECT {TASK_COLUMNS} FROM scheduled_tasks WHERE user_id = ? AND project_id IS ? ORDER BY id"), &[DbValue::Int(user.get()), project.map_or(DbValue::Null, DbValue::Int)]).await?;
+        let rows = self.db.execute(&format!("SELECT {TASK_COLUMNS} FROM scheduled_tasks WHERE user_id = ? AND project_id IS ? AND NOT EXISTS (SELECT 1 FROM goal_workers g WHERE g.task_id=scheduled_tasks.id) ORDER BY id"), &[DbValue::Int(user.get()), project.map_or(DbValue::Null, DbValue::Int)]).await?;
         let mut tasks = Vec::new();
         for row in rows.rows {
             let id = row.get_int(0)?;
@@ -133,7 +133,7 @@ impl<D: Db> Store<D> {
             .transpose()
             .map(Option::flatten)
     }
-    async fn cancel_scheduled_pending(&self, task: i64) -> Result<(), StorageError> {
+    pub(super) async fn cancel_scheduled_pending(&self, task: i64) -> Result<(), StorageError> {
         self.db.execute("UPDATE scheduled_runs SET status = 'cancelled', detail = 'Task changed before delivery' WHERE task_id = ? AND queued_id IS NOT NULL", &[DbValue::Int(task)]).await?;
         self.db.execute("DELETE FROM queued_prompts WHERE id IN (SELECT queued_id FROM scheduled_runs WHERE task_id = ? AND queued_id IS NOT NULL)", &[DbValue::Int(task)]).await?;
         Ok(())
@@ -234,6 +234,7 @@ impl<D: Db> Store<D> {
             // Recover claims only before injection. A consumed prompt is never replayed.
             store.db.execute("UPDATE scheduled_runs SET status='queued',claimed_until=0 WHERE status='claimed' AND claimed_until < ? AND queued_id IS NOT NULL", &[DbValue::Int(now)]).await?;
             store.db.execute("UPDATE scheduled_runs SET status='interrupted',detail='Host stopped; prompt was delivered and will not be replayed' WHERE status IN ('running','blocked') AND claimed_until < ?", &[DbValue::Int(now)]).await?;
+            store.db.execute("UPDATE scheduled_tasks SET next_run=? WHERE enabled=1 AND next_run IS NULL AND id IN (SELECT g.task_id FROM goal_workers g JOIN scheduled_runs r ON r.task_id=g.task_id WHERE r.status='interrupted' AND r.id=(SELECT max(id) FROM scheduled_runs WHERE task_id=g.task_id))", &[DbValue::Int(now)]).await?;
             let rows=store.db.execute("SELECT id,user_id,project_id,draft,next_run FROM scheduled_tasks WHERE host_id=? AND enabled=1 AND next_run <= ? AND NOT EXISTS(SELECT 1 FROM scheduled_runs r WHERE r.task_id=scheduled_tasks.id AND r.status IN ('queued','claimed','running','blocked')) ORDER BY next_run LIMIT 20", &[DbValue::Text(host.id.clone()),DbValue::Int(now)]).await?;
             for row in rows.rows {
                 let task=row.get_int(0)?;let user=UserId::new(row.get_int(1)?);let project=row.get_int_opt(2);let draft:TaskDraft=decode(row.get_text(3)?)?;
@@ -243,11 +244,14 @@ impl<D: Db> Store<D> {
                         store.db.execute("UPDATE scheduled_tasks SET next_run=? WHERE id=?", &[next,DbValue::Int(task)]).await?;
                         continue;
                 };
+                let goal=store.db.execute("SELECT 1 FROM goal_workers WHERE task_id=?", &[DbValue::Int(task)]).await?;
                 let queue=store.list_queued_prompts(user,session).await?;
+                if !goal.rows.is_empty() && (!queue.is_empty() || store.session_run_active(user,session,now).await? || store.ensure_not_rewinding(session).await.is_err()) {continue;}
+
                 if queue.len()>=openwebide_core::chat_queue::MAX_QUEUED_PROMPTS || queue.iter().map(|entry|entry.content.len()).sum::<usize>().saturating_add(draft.prompt.len()+draft.title.len()+64)>openwebide_core::chat_queue::MAX_QUEUE_BYTES {continue;}
                 let content=format!("[Scheduled task: {} (#{task})]\n\n{}",draft.title,draft.prompt);
                 let queued=store.db.execute("INSERT INTO queued_prompts(session_id,content,created_at,guidance) VALUES (?,?,?,0)", &[DbValue::Int(session),DbValue::Text(content),DbValue::Int(now)]).await?;
-                store.db.execute("INSERT INTO scheduled_runs(task_id,due_at,status,queued_id,session_id) VALUES (?,?,'queued',?,?)", &[DbValue::Int(task),DbValue::Int(row.get_int(4)?),DbValue::Int(queued.last_insert_rowid),DbValue::Int(session)]).await?;
+                store.db.execute("INSERT INTO scheduled_runs(task_id,due_at,status,queued_id,session_id,goal_revision) VALUES (?,?,'queued',?,?,(SELECT revision FROM goal_workers WHERE task_id=?))", &[DbValue::Int(task),DbValue::Int(row.get_int(4)?),DbValue::Int(queued.last_insert_rowid),DbValue::Int(session),DbValue::Int(task)]).await?;
                 let next=draft.schedule.next_after(now).map_err(StorageError::InvalidRequest)?;
                 store.db.execute("UPDATE scheduled_tasks SET next_run=? WHERE id=?", &[next.map_or(DbValue::Null,DbValue::Int),DbValue::Int(task)]).await?;
             }
@@ -301,6 +305,16 @@ impl<D: Db> Store<D> {
         result: &DispatchResult,
         now: i64,
     ) -> Result<(), StorageError> {
+        self.scheduled_result_evaluated(host, result, None, now)
+            .await
+    }
+    pub async fn scheduled_result_evaluated(
+        &self,
+        host: &str,
+        result: &DispatchResult,
+        evaluation: Option<&super::goals::GoalTurnAssessment>,
+        now: i64,
+    ) -> Result<(), StorageError> {
         if ![
             "queued",
             "running",
@@ -316,7 +330,9 @@ impl<D: Db> Store<D> {
         }
         self.db.transaction(|tx| async move {
             let store = Store::new(tx);
-        store.db.execute("UPDATE scheduled_runs SET status=?, detail=?, claimed_until=?,permission_id=? WHERE id=? AND task_id IN (SELECT id FROM scheduled_tasks WHERE host_id=?) AND status IN ('claimed','running','blocked')", &[DbValue::Text(result.status.clone()),DbValue::Text(result.detail.clone()),DbValue::Int(now+120),result.permission_id.clone().map_or(DbValue::Null,DbValue::Text),DbValue::Int(result.run_id),DbValue::Text(host.into())]).await?;
+        let updated = store.db.execute("UPDATE scheduled_runs SET status=?, detail=?, claimed_until=?,permission_id=? WHERE id=? AND task_id IN (SELECT id FROM scheduled_tasks WHERE host_id=?) AND status IN ('claimed','running','blocked')", &[DbValue::Text(result.status.clone()),DbValue::Text(result.detail.clone()),DbValue::Int(now+120),result.permission_id.clone().map_or(DbValue::Null,DbValue::Text),DbValue::Int(result.run_id),DbValue::Text(host.into())]).await?;
+            if updated.changes == 0 { return Ok(()); }
+            store.apply_goal_result(host,result,evaluation,now).await?;
             // A preflight failure must not leave an undeliverable prompt at the
             // head of the chat queue. Delivered prompts already have no queue row.
             if matches!(result.status.as_str(), "failed" | "cancelled" | "complete") {
@@ -352,6 +368,9 @@ impl<D: Db> Store<D> {
             return Err(StorageError::Conflict(
                 "This chat is already running. Your scheduled prompt will wait.".into(),
             ));
+        }
+        if !token.starts_with("scheduled-") {
+            self.yield_goal_pending(session, now).await?;
         }
         Ok(())
     }

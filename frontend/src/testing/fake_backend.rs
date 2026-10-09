@@ -71,6 +71,7 @@ pub struct FakeBackend {
     pub memory_command_results: RefCell<VecDeque<Deferred<openwebide_core::ProjectMemories>>>,
     pub memory_commands: RefCell<Vec<(i64, openwebide_core::MemoryCommand, bool)>>,
     pub goals: RefCell<BTreeMap<i64, openwebide_core::Goal>>,
+    pub goal_bindings: RefCell<Vec<Option<openwebide_core::scheduled::HostBinding>>>,
     pub goal_load_results: RefCell<VecDeque<Deferred<Option<openwebide_core::Goal>>>>,
     pub compact_results: RefCell<VecDeque<Deferred<ChatMessage>>>,
     pub compact_error: RefCell<Option<String>>,
@@ -1841,6 +1842,21 @@ impl Backend for FakeBackend {
             }
             let goal =
                 openwebide_core::Goal::transition(existing.as_ref(), session, command.clone(), 1)?;
+            self.goals.borrow_mut().insert(session, goal.clone());
+            Ok(goal)
+        })
+    }
+    fn dispatch_goal<'a>(
+        &'a self,
+        session: i64,
+        revision: u64,
+        command: &'a openwebide_core::GoalCommand,
+        binding: Option<&'a openwebide_core::scheduled::HostBinding>,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::Goal, String>> {
+        Box::pin(async move {
+            self.goal_bindings.borrow_mut().push(binding.cloned());
+            let mut goal = self.update_goal(session, revision, command).await?;
+            goal.worker = true;
             self.goals.borrow_mut().insert(session, goal.clone());
             Ok(goal)
         })

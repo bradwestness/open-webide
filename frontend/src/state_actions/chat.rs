@@ -549,15 +549,28 @@ impl ChatActions {
                         return;
                     }
                     if let Some(objective) = goal_objective {
+                        let host = project_host;
+                        let binding = match host.background_binding(project, current.clone()).await
+                        {
+                            Ok(binding) => binding,
+                            Err(error) => {
+                                if current() {
+                                    chat.goal_error.set(Some(error));
+                                    chat.streaming.set(false);
+                                }
+                                return;
+                            }
+                        };
                         let revision = chat
                             .goal
                             .with_untracked(|goal| goal.as_ref().map_or(0, |goal| goal.revision));
                         match api
                             .with_value(Clone::clone)
-                            .update_goal(
+                            .dispatch_goal(
                                 session_id,
                                 revision,
                                 &openwebide_core::GoalCommand::Start { objective },
+                                binding.as_ref(),
                             )
                             .await
                         {
@@ -576,12 +589,10 @@ impl ChatActions {
                                 return;
                             }
                         }
-                        if !current() || local_cancel.load(Ordering::Relaxed) {
-                            if same_run() {
-                                chat.streaming.set(false);
-                            }
-                            return;
+                        if same_run() {
+                            chat.streaming.set(false);
                         }
+                        return;
                     }
                     let model = chat
                         .session_model
@@ -817,6 +828,8 @@ impl ChatActions {
                     session_id: 0,
                     objective: objective.clone(),
                     status: openwebide_core::GoalStatus::Active,
+                    worker: true,
+                    note: None,
                     revision: 0,
                     updated_at: 0,
                     started_at: None,
@@ -824,7 +837,6 @@ impl ChatActions {
                 .prompt();
                 start.run((None, None, Some(prompt), Some(objective)));
             }),
-            send_prompt,
             stop,
         );
         let resume_run = Callback::new(move |()| {

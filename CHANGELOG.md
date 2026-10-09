@@ -13,6 +13,8 @@ for what's still ahead.
   retain the validated source change until parsing starts, and discard canceled
   or superseded row work without exposing partial indexes or stale structure.
 
+- Run session goals as durable host workers in remote, paired-local, and projectless chats, including after the browser closes. Evaluate turn evidence, continue unmet goals, stop on completion, and pause blockers, errors or stalled work. Preserve approvals, foreground priority and revision-safe recovery without replaying consumed prompts.
+
 - Yield while checking syntax source limits before worker serialization and
   parsing, preserving exact byte/newline limits and rejecting canceled or
   superseded sources without publishing stale analysis.

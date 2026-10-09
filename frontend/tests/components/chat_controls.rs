@@ -1,8 +1,7 @@
 use super::support::{Mounted, chat_view, mount_test, settle, wait_until};
 use leptos::prelude::*;
 use openwebide_core::{
-    ChatCompletion, ChatMessage, ChatResponse, GoalStatus, Role, RunEvent, StopReason, ToolCall,
-    ToolTiming, WorkspaceMode,
+    ChatMessage, GoalStatus, Role, RunEvent, ToolCall, ToolTiming, WorkspaceMode,
 };
 use openwebide_frontend::conversation::{ConversationItem, ToolStepResult};
 use wasm_bindgen::JsCast;
@@ -24,31 +23,6 @@ fn fixture(mode: WorkspaceMode) -> Mounted {
         }
         view! { <style>{include_str!("../../styles.css")}</style> {chat_view(state)} }
     })
-}
-fn reply(mounted: &Mounted, mode: WorkspaceMode) {
-    if mode == WorkspaceMode::Local {
-        mounted
-            .state
-            .fake
-            .scripted_completions
-            .borrow_mut()
-            .push_back(ChatCompletion {
-                response: ChatResponse::Text("Verified work; ready for review".into()),
-                preamble: String::new(),
-                reasoning: String::new(),
-                usage: None,
-                stop_reason: StopReason::Complete,
-            });
-    } else {
-        mounted
-            .state
-            .fake
-            .scripted_events
-            .borrow_mut()
-            .push_back(vec![RunEvent::Delta {
-                content: "Verified work; ready for review".into(),
-            }]);
-    }
 }
 async fn idle(mounted: &Mounted) {
     wait_until("idle chat controls", || {
@@ -133,10 +107,21 @@ async fn chat_controls_commands_complete_search_and_preserve_drafts_in_both_mode
 
 #[wasm_bindgen_test]
 async fn chat_controls_goals_start_pause_continue_complete_and_reload_in_both_modes() {
+    let bridge = super::local_bridge::HttpGuard(super::local_bridge::fake_bridge_http());
+    let previous = openwebide_frontend::idb::get_bridge_pairing_token()
+        .await
+        .unwrap();
+    openwebide_frontend::idb::set_bridge_pairing_token("probe-token")
+        .await
+        .unwrap();
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         let mounted = fixture(mode);
+        mounted
+            .state
+            .settings
+            .bridge_url
+            .set("ws://bridge.test:3001".into());
         settle().await;
-        reply(&mounted, mode);
         mounted.input("/goal Fix the failing test");
         mounted.key("Enter", "Enter", false);
         settle().await;
@@ -146,8 +131,33 @@ async fn chat_controls_goals_start_pause_continue_complete_and_reload_in_both_mo
             "{:?}",
             mounted.state.chat.error.get_untracked()
         );
+        assert!(
+            mounted.state.chat.goal_error.get_untracked().is_none(),
+            "{:?}",
+            mounted.state.chat.goal_error.get_untracked()
+        );
         let goal = mounted.state.chat.goal.get_untracked().expect("saved goal");
         assert_eq!(goal.status, GoalStatus::Active);
+        assert!(goal.worker);
+        assert!(
+            mounted
+                .state
+                .fake
+                .messages
+                .borrow()
+                .values()
+                .all(Vec::is_empty),
+            "goal activation must enqueue without running in the browser"
+        );
+        {
+            let bindings = mounted.state.fake.goal_bindings.borrow();
+            assert_eq!(bindings[0].is_some(), mode == WorkspaceMode::Local);
+            if let Some(binding) = &bindings[0] {
+                assert_eq!(binding.host_id, "paired-host");
+                assert_eq!(binding.path, "repos/x");
+            }
+        }
+
         assert_eq!(goal.objective, "Fix the failing test");
         assert_eq!(
             mounted.element(".tui-goal-label").text_content().unwrap(),
@@ -201,7 +211,7 @@ async fn chat_controls_goals_start_pause_continue_complete_and_reload_in_both_mo
                 .element(".tui-goal")
                 .text_content()
                 .unwrap()
-                .contains("Review the latest reply or continue")
+                .contains("execution host will continue")
         );
         mounted.click_text("Pause");
         settle().await;
@@ -215,7 +225,6 @@ async fn chat_controls_goals_start_pause_continue_complete_and_reload_in_both_mo
             "Goal paused"
         );
         mounted.state.chat.draft.set("Keep my draft".into());
-        reply(&mounted, mode);
         mounted.click_text("Continue");
         settle().await;
         idle(&mounted).await;
@@ -260,6 +269,16 @@ async fn chat_controls_goals_start_pause_continue_complete_and_reload_in_both_mo
             mounted.state.chat.goal.get_untracked().unwrap().status,
             GoalStatus::Completed
         );
+    }
+    drop(bridge);
+    if let Some(previous) = previous {
+        openwebide_frontend::idb::set_bridge_pairing_token(&previous)
+            .await
+            .unwrap();
+    } else {
+        openwebide_frontend::idb::delete_bridge_pairing_token()
+            .await
+            .unwrap();
     }
 }
 
@@ -465,6 +484,8 @@ async fn chat_controls_delayed_goal_loads_cannot_cross_account_project_or_sessio
                 session_id: 1,
                 objective: "stale objective".into(),
                 status: GoalStatus::Active,
+                worker: false,
+                note: None,
                 revision: 42,
                 updated_at: 1,
                 started_at: Some(1),
@@ -484,14 +505,25 @@ async fn chat_controls_delayed_goal_loads_cannot_cross_account_project_or_sessio
 
 #[wasm_bindgen_test]
 async fn chat_controls_starting_a_goal_creates_a_session_when_needed() {
+    let bridge = super::local_bridge::HttpGuard(super::local_bridge::fake_bridge_http());
+    let previous = openwebide_frontend::idb::get_bridge_pairing_token()
+        .await
+        .unwrap();
+    openwebide_frontend::idb::set_bridge_pairing_token("probe-token")
+        .await
+        .unwrap();
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         let mounted = fixture(mode);
+        mounted
+            .state
+            .settings
+            .bridge_url
+            .set("ws://bridge.test:3001".into());
         settle().await;
         mounted.state.chat.active_session.set(None);
         settle().await;
         mounted.state.fake.sessions.borrow_mut().clear();
         mounted.state.chat.sessions.set(Vec::new());
-        reply(&mounted, mode);
         mounted.input("/goal Fix startup");
         mounted.key("Enter", "Enter", false);
         settle().await;
@@ -510,6 +542,16 @@ async fn chat_controls_starting_a_goal_creates_a_session_when_needed() {
             mounted.state.chat.goal.get_untracked().unwrap().objective,
             "Fix startup"
         );
+    }
+    drop(bridge);
+    if let Some(previous) = previous {
+        openwebide_frontend::idb::set_bridge_pairing_token(&previous)
+            .await
+            .unwrap();
+    } else {
+        openwebide_frontend::idb::delete_bridge_pairing_token()
+            .await
+            .unwrap();
     }
 }
 
@@ -680,7 +722,7 @@ async fn goal_status_is_compact_persisted_and_the_panel_closes_on_session_change
                 .element(".tui-goal")
                 .text_content()
                 .unwrap()
-                .contains("You marked this goal complete.")
+                .contains("This goal is complete.")
         );
         assert_eq!(
             mounted

@@ -81,18 +81,26 @@ message during summarization, the stale summary is rejected; retry when idle.
 
 ## Work toward a goal
 
-Send `/goal <objective>` to save an objective in this session and start an agent
-run. A session is created if needed. Use `/goal start <objective>` when the text
-would otherwise be interpreted as a control command.
+Send `/goal <objective>` to save an objective in this session and queue work on
+the execution host. A session is created if needed. Use `/goal start <objective>`
+when the text would otherwise be interpreted as a control command.
 
 The chat statusline shows **Goal active**, **Goal paused**, or **Goal complete**.
 Click it to open the goal context panel with the objective, current status and
 controls. Completed goals include elapsed time, such as `Goal complete (1h23m)`,
 measured from starting the goal through completion, including pauses. Older saved
 goals show completion without a duration because their start time was not recorded.
-The usual tools, permissions and Stop control apply. An agent reply leaves the goal
-open for review; it does not automatically mark the objective successful or launch
-another run.
+The usual tools, permissions and Stop control apply. Goals run on the host even
+when the browser is closed or another session is open. Remote and projectless
+chats use the server host; local folders use their verified paired host. Local
+activation requires that folder connection. The host and backend must remain running.
+
+After each turn a separate bounded model evaluation checks the objective against
+saved response and tool evidence. An unmet goal queues another turn; verified
+completion marks it complete. Blockers, run errors, unavailable evaluation, three
+consecutive turns without tools, or 100 turns pause the goal for review. Resume
+starts a fresh turn allowance. Pending tool approvals remain pending until you
+return and decide; closing the browser never approves them.
 
 | Command | Action |
 | --- | --- |
@@ -104,8 +112,10 @@ another run.
 The panel offers Continue, Pause and Mark complete buttons. Continue preserves an
 unsent draft. Complete the current goal before starting another one. Goals survive
 reloads and device changes through session-scoped database storage. Returning to
-an active goal shows review/continue controls; recovery does not replay tools or
-start work automatically. A forked conversation starts without the source session's
-goal. Concurrent changes from another window require a refresh before updating.
+an active host goal attaches to its current run. Host recovery continues from
+saved history with a new turn rather than replaying a consumed prompt. Existing
+goals created before host continuation require an explicit Continue to opt in.
+A forked conversation starts without the source session's goal. Concurrent changes
+from another window require a refresh before updating.
 
 Project-wide knowledge and the Sessions memory toggle are described in [Project memory](project-memory.md).

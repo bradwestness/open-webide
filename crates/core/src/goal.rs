@@ -1,4 +1,4 @@
-//! Session objectives stay open until the user confirms completion.
+//! Durable session objectives and evidence-based host continuation policy.
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +14,10 @@ pub struct Goal {
     pub session_id: i64,
     pub objective: String,
     pub status: GoalStatus,
+    #[serde(default)]
+    pub worker: bool,
+    #[serde(default)]
+    pub note: Option<String>,
     pub revision: u64,
     pub updated_at: i64,
     /// Absent on older saved goals; never invent an elapsed duration for them.
@@ -67,6 +71,8 @@ impl Goal {
                     session_id: session,
                     objective,
                     status: GoalStatus::Active,
+                    worker: false,
+                    note: None,
                     revision,
                     updated_at: now,
                     started_at: Some(now),
@@ -82,6 +88,7 @@ impl Goal {
                 if goal.status == GoalStatus::Completed {
                     return Err("This goal is already completed. Start a new goal.".into());
                 }
+                goal.note = None;
                 goal.status = match control {
                     GoalCommand::Pause => GoalStatus::Paused,
                     GoalCommand::Resume => GoalStatus::Active,
@@ -111,9 +118,52 @@ impl Goal {
     }
 }
 
+/// A separate evaluator judges only evidence surfaced by the working agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalEvaluation {
+    pub verdict: GoalVerdict,
+    pub reason: String,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalVerdict {
+    Continue,
+    Complete,
+    Blocked,
+}
+impl GoalEvaluation {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let evaluation: Self = serde_json::from_str(crate::strip_reasoning(text).trim())
+            .map_err(|_| "Goal evaluation returned an invalid verdict.")?;
+        if evaluation.reason.trim().is_empty() || evaluation.reason.len() > 1024 {
+            return Err("Goal evaluation needs a bounded evidence-based reason.".into());
+        }
+        Ok(evaluation)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn evaluation_requires_a_known_verdict_and_bounded_reason() {
+        for input in [
+            r#"{"verdict":"complete","reason":"Observed passing tests"}"#,
+            r#"{"verdict":"continue","reason":"Tests are still failing"}"#,
+            r#"{"verdict":"blocked","reason":"Need a credential"}"#,
+        ] {
+            assert!(GoalEvaluation::parse(input).is_ok());
+        }
+        for input in [
+            "complete",
+            r#"{"verdict":"success","reason":"done"}"#,
+            r#"{"verdict":"complete","reason":""}"#,
+            r#"{"verdict":"complete","reason":"done","extra":true}"#,
+        ] {
+            assert!(GoalEvaluation::parse(input).is_err());
+        }
+    }
     #[test]
     fn lifecycle_is_explicit_and_never_infers_completion_from_a_reply() {
         let goal = Goal::transition(

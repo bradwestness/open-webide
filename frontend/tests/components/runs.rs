@@ -1358,3 +1358,96 @@ async fn snapshot_with_unseen_write_blocks_stale_accept_update() {
     assert!(cleared);
     assert_eq!((content.as_str(), dirty), ("dirty draft", true));
 }
+
+#[wasm_bindgen_test]
+async fn host_goal_discovery_attaches_finished_turns_once_without_browser_run_start() {
+    let (mounted, fake) = fixture();
+    ready(&fake).await;
+    no_runs(&fake);
+    let mut goal = openwebide_core::Goal::transition(
+        None,
+        1,
+        openwebide_core::GoalCommand::Start {
+            objective: "Verify tests".into(),
+        },
+        1,
+    )
+    .unwrap();
+    goal.worker = true;
+    mounted
+        .state
+        .fake
+        .goals
+        .borrow_mut()
+        .insert(1, goal.clone());
+    mounted.state.chat.goal.set(Some(goal));
+    settle().await;
+    let info = RunInfo {
+        run_id: "scheduled-42".into(),
+        session_id: 1,
+        running: false,
+        seq: 2,
+        started_at: 1,
+    };
+    fake.reply(BridgeServerMessage::Runs {
+        session_id: 1,
+        runs: vec![info.clone()],
+    });
+    settle().await;
+    assert!(fake.sent().iter().any(|message|matches!(message,BridgeClientMessage::RunAttach{run_id,..} if run_id=="scheduled-42")));
+    let final_message = message(8, Role::Assistant, "Goal tests verified");
+    fake.reply(BridgeServerMessage::RunSnapshot {
+        run_id: "scheduled-42".into(),
+        session_id: 1,
+        seq: 2,
+        snapshot: RunSnapshot {
+            items: vec![
+                RunItem::Message(message(7, Role::User, "Continue the goal")),
+                RunItem::Message(final_message.clone()),
+            ],
+            finished: Some(RunEvent::Done {
+                message: final_message,
+            }),
+            ..Default::default()
+        },
+    });
+    settle().await;
+    assert!(!mounted.state.chat.streaming.get_untracked());
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("Goal tests verified")
+    );
+    let attaches = fake
+        .sent()
+        .iter()
+        .filter(|message| matches!(message, BridgeClientMessage::RunAttach { .. }))
+        .count();
+    mounted
+        .state
+        .chat
+        .goal
+        .update(|goal| goal.as_mut().unwrap().note = Some("Verified".into()));
+    settle().await;
+    fake.reply(BridgeServerMessage::Runs {
+        session_id: 1,
+        runs: vec![info],
+    });
+    settle().await;
+    assert_eq!(
+        attaches,
+        fake.sent()
+            .iter()
+            .filter(|message| matches!(message, BridgeClientMessage::RunAttach { .. }))
+            .count()
+    );
+    assert!(
+        !fake
+            .sent()
+            .iter()
+            .any(|message| matches!(message, BridgeClientMessage::RunStart { .. }))
+    );
+    close(&mounted);
+}

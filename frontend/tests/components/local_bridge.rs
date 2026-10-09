@@ -59,9 +59,10 @@ export function fakeBridgeHttp() {
     const mock = { found: true, invalid: false, hanging: false, aborted: 0, calls: [], restore: () => { window.fetch = original; } };
     window.fetch = async request => {
         if (!request.url.startsWith('http://bridge.test:3001/')) return original(request);
-        const body = JSON.parse(await request.text());
+        const body = JSON.parse((await request.text()) || '{}');
         const path = new URL(request.url).pathname;
         mock.calls.push({ path, body, authorization: request.headers.get('Authorization') });
+        if (path === '/scheduler/host') return new Response(JSON.stringify({id:'paired-host', name:'Test host', last_seen:0}));
         if (path === '/host/info' && !mock.hanging) return new Response(JSON.stringify({host_name:'bridge-host', os:'linux', scope:'bridge host', cpu:'Test CPU', logical_cores:8, ram_total_bytes:32000000000, ram_available_bytes:16000000000, disks:[], temperatures:[], gpus:[], fans:[], notes:[]}));
         if (path === '/environment' && !mock.hanging) return new Response(JSON.stringify({os: 'linux', shell: 'sh'}));
         if (mock.hanging) return new Promise((resolve, reject) => {
@@ -98,11 +99,11 @@ export function probeDeleted(folder, name) {
 "#)]
 extern "C" {
     #[wasm_bindgen(js_name = fakeBridgeHttp)]
-    fn fake_bridge_http() -> JsValue;
+    pub(crate) fn fake_bridge_http() -> JsValue;
     #[wasm_bindgen(js_name = setBridgeDiff)]
     fn set_bridge_diff(mock: &JsValue, diff: &str);
     #[wasm_bindgen(js_name = restoreBridgeHttp)]
-    fn restore_bridge_http(mock: &JsValue);
+    pub(crate) fn restore_bridge_http(mock: &JsValue);
     #[wasm_bindgen(js_name = bridgeCalls)]
     fn bridge_calls(mock: &JsValue) -> String;
     #[wasm_bindgen(js_name = bridgeFound)]
@@ -312,7 +313,7 @@ async fn candidate_is_verified_each_run_and_rediscovered_when_stale() {
     assert!(probe_deleted(&folder, ".openwebide-probe-ab12"));
 }
 
-struct HttpGuard(JsValue);
+pub(crate) struct HttpGuard(pub(crate) JsValue);
 impl Drop for HttpGuard {
     fn drop(&mut self) {
         restore_bridge_http(&self.0);

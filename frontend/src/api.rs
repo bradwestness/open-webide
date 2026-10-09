@@ -960,6 +960,15 @@ impl BackendApi {
         )
         .await
     }
+    pub async fn dispatch_goal(
+        &self,
+        session: i64,
+        revision: u64,
+        command: &openwebide_core::GoalCommand,
+        binding: Option<&openwebide_core::scheduled::HostBinding>,
+    ) -> Result<openwebide_core::Goal, String> {
+        self.post(&format!("/sessions/{session}/goal"),&json!({"expected_revision":revision,"command":command,"worker":true,"binding":binding})).await
+    }
     pub async fn compact_session(
         &self,
         session: i64,

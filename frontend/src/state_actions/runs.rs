@@ -74,6 +74,7 @@ pub struct RunActions {
     pub history: RwSignal<Option<(i64, u64)>>,
     controls: StoredValue<RunControls, LocalStorage>,
     listing: StoredValue<Option<(BridgeConn, String)>, LocalStorage>,
+    observed: StoredValue<Option<(i64, u64, String, u64)>>,
 }
 
 impl RunActions {
@@ -92,6 +93,7 @@ impl RunActions {
             history: RwSignal::new(None),
             controls,
             listing: StoredValue::new_local(None),
+            observed: StoredValue::new(None),
         }
     }
 
@@ -165,6 +167,14 @@ impl RunActions {
             .get_untracked()
             .is_some_and(|(_, id, _)| id == run_id)
         {
+            if let Some((session, id, seq)) = self.chat.active_run.get_untracked() {
+                self.observed.set_value(Some((
+                    session,
+                    self.chat.history_gen.get_value(),
+                    id,
+                    seq,
+                )));
+            }
             self.chat.active_run.set(None);
             self.chat.streaming.set(false);
             self.chat.streaming_session.set(None);
@@ -486,7 +496,31 @@ impl RunActions {
                     {
                         return;
                     }
-                    if let Some(run) = runs.into_iter().find(|run| run.running) {
+                    let host_goal = self
+                        .chat
+                        .goal
+                        .with_untracked(|goal| goal.as_ref().is_some_and(|goal| goal.worker));
+                    let newest = runs
+                        .into_iter()
+                        .filter(|run| {
+                            run.running || (host_goal && run.run_id.starts_with("scheduled-"))
+                        })
+                        .max_by_key(|run| {
+                            (
+                                run.running,
+                                run.started_at,
+                                run.run_id
+                                    .strip_prefix("scheduled-")
+                                    .and_then(|id| id.parse::<i64>().ok())
+                                    .unwrap_or(0),
+                            )
+                        });
+                    if let Some(run) = newest {
+                        if self.observed.get_value()
+                            == Some((session_id, generation, run.run_id.clone(), run.seq))
+                        {
+                            return;
+                        }
                         self.chat.streaming.set(true);
                         self.chat.streaming_is_local.set(false);
                         self.chat.streaming_session.set(Some(session_id));
@@ -515,6 +549,33 @@ impl RunActions {
     }
 
     pub fn install_reconnect(self) {
+        // Discover host-owned turns even when this browser did not launch them.
+        let timer = set_interval_with_handle(
+            move || {
+                if self.chat.streaming.get_untracked()
+                    || !self.chat.goal.with_untracked(|goal| {
+                        goal.as_ref().is_some_and(|goal| {
+                            goal.worker && goal.status == openwebide_core::GoalStatus::Active
+                        })
+                    })
+                {
+                    return;
+                }
+                if let Some((session, generation)) = self.history.get_untracked() {
+                    leptos::task::spawn_local(async move {
+                        self.discover(session, generation).await;
+                    });
+                }
+            },
+            std::time::Duration::from_secs(1),
+        )
+        .ok();
+        on_cleanup(move || {
+            if let Some(timer) = timer {
+                timer.clear();
+            }
+        });
+
         let previous_history = StoredValue::new(None);
         let tracked_run = Memo::new(move |_| {
             self.chat
@@ -524,6 +585,7 @@ impl RunActions {
         });
         Effect::new(move |_| {
             let history = self.history.get();
+            self.chat.goal.track();
             tracked_run.get();
             let Some(bridge) = self.bridge.get() else {
                 return;

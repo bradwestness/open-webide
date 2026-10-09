@@ -60,6 +60,8 @@ impl<D: Db> Store<D> {
         self.db.transaction(|tx| async move {
             let store = Store::new(tx);
             store.ensure_not_rewinding(session).await?;
+            store.get_session(session,user).await?;
+            store.yield_goal_pending(session,created_at).await?;
             let queue = store.list_queued_prompts(user, session).await?;
             if queue.len() >= MAX_QUEUED_PROMPTS || queue.iter().map(|entry| entry.content.len()).sum::<usize>().saturating_add(content.len()) > MAX_QUEUE_BYTES {
                 return Err(StorageError::Conflict("The queue holds at most 8 prompts and 16 MiB. Remove a prompt before adding another.".into()));
@@ -97,6 +99,7 @@ impl<D: Db> Store<D> {
         key: QueuedPromptKey,
     ) -> Result<(), StorageError> {
         self.get_session(session, user).await?;
+        self.pause_removed_goal_prompt(user, session, key).await?;
         self.db.execute("UPDATE scheduled_runs SET status='cancelled',detail='Queued prompt removed' WHERE queued_id=? AND queued_id IN (SELECT id FROM queued_prompts WHERE session_id=? AND revision=?) AND status IN ('queued','claimed')", &[DbValue::Int(key.id),DbValue::Int(session),DbValue::Int(key.revision)]).await?;
         let result = self
             .db

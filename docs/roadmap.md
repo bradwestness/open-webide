@@ -21,6 +21,7 @@ the user-confirmed restoration of an OS-picked local folder.
 
 The following checks still require hands-on device or environment testing:
 
+- Browser-close goal continuation on a real paired local host and a real model.
 - First-paint theme and both themes visually; terminal dock hide/show.
 - Docker browser terminal and Files/Changes interactions.
 - A phone on the LAN; podman/systemd.

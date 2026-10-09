@@ -86,6 +86,11 @@ struct ResultBody {
 }
 pub(crate) async fn result(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
     let mut body: ResultBody = parse_json(read_body(req, 4096).await?)?;
+    let assessment = if body.result.status == "complete" {
+        goal_assessment(state, &body.host_id, body.result.run_id).await?
+    } else {
+        None
+    };
     if body.result.status == "complete"
         && let Some((user, session, anchor)) = state
             .store
@@ -103,7 +108,7 @@ pub(crate) async fn result(req: Request, state: &AppState) -> Result<JsonResp, A
     }
     state
         .store
-        .scheduled_result(&body.host_id, &body.result, now())
+        .scheduled_result_evaluated(&body.host_id, &body.result, assessment.as_ref(), now())
         .await?;
     Ok(json_response(200, &json!({"ok":true})))
 }
@@ -132,7 +137,11 @@ pub(crate) async fn lease(
     let cancelled = state
         .store
         .cancel_requested_since(session, body.since)
-        .await?;
+        .await?
+        || state
+            .store
+            .goal_run_cancelled(user.id, session, &body.token)
+            .await?;
     let approved = if let Some(id) = body.permission_id {
         state.store.take_tool_permission(session, &id).await?
     } else {
@@ -145,4 +154,91 @@ pub(crate) async fn lease(
             approved,
         },
     ))
+}
+
+/// Evidence gathering and evaluation are shared across server and paired-host runs.
+async fn goal_assessment(
+    state: &AppState,
+    host: &str,
+    run: i64,
+) -> Result<Option<openwebide_storage::store::GoalTurnAssessment>, ApiError> {
+    let Some((user, goal, anchor)) = state.store.goal_run_context(host, run).await? else {
+        return Ok(None);
+    };
+    let session = state.store.get_session(goal.session_id, user).await?;
+    let messages = state.store.list_messages(goal.session_id).await?;
+    let Some(last) = messages.last().filter(|message| {
+        message.role == Role::Assistant && message.tool_calls.as_ref().is_none_or(Vec::is_empty)
+    }) else {
+        return Ok(None);
+    };
+    if super::completion::after_prompt(&messages, anchor) != Some(last.id) {
+        return Ok(None);
+    };
+    let steps = state.store.list_tool_steps(goal.session_id).await?;
+    let steps = steps
+        .iter()
+        .filter(|step| step.anchor_message_id == anchor)
+        .collect::<Vec<_>>();
+    let mut evidence = format!(
+        "Goal: {}\n\nFinal response: {}",
+        goal.objective,
+        openwebide_core::strip_reasoning(&last.content)
+            .chars()
+            .take(4000)
+            .collect::<String>()
+    );
+    for step in steps.iter().rev().take(16) {
+        evidence.push_str(&format!(
+            "\nTool {}: {:?}. {}",
+            step.name,
+            step.ok,
+            step.result_summary
+                .as_deref()
+                .unwrap_or("unfinished")
+                .chars()
+                .take(800)
+                .collect::<String>()
+        ));
+    }
+    for message in messages.iter().rev().skip(1).take(12) {
+        evidence.push_str(&format!(
+            "\nEarlier {:?}: {}",
+            message.role,
+            openwebide_core::strip_reasoning(&message.content)
+                .chars()
+                .take(400)
+                .collect::<String>()
+        ));
+    }
+    let evidence = openwebide_core::assistance::input_excerpt(&evidence);
+    let connection = session.connection_id.or(state
+        .store
+        .model_setup(user)
+        .await?
+        .defaults
+        .primary
+        .map(|model| model.server_id));
+    let Some(connection_id) = connection else {
+        return Ok(None);
+    };
+    let request = openwebide_core::AssistanceRequest {
+        kind: openwebide_core::AssistanceKind::GoalEvaluation,
+        connection_id,
+        session_id: Some(goal.session_id),
+        project_id: session.project_id,
+        input: evidence,
+    };
+    let generated = super::assistance::execute(&state.store, user, &request).await;
+    let Ok(Some(text)) = generated else {
+        return Ok(None);
+    };
+    let Ok(evaluation) = openwebide_core::goal::GoalEvaluation::parse(&text) else {
+        return Ok(None);
+    };
+    Ok(Some(openwebide_storage::store::GoalTurnAssessment {
+        evaluation,
+        last_message: last.id,
+        used_tools: !steps.is_empty(),
+    }))
 }

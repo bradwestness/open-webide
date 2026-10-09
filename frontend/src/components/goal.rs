@@ -57,12 +57,14 @@ fn GoalPanel() -> impl IntoView {
             <strong>{move || chat.goal.with(|goal| goal.as_ref().map(label))}</strong>
             <p>{move || chat.goal.with(|goal| goal.as_ref().map(|goal| goal.objective.clone()))}</p>
             <p class="form-hint">{move || chat.goal.with(|goal| goal.as_ref().map(|goal| match goal.status {
-                GoalStatus::Completed => "You marked this goal complete.",
+                GoalStatus::Completed => "This goal is complete.",
                 GoalStatus::Paused => "Paused. Continue when you’re ready.",
                 GoalStatus::Active if chat.awaiting_step_id.get().is_some() => "Waiting for tool approval.",
                 GoalStatus::Active if running() => "The agent is working toward this goal.",
-                GoalStatus::Active => "Review the latest reply or continue working toward this goal.",
+                GoalStatus::Active if goal.worker => "The execution host will continue this goal, including while the browser is closed.",
+                GoalStatus::Active => "Continue to queue this goal on the execution host.",
             }))}</p>
+            <p class="form-hint">{move || chat.goal.with(|goal|goal.as_ref().and_then(|goal|goal.note.clone()))}</p>
             {controls.map(|controls| view! {
                 <div class="ui-actions">
                     <Show when=move || chat.goal.with(|goal| goal.as_ref().is_some_and(|goal| goal.status != GoalStatus::Completed))>

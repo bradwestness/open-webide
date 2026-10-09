@@ -1130,19 +1130,42 @@ pub(crate) async fn update_goal(
     struct Input {
         expected_revision: u64,
         command: openwebide_core::GoalCommand,
+        #[serde(default)]
+        worker: bool,
+        #[serde(default)]
+        binding: Option<openwebide_core::scheduled::HostBinding>,
     }
     let input: Input = parse_json(read_body(req, 32_000).await?)?;
-    Ok(json_response(
-        200,
-        &state
+    let session = session_id(path)?;
+    let hosted = input.worker
+        || state
+            .store
+            .get_goal(user.id, session)
+            .await?
+            .is_some_and(|goal| goal.worker);
+    let goal = if hosted {
+        state
+            .store
+            .dispatch_goal(
+                user.id,
+                session,
+                input.expected_revision,
+                input.command,
+                input.binding.as_ref(),
+                now(),
+            )
+            .await?
+    } else {
+        state
             .store
             .update_goal(
                 user.id,
-                session_id(path)?,
+                session,
                 input.expected_revision,
                 input.command,
                 now(),
             )
-            .await?,
-    ))
+            .await?
+    };
+    Ok(json_response(200, &goal))
 }

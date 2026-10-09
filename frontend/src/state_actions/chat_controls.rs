@@ -19,10 +19,10 @@ pub fn install(
     chat: ChatState,
     projects: ProjectsState,
     start_goal: Callback<String>,
-    send: Callback<String>,
     stop: Callback<()>,
 ) -> ChatControls {
     let auth = expect_context::<AuthState>();
+    let host = expect_context::<crate::project_host::ProjectHost>();
     let generation = StoredValue::new(0u64);
     let refresh = Callback::new(move |()| {
         let Some(session) = chat.active_session.get_untracked() else {
@@ -68,6 +68,26 @@ pub fn install(
         chat.compacting.set(false);
         chat.compact_epoch.update_value(|epoch| *epoch += 1);
         refresh.run(());
+    });
+    let poll = set_interval_with_handle(
+        move || {
+            if !chat.goal_busy.get_untracked()
+                && chat.goal.with_untracked(|goal| {
+                    goal.as_ref().is_some_and(|goal| {
+                        goal.worker && goal.status != openwebide_core::GoalStatus::Completed
+                    })
+                })
+            {
+                refresh.run(());
+            }
+        },
+        std::time::Duration::from_secs(5),
+    )
+    .ok();
+    on_cleanup(move || {
+        if let Some(poll) = poll {
+            poll.clear();
+        }
     });
     let goal = Callback::new(move |args: Option<String>| {
         let Some(command) = GoalCommand::parse(args.as_deref().unwrap_or_default()) else {
@@ -127,9 +147,29 @@ pub fn install(
         spawn_local(async move {
             let resume = command == GoalCommand::Resume;
             let pause = command == GoalCommand::Pause;
+            let current = move || {
+                auth.generation.try_get_untracked() == Some(account)
+                    && generation.try_get_value() == Some(ticket)
+                    && projects.active_project.try_get_untracked() == Some(project)
+                    && chat.active_session.try_get_untracked() == Some(Some(session))
+            };
+            let binding = if resume {
+                match host.background_binding(project, current).await {
+                    Ok(binding) => binding,
+                    Err(error) => {
+                        if current() {
+                            chat.goal_busy.set(false);
+                            chat.goal_error.set(Some(error));
+                        }
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
             let result = api
                 .with_value(Clone::clone)
-                .update_goal(session, revision, &command)
+                .dispatch_goal(session, revision, &command, binding.as_ref())
                 .await;
             if auth.generation.try_get_untracked() != Some(account)
                 || generation.try_get_value() != Some(ticket)
@@ -141,14 +181,10 @@ pub fn install(
             chat.goal_busy.set(false);
             match result {
                 Ok(goal) => {
-                    let prompt = goal.prompt();
                     chat.goal.set(Some(goal));
                     chat.goal_error.set(None);
                     if pause && chat.streaming_session.get_untracked() == Some(session) {
                         stop.run(());
-                    }
-                    if resume {
-                        send.run(prompt);
                     }
                 }
                 Err(error) => {
