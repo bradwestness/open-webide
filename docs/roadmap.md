@@ -462,10 +462,11 @@ capability.
   declarative annotations and navigation through existing Git actions.
 - Maintain the official marketplace and first-party reference packages in
   [openwebide/plugins](https://github.com/openwebide/plugins). Use a root
-  `marketplace.json` index pointing to package directories in that repository or
-  external plugin repositories
-  and versioned releases, with pull requests for listings and automated manifest
-  validation. Ship it as the default source using the same format and capabilities
+  `marketplace.json` index pointing to package directories in that same repository
+  and versioned releases. Each release declares only its immutable commit and
+  package directory; the configured marketplace supplies the repository URL,
+  with no per-package override. Use pull requests for listings and automated
+  manifest validation. Ship it as the default source using the same format and capabilities
   as custom catalogs.
 - Make language packages discoverable when an unsupported file opens. Publish
   searchable language metadata (file extensions, exact filenames and optional

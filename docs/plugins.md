@@ -13,6 +13,11 @@ package at the repository root. For the reference package:
 - Commit: `e79185c2b25f713503b70e23ee7e91e66c5af208` (PR Review 0.1.0)
 - Package directory: `plugins/pr-review`
 
+Marketplace releases declare only their commit and package directory; the
+repository comes from the configured marketplace source. Each marketplace owns
+the packages in its own Git repository. The current manual install form takes
+the resolved repository explicitly; catalog browsing remains planned.
+
 Local projects need their paired native bridge and folder access. Remote projects
 use the server bridge, including when opened from a phone. The browser does not
 clone packages or execute plugin code. Fetching uses the bridge host's existing Git
