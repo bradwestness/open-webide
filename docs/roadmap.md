@@ -68,8 +68,11 @@ tracks the remaining work rather than every optimization already shipped.
   measurement. Current tabbed/wrapped/bidi paths still use complete preparation;
   retained DOM nodes, canvas widths and approximate Rust advances do not establish
   exact browser geometry.
-- [ ] **Incremental paragraph updates:** finish shifted suffix reuse and avoid
-  repeated prefix segmentation for over-limit styled run tables. Validated retained
+- [ ] **Incremental paragraph updates:** extend shifted suffix reuse to changed
+  long-token and plain-run boundaries, and avoid repeated prefix segmentation for
+  over-limit styled run tables. Unchanged styled suffixes now map exact source and
+  glyph positions in bounded replay batches, validate incoming browser overlap,
+  and freshly measure the final extent. Shifted tabs retain fresh measurement. Validated retained
   probes now share rectangle allocations directly and compare each prefix
   run-boundary interval once. Probe target/commit lookup now visits only sparse
   anchors within the measured glyph range. Initial run-table

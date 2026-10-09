@@ -9,6 +9,12 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse unchanged styled paragraph suffix measurements across insertions and
+  deletions, with exact source/run/glyph and browser-overlap validation. Replay in
+  bounded batches and freshly measure the complete extent; shifted tab grids and
+  failed proofs retain fresh layout. Preserve styled replay candidates during
+  plain preparation and matching font notifications after edits.
+
 - Resolve carets directly from current source-owned painted coverage before
   preparing hidden movement layouts, including positions between retained sparse
   anchors. Reject stale scope/font data and unpainted source gaps.

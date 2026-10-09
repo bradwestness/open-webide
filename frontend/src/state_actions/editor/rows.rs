@@ -154,9 +154,6 @@ fn paint_suffix_start(old: &PaintRow<'_>, new: &PaintRow<'_>) -> Option<usize> {
             .sum::<usize>()
     };
     let mut start = length(new);
-    if length(old) != start {
-        return None;
-    }
     for (index, (a, b)) in old
         .tokens
         .iter()
@@ -372,12 +369,6 @@ impl EditorActions {
                 let cache = cache
                     .as_ref()
                     .filter(|cache| same_measurement_environment(&cache.paint, paint))?;
-                // Reject shifted byte offsets before comparing styled suffixes.
-                if cache.paint.projection.line_body(row)?.len()
-                    != paint.projection.line_body(row)?.len()
-                {
-                    return None;
-                }
                 let (_, measurements) = cache.rows.iter().find(|(index, _)| *index == row)?;
                 let (old, new) = paint_row(&cache.paint, row).zip(paint_row(paint, row))?;
                 let style_start = paint_suffix_start(&old, &new)?;
@@ -395,13 +386,32 @@ impl EditorActions {
         suffix: &EditorParagraphSuffix,
         plan: &mut openwebide_core::editor::ParagraphMeasurementPlan<'_>,
     ) -> usize {
+        self.resume_paragraph_suffix_limit(suffix, plan, usize::MAX)
+    }
+    pub fn resume_paragraph_suffix_batch(
+        self,
+        suffix: &EditorParagraphSuffix,
+        plan: &mut openwebide_core::editor::ParagraphMeasurementPlan<'_>,
+    ) -> usize {
+        self.resume_paragraph_suffix_limit(
+            suffix,
+            plan,
+            openwebide_core::editor::MAX_MEASURE_BATCHES_PER_FRAME,
+        )
+    }
+    fn resume_paragraph_suffix_limit(
+        self,
+        suffix: &EditorParagraphSuffix,
+        plan: &mut openwebide_core::editor::ParagraphMeasurementPlan<'_>,
+        limit: usize,
+    ) -> usize {
         if !self.row_paint_current(&suffix.scope) {
             return 0;
         }
         let Some(body) = suffix.previous.projection.line_body(suffix.row) else {
             return 0;
         };
-        plan.reuse_suffix(body, &suffix.measurements, suffix.style_start)
+        plan.reuse_suffix_batch(body, &suffix.measurements, suffix.style_start, limit)
     }
     pub fn retain_paragraph_measurements(
         self,
@@ -413,6 +423,16 @@ impl EditorActions {
             return;
         }
         self.workspace.editor_paragraph_cache.update(|cache| {
+            // A pending plain paint must not evict the last styled measurements.
+            // Consumers still require exact current source/style ownership; the
+            // retained cache is only a candidate for validated incremental replay.
+            if !paint.prepared_source
+                && cache.as_ref().is_some_and(|old| {
+                    old.paint.prepared_source && same_measurement_environment(&old.paint, paint)
+                })
+            {
+                return;
+            }
             let mut rows = cache
                 .take()
                 .filter(|old| same_measurement_environment(&old.paint, paint))
@@ -599,6 +619,26 @@ impl EditorActions {
     /// Retain completed or in-flight source/account-owned measurements only when
     /// actual face availability and CSS metrics match. Unknown geometry refreshes.
     pub fn font_measurements_changed(self, metrics: Option<&str>) -> bool {
+        // A source edit invalidates current row geometry, not the measured font
+        // identity. Matching trusted notifications must preserve replay candidates.
+        let retained_font = self
+            .workspace
+            .editor_paragraph_cache
+            .with_untracked(|cache| {
+                cache.as_ref().is_some_and(|cache| {
+                    let paint = &cache.paint;
+                    paint.font_epoch == self.workspace.editor_font_epoch.get_untracked()
+                        && Some(paint.key.clone()) == self.key()
+                        && paint.epoch == self.workspace.pending_epoch.get_untracked()
+                        && paint.read_revision
+                            == self.workspace.editor_read_revision.get_untracked()
+                        && paint.account_generation == self.account_generation()
+                        && Some(paint.metrics.as_str()) == metrics
+                })
+            });
+        if retained_font {
+            return false;
+        }
         if let Some(rows) = self.measured_rows() {
             return Some(rows.metrics.as_str()) != metrics;
         }
@@ -1246,7 +1286,10 @@ mod tests {
             Some(tokens[0].text.len())
         );
         changed[0].text.push('x');
-        assert_eq!(paint_suffix_start(&old, &row(&changed)), None);
+        assert_eq!(
+            paint_suffix_start(&old, &row(&changed)),
+            Some(changed[0].text.len())
+        );
         for changed in [
             PaintRow {
                 guide: 1,

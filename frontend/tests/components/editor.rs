@@ -17259,3 +17259,112 @@ async fn painted_caret_movement_avoids_complete_row_probes_in_both_modes() {
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn shifted_styled_suffix_matches_complete_browser_geometry_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::{
+        components::{retained_paragraph_matches_complete, take_paragraph_suffix_probes},
+        state_actions::editor::EditorActions,
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for inserted in ["z", "😀", "e\u{301}", ""] {
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let source = format!("const VALUE: &str = \"{}\";", "word 文😀 ".repeat(8000));
+            let original = source.clone();
+            let slot = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
+            let captured = slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("shifted.rs".into()));
+                let actions = EditorActions::new(state.workspace);
+                actions.install_syntax_transport(installed);
+                captured.set(Some(actions));
+                state.workspace.content.set(source.into());
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:340px;height:380px">{editor_view(state)}</div> }
+            });
+            let ready = |source: &str| {
+                if !transport.pending.borrow().is_empty() {
+                    transport.respond(true);
+                }
+                mounted
+                    .state
+                    .workspace
+                    .editor_paragraph_cache
+                    .with_untracked(|cache| {
+                        cache.as_ref().is_some_and(|cache| {
+                            !cache.rows.is_empty()
+                                && cache.paint.prepared_source
+                                && cache.paint.projection.line_body(0) == Some(source)
+                                && cache.paint.tokens.iter().flat_map(|row| row.iter()).any(
+                                    |token| {
+                                        token.kind == openwebide_core::highlight::TokenKind::String
+                                    },
+                                )
+                        })
+                    })
+            };
+            super::support::wait_until_with_timeout(
+                "original shifted source geometry",
+                30_000,
+                || ready(&original),
+            )
+            .await;
+            let actions = slot.get().unwrap();
+            let changed = if inserted.is_empty() {
+                original[1..].to_string()
+            } else {
+                format!("{inserted}{original}")
+            };
+            let old_cache = mounted
+                .state
+                .workspace
+                .editor_paragraph_cache
+                .get_untracked()
+                .unwrap();
+            take_paragraph_suffix_probes();
+            actions
+                .native_input(
+                    changed.clone(),
+                    Selection::caret(inserted.len()),
+                    "insertText",
+                    1.0,
+                )
+                .unwrap();
+            assert!(
+                !actions.font_measurements_changed(Some(&old_cache.paint.metrics)),
+                "a source edit preserves a proven unchanged font identity"
+            );
+            assert!(actions.font_measurements_changed(Some("different font metrics")));
+            assert!(actions.font_measurements_changed(None));
+            super::support::wait_until_with_timeout("shifted suffix geometry", 30_000, || {
+                ready(&changed)
+            })
+            .await;
+            assert!(
+                take_paragraph_suffix_probes() > 2,
+                "{mode:?} {inserted:?}: shifted interior probes must be reused"
+            );
+            let paint = mounted
+                .state
+                .workspace
+                .editor_paragraph_cache
+                .get_untracked()
+                .unwrap()
+                .paint;
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            assert!(
+                retained_paragraph_matches_complete(&input, &paint, 0, actions).await,
+                "{mode:?} {inserted:?}: every anchor, endpoint caret and complete extent"
+            );
+            assert_eq!(actions.source(), changed);
+            assert!(mounted.state.workspace.dirty.get_untracked());
+        }
+    }
+}
