@@ -2,8 +2,10 @@
 
 The **Plugins** button beside **Output** in the status bar opens discovery and
 package management. Browse the official marketplace and any custom public Git
-marketplaces configured for your account. Search the cached catalog, choose a
-release, inspect its publisher and pinned source, and install it on the open
+marketplaces configured for your account. Installed and available plugins appear
+in compact rows with publisher/version details and inline actions. Search filters
+both sections. Use a row’s gear menu or click its name to inspect release details
+and select a version, then install it on the open
 project's execution host. Packages currently contribute agent skills.
 
 Installation does not enable a package. **Enable for project** loads the verified
@@ -36,7 +38,8 @@ then removes the logical installation and its managed skills from all your
 projects. It retains host snapshots for active runs. Runs pin enabled package
 instructions and resources at startup, so changes apply to subsequent runs.
 
-For packages outside a catalog, expand **Install a pinned package manually** and
+For packages outside a catalog, choose **Install a pinned package manually** from
+the Plugins hamburger menu and
 enter a public Git repository URL (HTTP, HTTPS, SSH or Git protocol), a full
 lowercase commit ID, and the directory containing `plugin.json`; use `.` for the
 repository root. The reference PR Review 0.1.0 package uses:

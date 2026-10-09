@@ -3695,3 +3695,21 @@ button.browser-item {
 .btn.tree-item, .modal .btn.tree-item { justify-content: flex-start; padding: var(--space-1) var(--space-2); }
 .tree-item.tree-row-depth, .modal .btn.tree-item.tree-row-depth { padding-inline-start: calc(var(--space-2) + var(--tree-depth) * var(--space-3)); font-size: var(--font-caption); }
 .git-history-folder > div { padding-inline-start: 0; }
+
+/* Compact package discovery uses the shared controls and theme tokens. */
+.plugin-section.ui-disclosure-panel { border: 0; background: transparent; }
+.plugin-section > .ui-disclosure-toggle { background: transparent; padding: var(--space-2) 0; color: var(--text); }
+.plugin-section-title { font-weight: 600; }
+.plugin-count { margin-inline-start: auto; padding: 0 var(--space-2); border-radius: var(--radius-sm); background: var(--bg-hover); color: var(--text-muted); }
+.plugin-row { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; padding: var(--space-3) 0; min-width: 0; }
+.plugin-row:hover { background: var(--bg-hover); }
+.plugin-info { min-width: 0; }
+.plugin-symbol { display: inline-flex; align-items: center; justify-content: center; color: var(--accent); }
+.plugin-name.btn { max-width: 100%; padding: 0; min-height: 0; justify-content: flex-start; font-weight: 600; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+.plugin-description { margin: var(--space-1) 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: var(--font-caption); }
+.plugin-metadata { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0; color: var(--text-muted); font-size: var(--font-caption); }
+.plugin-row-actions { display: flex; gap: var(--space-2); align-items: center; }
+.plugin-details { padding: var(--space-4); background: var(--bg); border-radius: var(--radius-sm); overflow-wrap: anywhere; }
+.plugin-catalog-name, .plugin-empty { padding: var(--space-2) 0; }
+.phone-layout .plugin-row { grid-template-columns: 24px minmax(0, 1fr); }
+.phone-layout .plugin-row-actions { grid-column: 2; justify-content: flex-end; }

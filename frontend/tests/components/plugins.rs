@@ -139,7 +139,6 @@ async fn plugins_marketplace_install_and_explicit_project_activation() {
         ProjectPlugin,
         testing::{catalog, package},
     };
-    use openwebide_frontend::project_plugins::CatalogSelection;
     let fake = Rc::new(FakeBackend::default());
     let catalog = catalog();
     *fake.marketplaces.borrow_mut() = openwebide_core::plugins::marketplace::MarketplaceSettings {
@@ -177,7 +176,7 @@ async fn plugins_marketplace_install_and_explicit_project_activation() {
         view! {<openwebide_frontend::components::Plugins/>}
     });
     settle().await;
-    let (plugins, actions) = captured.get().unwrap();
+    let (plugins, _actions) = captured.get().unwrap();
     assert!(
         mounted
             .root
@@ -185,20 +184,27 @@ async fn plugins_marketplace_install_and_explicit_project_activation() {
             .unwrap()
             .contains("Test marketplace")
     );
-    let listing = &catalog.catalog.plugins[0];
-    actions.install_release.run(CatalogSelection {
-        marketplace: catalog.source,
-        publisher: listing.publisher.clone(),
-        name: listing.name.clone(),
-        version: listing.releases[0].version.clone(),
-    });
+    assert!(
+        mounted
+            .root
+            .query_selector("input[aria-label='Plugin commit']")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        mounted
+            .root
+            .query_selector("button[aria-label='Plugin release']")
+            .unwrap()
+            .is_none()
+    );
+    mounted.click(".plugin-row-actions > button");
     settle().await;
     assert_eq!(
         fake.plugin_requests.borrow()[0].1.repository,
         "https://git.example.org/plugins.git"
     );
     assert!(fake.plugin_commands.borrow().is_empty());
-    let installation = plugins.installations.get_untracked()[0].clone();
     let (send, receive) = futures::channel::oneshot::channel();
     send.send(Ok(package())).unwrap();
     fake.plugin_packages.borrow_mut().push_back(receive);
@@ -211,12 +217,13 @@ async fn plugins_marketplace_install_and_explicit_project_activation() {
     let (send, receive) = futures::channel::oneshot::channel();
     send.send(Ok(vec![binding])).unwrap();
     fake.project_plugin_results.borrow_mut().push_back(receive);
-    actions.enable.run(installation);
+    mounted.click(".plugin-row-actions > button");
     settle().await;
     assert_eq!(fake.plugin_commands.borrow().len(), 1);
+    let command = fake.plugin_commands.borrow()[0].1.clone();
     let openwebide_core::plugins::ProjectPluginCommand::Enable {
         package: activated, ..
-    } = &fake.plugin_commands.borrow()[0].1
+    } = &command
     else {
         panic!("Expected activation")
     };
@@ -230,6 +237,26 @@ async fn plugins_marketplace_install_and_explicit_project_activation() {
             .contains("Enabled in this project")
     );
     assert!(plugins.error.get_untracked().is_none());
+    let mut disabled = plugins.project_plugins.get_untracked()[0].clone();
+    disabled.enabled = false;
+    disabled.revision += 1;
+    let (send, receive) = futures::channel::oneshot::channel();
+    send.send(Ok(vec![disabled])).unwrap();
+    fake.project_plugin_results.borrow_mut().push_back(receive);
+    mounted.click_text("Disable");
+    settle().await;
+    assert!(matches!(
+        fake.plugin_commands.borrow()[1].1,
+        openwebide_core::plugins::ProjectPluginCommand::Disable { .. }
+    ));
+    mounted.click("button[aria-label='Installed plugin actions']");
+    settle().await;
+    mounted.click_text("Uninstall");
+    settle().await;
+    assert_eq!(fake.plugins.borrow().len(), 1);
+    mounted.click_text("Confirm uninstall");
+    settle().await;
+    assert!(fake.plugins.borrow().is_empty());
 }
 
 #[wasm_bindgen_test]
@@ -432,7 +459,14 @@ async fn plugins_only_custom_marketplaces_can_be_removed_in_both_modes() {
 async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_modes() {
     use openwebide_frontend::components::{PluginsDialog, Settings, StatusBar};
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
-        let mounted = mount_test_with_backend(Rc::new(FakeBackend::default()), move |state| {
+        let fake = Rc::new(FakeBackend::default());
+        let catalog = openwebide_core::plugins::testing::catalog();
+        fake.marketplaces
+            .borrow_mut()
+            .sources
+            .push(catalog.source.clone());
+        fake.marketplaces.borrow_mut().catalogs.push(catalog);
+        let mounted = mount_test_with_backend(fake, move |state| {
             state.seed_project();
             state
                 .projects
@@ -487,6 +521,43 @@ async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_mod
                 .unwrap()
                 .is_none()
         );
+        use wasm_bindgen::JsCast;
+        let search: web_sys::HtmlInputElement = mounted
+            .element("input[aria-label='Search plugins']")
+            .unchecked_into();
+        let change_query = |query: &str| {
+            search.set_value(query);
+            let event = web_sys::EventInit::new();
+            event.set_bubbles(true);
+            search
+                .dispatch_event(&web_sys::Event::new_with_event_init_dict("input", &event).unwrap())
+                .unwrap();
+        };
+        change_query("no-such-plugin");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".plugin-row")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("No available plugins match your search.")
+        );
+        change_query("");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".plugin-row")
+                .unwrap()
+                .is_some()
+        );
         let input = mounted.element("input[aria-label='Search plugins']");
         let magnifier = mounted.element(".panel-search-row > .ui-icon-glyph");
         let menu = mounted.element("button[aria-label='Plugin actions']");
@@ -516,6 +587,37 @@ async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_mod
                 .unwrap()
                 .contains("Refresh marketplaces")
         );
+        mounted.click_text("Install a pinned package manually");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector("input[aria-label='Plugin commit']")
+                .unwrap()
+                .is_some()
+        );
+        mounted.click_text("Cancel");
+        settle().await;
+        mounted.click("button[aria-label='Available plugin actions']");
+        settle().await;
+        mounted.click_text("Release details");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector("button[aria-label='Plugin release']")
+                .unwrap()
+                .is_some()
+        );
+        let description = mounted
+            .element(".plugin-description")
+            .get_bounding_client_rect();
+        let row_action = mounted
+            .element(".plugin-row-actions > button")
+            .get_bounding_client_rect();
+        assert!(description.right() <= row_action.left());
+        mounted.click("button[aria-label='Plugin actions']");
+        settle().await;
         mounted.click_text("Manage marketplace sources");
         settle().await;
         assert!(!mounted.state.ui.plugins_open.get_untracked());

@@ -370,7 +370,8 @@ capability.
   needed; declarative UI contributions are a later stage of this same system.
   The skills-only baseline is shipped: package/catalog schemas, offline authoring
   validation and CI, and a commit-pinned PR Review reference release. The status-bar
-  Plugins interface browses the official/custom Git catalogs and installs validated
+  Plugins interface groups installed and available packages in compact searchable
+  lists, browses the official/custom Git catalogs and installs validated
   immutable snapshots on either host, enables managed skills per project, applies manual version
   changes/rollback and removes packages. Settings configures marketplace sources;
   the official source is always available. Sources, caches and installation records

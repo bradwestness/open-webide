@@ -401,6 +401,7 @@ static NEXT_DISCLOSURE_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::A
 /// Approval requests can force it open without changing the user's expansion choice.
 #[component]
 pub fn DisclosurePanel(
+    #[prop(default = false)] initially_open: bool,
     #[prop(into)] summary: ViewFn,
     #[prop(default = "")] class: &'static str,
     #[prop(into, optional)] force_open: Option<Signal<bool>>,
@@ -413,7 +414,7 @@ pub fn DisclosurePanel(
         "disclosure-{}",
         NEXT_DISCLOSURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
-    let expanded = RwSignal::new(false);
+    let expanded = RwSignal::new(initially_open);
     let open = move || expanded.get() || force_open.is_some_and(|force| force.get());
     view! {
         <div class=format!("ui-disclosure-panel {class}")>
