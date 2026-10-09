@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Isolate container inventory test runtimes from host-installed Docker and Podman
+  so CI exercises both fixtures reliably.
+
 - Prepare final bracket links across bounded worker batches, preserving embedded
   language boundaries and hiding partial editing contexts until completion in
   both workspace modes.
