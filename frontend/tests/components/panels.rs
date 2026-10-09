@@ -37,6 +37,11 @@ async fn panels_collapse_without_unmounting_and_persist_in_both_modes() {
             auth.set_user(user(1));
             let layout = expect_context::<LayoutState>();
             provide_context(LayoutActions::new(state.api, layout, auth, state.ui));
+            Effect::new(move |_| {
+                layout.preferences.update(|prefs| {
+                    prefs.mode = openwebide_frontend::state::responsive::LayoutMode::Desktop;
+                });
+            });
             view! {
                 <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] />
                 <ToolPanel panel=Panel::Sessions><input value="server draft" /></ToolPanel>
@@ -51,11 +56,7 @@ async fn panels_collapse_without_unmounting_and_persist_in_both_modes() {
             let element = mounted.element(&selector);
             let child = element.first_element_child().unwrap();
             let button = format!("button[aria-controls='panel-{}']", panel.id());
-            mounted.click(&format!(
-                "#panel-{} button[aria-label='Minimize {}']",
-                panel.id(),
-                panel.label()
-            ));
+            mounted.click(&button);
             settle().await;
             assert_eq!(
                 mounted
@@ -1463,5 +1464,76 @@ async fn window_title_tracks_file_project_session_and_logout_in_both_modes() {
         mounted.state.auth.logout();
         settle().await;
         assert_eq!(document().title(), "Open WebIDE");
+    }
+}
+
+#[wasm_bindgen_test]
+async fn feature_headers_minimize_files_and_editor_and_retain_the_draft_in_both_modes() {
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.auth.set_user(user(1));
+            let layout = expect_context::<LayoutState>();
+            provide_context(LayoutActions::new(state.api, layout, state.auth, state.ui));
+            Effect::new(move |_| {
+                layout.preferences.update(|prefs| {
+                    prefs.mode = openwebide_frontend::state::responsive::LayoutMode::Desktop;
+                });
+            });
+            state.workspace.open_file.set(Some("test.rs".into()));
+            state.workspace.content.set("unsaved editor draft".into());
+            state.workspace.dirty.set(true);
+            let editor = super::support::editor_view(state);
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <div class="app" style="height:600px"><div class="app-body"><PanelRail panels=vec![Panel::Files, Panel::Editor] /><div class="workspace-docks">
+                <ToolPanel panel=Panel::Files><openwebide_frontend::components::FilesPanel on_new_file=Callback::new(|()| ()) on_new_dir=Callback::new(|()| ())><p>"Files retained"</p></openwebide_frontend::components::FilesPanel></ToolPanel>
+                <ToolPanel panel=Panel::Editor>{editor}</ToolPanel></div></div></div>
+            }
+        });
+        settle().await;
+        for panel in ["Files", "Editor"] {
+            let button = mounted.element(&format!("button[aria-label='Minimize {panel}']"));
+            assert!(
+                button.offset_height() > 0,
+                "{panel} minimize must be visible"
+            );
+            button.click();
+            settle().await;
+            let id = panel.to_lowercase();
+            assert_eq!(
+                mounted
+                    .element(&format!("#panel-{id}"))
+                    .style()
+                    .get_property_value("display")
+                    .unwrap(),
+                "none"
+            );
+            assert_eq!(
+                mounted.state.workspace.content.get_untracked(),
+                "unsaved editor draft"
+            );
+            assert!(mounted.state.workspace.dirty.get_untracked());
+            mounted.click(&format!("button[aria-controls='panel-{id}']"));
+            settle().await;
+            assert_eq!(
+                mounted
+                    .element(&format!("#panel-{id}"))
+                    .style()
+                    .get_property_value("display")
+                    .unwrap(),
+                "flex"
+            );
+            assert!(
+                mounted
+                    .element(&format!("button[aria-label='Minimize {panel}']"))
+                    .offset_height()
+                    > 0
+            );
+        }
     }
 }

@@ -513,7 +513,6 @@ async fn user_model_defaults_exclude_shared_model_configuration() {
         .unwrap(),
     )
     .await;
-    mounted.click_text("Save model defaults");
     settle().await;
     let setup = mounted.state.fake.model_setup.borrow().clone();
     assert_eq!(setup.defaults.primary.as_ref().unwrap().model, "qwen3:8b");
@@ -601,6 +600,8 @@ async fn servers_open_shared_configuration_while_preferences_keep_model_defaults
             Some(16384)
         );
         mounted.state.settings.show_settings.set(true);
+        settle().await;
+        mounted.click("#settings-tab-models");
         settle().await;
         let text = mounted
             .element(".modal:has(.settings, .ui-form-grid)")
@@ -930,4 +931,160 @@ async fn model_test_plain_chat_fallback_is_saved_only_for_the_tested_model() {
     assert_eq!(one.settings.tools, Some(false));
     assert_eq!(one.settings.stream_tools, Some(false));
     assert_eq!(two.settings.tools, Some(true));
+}
+
+#[wasm_bindgen_test]
+async fn model_defaults_autosave_serializes_changes_after_dialog_close_in_every_scope() {
+    use openwebide_core::{ModelDefaults, ModelSelection, WorkspaceMode};
+    use openwebide_frontend::state_actions::settings::set_model_defaults;
+    for mode in [
+        Some(WorkspaceMode::Local),
+        Some(WorkspaceMode::Remote),
+        None,
+    ] {
+        let (send, receive) = futures::channel::oneshot::channel();
+        let mounted = mount_test(move |state| {
+            if let Some(mode) = mode {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+            }
+            state
+                .fake
+                .model_default_results
+                .borrow_mut()
+                .push_back(receive);
+            view! { <div /> }
+        });
+        let defaults = |name: &str| ModelDefaults {
+            primary: Some(ModelSelection {
+                server_id: 1,
+                model: name.into(),
+            }),
+            ..Default::default()
+        };
+        let state = &mounted.state;
+        set_model_defaults(
+            state.api,
+            state.settings,
+            state.auth,
+            state.ui,
+            defaults("first"),
+        );
+        settle().await;
+        assert_eq!(state.fake.model_default_requests.borrow().len(), 1);
+        set_model_defaults(
+            state.api,
+            state.settings,
+            state.auth,
+            state.ui,
+            defaults("second"),
+        );
+        set_model_defaults(
+            state.api,
+            state.settings,
+            state.auth,
+            state.ui,
+            defaults("latest"),
+        );
+        state.settings.show_settings.set(false);
+        assert_eq!(state.fake.model_default_requests.borrow().len(), 1);
+        let mut old = state.fake.model_setup.borrow().clone();
+        old.defaults = defaults("first");
+        send.send(Ok(old)).unwrap();
+        settle().await;
+        assert_eq!(state.fake.model_default_requests.borrow().len(), 2);
+        assert_eq!(
+            state.fake.model_default_requests.borrow()[1],
+            defaults("latest")
+        );
+        assert_eq!(
+            state.settings.model_setup.get_untracked().defaults,
+            defaults("latest")
+        );
+        assert_eq!(state.fake.model_setup.borrow().defaults, defaults("latest"));
+        assert_eq!(state.settings.model_defaults_saving.get_untracked(), None);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn model_defaults_autosave_shows_retry_and_ignores_previous_accounts() {
+    use openwebide_core::{ModelDefaults, ModelSelection};
+    use openwebide_frontend::{
+        components::model_setup::ModelSetupPanel, state_actions::settings::set_model_defaults,
+    };
+    let (send, receive) = futures::channel::oneshot::channel();
+    let mounted = mount_test(move |state| {
+        state
+            .fake
+            .model_default_results
+            .borrow_mut()
+            .push_back(receive);
+        view! { <ModelSetupPanel defaults_only=true /> }
+    });
+    settle().await;
+    let state = &mounted.state;
+    let defaults = ModelDefaults {
+        primary: Some(ModelSelection {
+            server_id: 1,
+            model: "chosen".into(),
+        }),
+        ..Default::default()
+    };
+    set_model_defaults(
+        state.api,
+        state.settings,
+        state.auth,
+        state.ui,
+        defaults.clone(),
+    );
+    settle().await;
+    assert!(mounted.root.text_content().unwrap().contains("Saving…"));
+    send.send(Err("Temporary save failure".into())).unwrap();
+    settle().await;
+    assert!(mounted.root.text_content().unwrap().contains("Not saved"));
+    assert_eq!(
+        state.settings.model_setup.get_untracked().defaults,
+        defaults
+    );
+    mounted.click_text("Retry");
+    settle().await;
+    assert_eq!(state.fake.model_setup.borrow().defaults, defaults);
+    assert!(
+        mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("Changes save automatically.")
+    );
+    let (send, receive) = futures::channel::oneshot::channel();
+    state
+        .fake
+        .model_default_results
+        .borrow_mut()
+        .push_back(receive);
+    set_model_defaults(state.api, state.settings, state.auth, state.ui, defaults);
+    settle().await;
+    *state.fake.model_setup.borrow_mut() = Default::default();
+    state.auth.generation.update(|epoch| *epoch += 1);
+    state.settings.model_setup.set(Default::default());
+    state.settings.default_connection.set(None);
+    state.settings.model_defaults_saving.set(None);
+    send.send(Err("Old account failure".into())).unwrap();
+    settle().await;
+    assert_eq!(
+        state.settings.model_setup.get_untracked().defaults,
+        ModelDefaults::default()
+    );
+    assert_eq!(state.settings.default_connection.get_untracked(), None);
+    assert_eq!(state.settings.model_defaults_error.get_untracked(), None);
+    assert!(
+        !mounted
+            .root
+            .text_content()
+            .unwrap()
+            .contains("Old account failure")
+    );
 }

@@ -316,13 +316,24 @@ async fn about_shows_build_and_local_notices_in_both_modes_and_restores_focus() 
             .element(".about-overview > div")
             .get_bounding_client_rect();
         assert!(
-            (overview.x() + overview.width() / 2.0 - details.x() - details.width() / 2.0).abs()
+            (overview.x() + f64::from(mounted.element(".about-overview").client_width()) / 2.0
+                - details.x()
+                - details.width() / 2.0)
+                .abs()
                 < 2.0
         );
-        assert!(
-            (overview.y() + overview.height() / 2.0 - details.y() - details.height() / 2.0).abs()
-                < 2.0
-        );
+        // Safe centering starts at the top when the content needs scrolling.
+        if mounted.element(".about-overview").scroll_height()
+            <= mounted.element(".about-overview").client_height()
+        {
+            assert!(
+                (overview.y() + overview.height() / 2.0 - details.y() - details.height() / 2.0)
+                    .abs()
+                    < 2.0
+            );
+        } else {
+            assert!(details.y() >= overview.y() && details.y() < overview.bottom());
+        }
         assert_eq!(
             mounted
                 .element("#about-tab-overview")
@@ -936,4 +947,193 @@ async fn workspace_scroll_area_ends_at_the_last_visible_panel_in_both_modes() {
             docks.scroll_width()
         );
     }
+}
+
+#[wasm_bindgen_test]
+async fn settings_tabs_autosave_choices_and_support_keyboard_navigation_in_every_scope() {
+    for mode in [
+        Some(openwebide_core::WorkspaceMode::Local),
+        Some(openwebide_core::WorkspaceMode::Remote),
+        None,
+    ] {
+        let mounted = mount_test(move |state| {
+            if let Some(mode) = mode {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+            }
+            state.seed_connection();
+            *state.fake.models.borrow_mut() = vec![openwebide_core::ModelInfo {
+                name: "Tab test model".into(),
+            }];
+            view! { <style>{include_str!("../../styles.css")}</style><Settings on_set_notifications=Callback::new(|_| ()) on_set_theme=Callback::new(move |theme| state.settings.theme.set(theme)) on_set_default_prompt=Callback::new(|_| ()) on_set_bridge_url=Callback::new(|_| ()) /> }
+        });
+        settle().await;
+        assert_eq!(
+            mounted.element("[role=tab][aria-selected=true]").id(),
+            "settings-tab-general"
+        );
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all("[role=tabpanel]:not([hidden])")
+                .unwrap()
+                .length(),
+            1
+        );
+        let height = mounted.element(".ui-tabbed-modal").offset_height();
+        key(
+            &mounted.element("#settings-tab-general"),
+            "ArrowRight",
+            false,
+            false,
+        );
+        settle().await;
+        assert_eq!(active().id(), "settings-tab-editor");
+        assert!(
+            mounted
+                .element("#settings-panel-general")
+                .has_attribute("hidden")
+        );
+        key(
+            &mounted.element("#settings-tab-editor"),
+            "End",
+            false,
+            false,
+        );
+        settle().await;
+        assert_eq!(active().id(), "settings-tab-bridge");
+        let input: web_sys::HtmlInputElement = mounted
+            .element("#settings-panel-bridge input[type=text]")
+            .unchecked_into();
+        input.set_value("ws://unsaved-draft.test:3001");
+        mounted.click("#settings-tab-models");
+        settle().await;
+        wait_until("model choices ready", || {
+            !mounted
+                .element("#settings-panel-models .ui-inline-actions .btn")
+                .has_attribute("disabled")
+        })
+        .await;
+        mounted.click("button[aria-label='Default model']");
+        settle().await;
+        mounted.click_text("Tab test model");
+        settle().await;
+        mounted.click("#settings-tab-general");
+        settle().await;
+        mounted.click_text("Light");
+        settle().await;
+        assert_eq!(
+            mounted.state.settings.theme.get_untracked(),
+            openwebide_frontend::state::settings::Theme::Light
+        );
+        mounted.click("#settings-tab-models");
+        settle().await;
+        assert!(
+            mounted
+                .element("button[aria-label='Default model']")
+                .text_content()
+                .unwrap()
+                .contains("Tab test model")
+        );
+        assert_eq!(
+            mounted
+                .state
+                .fake
+                .model_setup
+                .borrow()
+                .defaults
+                .primary
+                .as_ref()
+                .unwrap()
+                .model,
+            "Tab test model"
+        );
+        mounted.click("#settings-tab-bridge");
+        settle().await;
+        assert_eq!(input.value(), "ws://unsaved-draft.test:3001");
+        assert_eq!(mounted.element(".ui-tabbed-modal").offset_height(), height);
+        key(
+            &mounted.element("#settings-tab-bridge"),
+            "ArrowRight",
+            false,
+            false,
+        );
+        settle().await;
+        assert_eq!(active().id(), "settings-tab-general");
+        key(
+            &mounted.element("#settings-tab-general"),
+            "ArrowLeft",
+            false,
+            false,
+        );
+        settle().await;
+        assert_eq!(active().id(), "settings-tab-bridge");
+        key(
+            &mounted.element("#settings-tab-bridge"),
+            "Home",
+            false,
+            false,
+        );
+        settle().await;
+        assert_eq!(active().id(), "settings-tab-general");
+    }
+}
+
+#[wasm_bindgen_test]
+async fn shortcuts_tabs_show_only_the_selected_category_and_restore_focus() {
+    let mounted = mount_test(|state| {
+        view! {
+            <style>{include_str!("../../styles.css")}</style>
+            <button id="open-shortcuts" on:click=move |_| state.ui.shortcuts_open.set(true)>"Open shortcuts"</button>
+            <openwebide_frontend::components::CommandDialogs />
+        }
+    });
+    mounted.element("#open-shortcuts").focus().unwrap();
+    mounted.click("#open-shortcuts");
+    settle().await;
+    let height = mounted.element(".ui-tabbed-modal").offset_height();
+    for (tab, panel, text) in [
+        ("chat", "chat", "Accept the inline hint"),
+        ("search", "search", "Open the selected result"),
+        ("workspace", "workspace", "Toggle terminal"),
+    ] {
+        mounted.click(&format!("#shortcuts-tab-{tab}"));
+        settle().await;
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all("[role=tabpanel]:not([hidden])")
+                .unwrap()
+                .length(),
+            1
+        );
+        assert!(
+            mounted
+                .element(&format!("#shortcuts-panel-{panel}"))
+                .text_content()
+                .unwrap()
+                .contains(text)
+        );
+        assert_eq!(mounted.element(".ui-tabbed-modal").offset_height(), height);
+    }
+    key(
+        &mounted.element("#shortcuts-tab-workspace"),
+        "ArrowLeft",
+        false,
+        false,
+    );
+    settle().await;
+    assert_eq!(active().id(), "shortcuts-tab-search");
+    key(
+        &mounted.element("#shortcuts-tab-search"),
+        "Escape",
+        false,
+        false,
+    );
+    settle().await;
+    assert!(!mounted.state.ui.shortcuts_open.get_untracked());
+    assert_eq!(active().id(), "open-shortcuts");
 }

@@ -2158,16 +2158,6 @@ button.browser-item {
   gap: 6px;
 }
 
-.term-close-btn {
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 2px 6px;
-  cursor: pointer;
-}
-.term-close-btn:hover {
-  color: var(--text);
-}
-
 .terminal-output {
   flex: 1;
   overflow-y: auto;
@@ -3525,3 +3515,26 @@ button.browser-item {
 
 .generation-statistics { gap: var(--space-3); }
 .generation-statistics > * { margin: 0; flex-shrink: 0; }
+
+.ui-dialog-tabs { margin: var(--space-3) var(--space-6) 0; flex: none; align-self: stretch; width: auto; }
+.ui-dialog-tabs .ui-seg-btn { flex: 1; justify-content: center; font-family: inherit; font-size: var(--font-control); min-height: var(--control-height); }
+.ui-tabbed-modal { block-size: min(700px, 90dvh); }
+.ui-tabbed-body { flex: 1; }
+.ui-tab-panel { display: grid; gap: var(--space-6); align-content: start; min-width: 0; }
+.ui-tab-panel[hidden] { display: none; }
+@media (max-width: 799px) {
+  .ui-dialog-tabs { margin-inline: var(--space-4); }
+}
+.phone-layout .ui-dialog-tabs { margin-inline: var(--space-4); }
+
+.ui-tab-panel > dl { margin: 0; }
+.keyboard-shortcuts > .form-hint, .keyboard-shortcuts .ui-tab-panel > .form-hint { margin: 0; }
+.keyboard-shortcuts .shortcut-row { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(0, 2fr); gap: var(--space-4); padding-block: var(--space-2); margin: 0; border-bottom: 1px solid var(--border); }
+.keyboard-shortcuts .shortcut-row:last-child { border: 0; }
+.keyboard-shortcuts .shortcut-row dt { min-width: 0; }
+.keyboard-shortcuts .shortcut-row kbd { overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .keyboard-shortcuts .shortcut-row { grid-template-columns: minmax(0, 1fr); gap: var(--space-1); }
+}
+
+.editor-header .panel-minimize { order: 6; flex: none; margin-inline-start: auto; }

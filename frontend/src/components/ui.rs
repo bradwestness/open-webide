@@ -191,6 +191,64 @@ pub fn SegmentedControl<T: Clone + PartialEq + Send + Sync + 'static>(
     }
 }
 
+/// One named page in a dialog's tab list.
+#[derive(Clone, Copy)]
+pub struct DialogTab {
+    label: &'static str,
+    id: &'static str,
+    panel: &'static str,
+}
+impl DialogTab {
+    pub fn new(label: &'static str, id: &'static str, panel: &'static str) -> Self {
+        Self { label, id, panel }
+    }
+}
+
+/// Dialog navigation with automatic activation and one keyboard tab stop.
+#[component]
+pub fn DialogTabs(
+    label: &'static str,
+    options: Vec<DialogTab>,
+    selected: Signal<usize>,
+    on_change: Callback<usize>,
+) -> impl IntoView {
+    let count = options.len();
+    let nodes = StoredValue::new(
+        (0..count)
+            .map(|_| NodeRef::<leptos::html::Button>::new())
+            .collect::<Vec<_>>(),
+    );
+    let on_key = move |event: web_sys::KeyboardEvent| {
+        if count == 0 {
+            return;
+        }
+        let current = selected.get_untracked();
+        let next = match event.key().as_str() {
+            "ArrowLeft" => (current + count - 1) % count,
+            "ArrowRight" => (current + 1) % count,
+            "Home" => 0,
+            "End" => count - 1,
+            _ => return,
+        };
+        event.prevent_default();
+        on_change.run(next);
+        if let Some(button) = nodes.with_value(|nodes| nodes[next].get_untracked()) {
+            let _ = button.focus();
+        }
+    };
+    view! {
+        <div class="ui-segmented-control ui-dialog-tabs" role="tablist" aria-label=label on:keydown=on_key>
+            {options.into_iter().enumerate().map(|(index, option)| {
+                let node = nodes.with_value(|nodes| nodes[index]);
+                view! { <button type="button" role="tab" class="ui-seg-btn" class:active=move || selected.get() == index
+                    id=option.id aria-controls=option.panel aria-selected=move || (selected.get() == index).to_string()
+                    tabindex=move || if selected.get() == index { 0 } else { -1 } node_ref=node
+                    on:click=move |_| on_change.run(index)>{option.label}</button> }
+            }).collect_view()}
+        </div>
+    }
+}
+
 /// Scrollable dialog content; the header and actions remain visible.
 #[component]
 pub fn DialogBody(#[prop(default = "")] class: &'static str, children: Children) -> impl IntoView {

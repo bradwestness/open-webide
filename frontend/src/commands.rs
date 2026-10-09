@@ -247,6 +247,8 @@ pub const COMPOSER_SHORTCUTS: &[(&str, &str)] = &[
         "↑ / ↓",
         "Prompt history at the start of the composer; navigate mention suggestions",
     ),
+    ("Ctrl/⌘+Enter", "Steer the active run with this prompt"),
+    ("→", "Accept the inline hint at the end of the prompt"),
     ("Shift+Tab", "Cycle approval mode"),
     ("Alt+Y / Alt+N", "Approve / deny the current tool request"),
     ("Alt+A", "Auto-accept file edits for this session"),

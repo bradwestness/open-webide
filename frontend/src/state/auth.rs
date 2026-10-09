@@ -142,6 +142,10 @@ impl AuthState {
         chat.connection_changing.set(false);
         settings.default_connection.set(None);
         settings.model_setup.set(Default::default());
+        settings.model_defaults_saving.set(None);
+        settings.model_defaults_error.set(None);
+        settings.model_defaults_revision.set(0);
+        settings.pending_model_defaults.set_value(None);
         settings.show_conn_form.set(false);
         settings.conn_edit_id.set(None);
         settings.conn_base_url.set(String::new());
@@ -345,6 +349,13 @@ mod tests {
             }]);
             settings.default_connection.set(Some(3));
             settings.default_prompt.set(Some(4));
+            settings.model_defaults_saving.set(Some(1));
+            settings
+                .model_defaults_error
+                .set(Some((1, "Private save failure".into())));
+            settings
+                .pending_model_defaults
+                .set_value(Some((1, Default::default())));
             settings.show_prompt_form.set(true);
             settings.prompt_edit_id.set(Some(4));
             settings.prompt_name.set("Private prompt".into());
@@ -402,6 +413,9 @@ mod tests {
             assert!(settings.prompt_content.get_untracked().is_empty());
             assert!(settings.default_connection.get_untracked().is_none());
             assert!(settings.default_prompt.get_untracked().is_none());
+            assert!(settings.model_defaults_saving.get_untracked().is_none());
+            assert!(settings.model_defaults_error.get_untracked().is_none());
+            assert!(settings.pending_model_defaults.get_value().is_none());
             assert!(ui.toast.get_untracked().is_none());
             assert!(auth.user.get_untracked().is_none());
             assert!(auth.checked.get_untracked());

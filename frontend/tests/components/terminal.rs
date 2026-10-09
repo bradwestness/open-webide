@@ -955,7 +955,7 @@ async fn visibility_retains_shell_output_and_hidden_reconnect_sequence() {
         .query_selector(".terminal-dock")
         .unwrap()
         .unwrap();
-    super::support::click_action(&mounted, "button.term-close-btn").await;
+    mounted.click("button[aria-label='Minimize Terminal']");
     settle().await;
     assert!(
         mounted

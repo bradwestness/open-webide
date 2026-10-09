@@ -118,6 +118,8 @@ pub struct FakeBackend {
     pub git_checkout_requests: RefCell<Vec<(Option<i64>, GitCheckoutRequest)>>,
     pub git_status_requests: RefCell<Vec<Option<i64>>>,
     pub model_setup: RefCell<openwebide_core::ModelSetup>,
+    pub model_default_requests: RefCell<Vec<openwebide_core::ModelDefaults>>,
+    pub model_default_results: RefCell<VecDeque<Deferred<openwebide_core::ModelSetup>>>,
     pub detections: RefCell<BTreeMap<(i64, String), openwebide_core::ModelDetection>>,
     pub test_results: RefCell<VecDeque<Result<openwebide_core::ModelTestResult, String>>>,
     pub server_settings_results: RefCell<VecDeque<Deferred<openwebide_core::ServerSettings>>>,
@@ -418,6 +420,13 @@ impl Backend for FakeBackend {
         defaults: &'a openwebide_core::ModelDefaults,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::ModelSetup, String>> {
         Box::pin(async move {
+            self.model_default_requests
+                .borrow_mut()
+                .push(defaults.clone());
+            let pending = self.model_default_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|error| error.to_string())?;
+            }
             self.model_setup.borrow_mut().defaults = defaults.clone();
             Ok(self.model_setup.borrow().clone())
         })

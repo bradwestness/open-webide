@@ -3233,6 +3233,7 @@ pub fn Editor(
                     </div>
                 </Show>
                 <IconButton label="Find in file (Ctrl/⌘F)" disabled=Signal::derive(move || open_file.get().is_none() || editor_actions.limit().is_some() || view_mode.get() == ViewMode::Preview) on_click=Callback::new(move |_| find_open.set(!find_open.get_untracked()))><Icon name=IconName::Search /></IconButton>
+                <super::tool_panel::PanelMinimize panel=crate::state::layout::Panel::Editor />
             </div>
             <Show when=move || go_open.get() && open_file.get().is_some() && view_mode.get() == ViewMode::Code>
                 <PanelSearchRow class="editor-navigation">

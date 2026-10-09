@@ -4,6 +4,21 @@ use crate::{
 };
 use leptos::prelude::*;
 
+/// The same collapse control appears in standard and feature-owned headers.
+#[component]
+pub(super) fn PanelMinimize(
+    panel: Panel,
+    #[prop(optional)] on_minimize: Option<Callback<()>>,
+) -> impl IntoView {
+    let actions = use_context::<LayoutActions>();
+    view! { <Show when=move || actions.is_some() || on_minimize.is_some()>
+        <button type="button" class="icon-btn ui-icon panel-minimize" aria-label=format!("Minimize {}", panel.label()) title="Minimize panel" on:click=move |_| {
+            if let Some(callback) = on_minimize { callback.run(()); }
+            else if let Some(actions) = actions { actions.toggle.run(panel); }
+        }><super::ui::Icon name=super::ui::IconName::Minus /></button>
+    </Show> }
+}
+
 /// Collapsing retains the mounted editor, drafts, run subscriptions and terminal.
 #[component]
 pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
@@ -36,7 +51,7 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
                 <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon" aria-label=format!("Move {} right", panel.label()) title="Move panel right" on:click=move |_| actions.move_panel.run((panel, true))><crate::components::ui::Icon name=crate::components::ui::IconName::ArrowRight /><span>"Move panel right"</span></button>
             </super::dropdown::ActionMenu>
             </Show>
-            <button type="button" class="icon-btn ui-icon panel-minimize" aria-label=format!("Minimize {}", panel.label()) title="Minimize panel" on:click=move |_| actions.toggle.run(panel)><crate::components::ui::Icon name=crate::components::ui::IconName::Minus /></button>
+            <Show when=move || !matches!(panel, Panel::Files | Panel::Editor | Panel::Terminal)><PanelMinimize panel=panel /></Show>
             <button class="btn" title="Return to chat" on:click=move |_| actions.show.run(Panel::Chat)>"Back to chat"</button>
         </div>
         <div class="tool-panel-content">
@@ -83,6 +98,7 @@ pub fn FilesPanel(
             <button type="button" class="icon-btn ui-icon" data-file-search-toggle="" title="Search project files" aria-label="Search project files" aria-controls="project-search" aria-expanded=move || layout.preferences.with(|prefs| prefs.files_view == FilesView::Search).to_string()
                 on:click=move |_| actions.select_files_view.run(if layout.preferences.with(|prefs| prefs.files_view == FilesView::Search) { FilesView::Explorer } else { FilesView::Search })><super::ui::Icon name=super::ui::IconName::Search /></button>
             <super::file_tree::FileActions on_new_file=on_new_file on_new_dir=on_new_dir />
+            <PanelMinimize panel=Panel::Files />
         </super::ui::PanelToolbar>
         {children()}
     </div> }

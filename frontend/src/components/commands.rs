@@ -247,16 +247,27 @@ pub fn Omnibar() -> impl IntoView {
 fn KeyboardShortcuts() -> impl IntoView {
     let ui = expect_context::<UiState>();
     let close = Callback::new(move |()| ui.shortcuts_open.set(false));
+    let tab = RwSignal::new(0_usize);
     view! {
-        <Modal title="Keyboard shortcuts".to_string().into() on_close=close class="modal modal-sm" describedby="shortcut-help">
-            <DialogBody class="keyboard-shortcuts">
-                <p id="shortcut-help" class="form-hint">"Use Ctrl on Windows/Linux or ⌘ on macOS. Global commands pause while a dialog is open. Composer bindings apply while the prompt is focused."</p>
-                <h3>"Workspace"</h3>
-                <dl>{COMMANDS.iter().filter(|command| command.shortcut.starts_with("Ctrl")).map(|command| view! { <div class="shortcut-row"><dt><kbd>{command.shortcut}</kbd></dt><dd>{command.label}</dd></div> }).collect::<Vec<_>>()}</dl>
-                <h3>"Chat composer"</h3>
-                <dl>{COMPOSER_SHORTCUTS.iter().map(|(key, action)| view! { <div class="shortcut-row"><dt><kbd>{*key}</kbd></dt><dd>{*action}</dd></div> }).collect::<Vec<_>>()}</dl>
-                <h3>"Search"</h3>
-                <dl><div class="shortcut-row"><dt><kbd>"↑ / ↓"</kbd></dt><dd>"Choose a result"</dd></div><div class="shortcut-row"><dt><kbd>"Enter / Escape"</kbd></dt><dd>"Open / close"</dd></div></dl>
+        <Modal title="Keyboard shortcuts".to_string().into() on_close=close class="modal ui-tabbed-modal" size=super::ui::DialogSize::Wide describedby="shortcut-help">
+            <super::ui::DialogTabs label="Shortcut categories" options=vec![
+                super::ui::DialogTab::new("Workspace", "shortcuts-tab-workspace", "shortcuts-panel-workspace"),
+                super::ui::DialogTab::new("Chat", "shortcuts-tab-chat", "shortcuts-panel-chat"),
+                super::ui::DialogTab::new("Search", "shortcuts-tab-search", "shortcuts-panel-search"),
+            ] selected=tab.read_only().into() on_change=Callback::new(move |index| tab.set(index)) />
+            <DialogBody class="keyboard-shortcuts ui-tabbed-body">
+                <p id="shortcut-help" class="form-hint">"Use Ctrl on Windows/Linux or ⌘ on macOS. Global commands pause while a dialog is open."</p>
+                <div id="shortcuts-panel-workspace" class="ui-tab-panel" role="tabpanel" aria-labelledby="shortcuts-tab-workspace" tabindex="0" hidden=move || tab.get() != 0>
+                    <dl>{COMMANDS.iter().filter(|command| command.shortcut.starts_with("Ctrl")).map(|command| view! { <div class="shortcut-row"><dt><kbd>{command.shortcut}</kbd></dt><dd>{command.label}</dd></div> }).collect::<Vec<_>>()}</dl>
+                </div>
+                <div id="shortcuts-panel-chat" class="ui-tab-panel" role="tabpanel" aria-labelledby="shortcuts-tab-chat" tabindex="0" hidden=move || tab.get() != 1>
+                    <p class="form-hint">"These bindings apply while the prompt is focused."</p>
+                    <dl>{COMPOSER_SHORTCUTS.iter().map(|(key, action)| view! { <div class="shortcut-row"><dt><kbd>{*key}</kbd></dt><dd>{*action}</dd></div> }).collect::<Vec<_>>()}</dl>
+                </div>
+                <div id="shortcuts-panel-search" class="ui-tab-panel" role="tabpanel" aria-labelledby="shortcuts-tab-search" tabindex="0" hidden=move || tab.get() != 2>
+                    <p class="form-hint">"Search commands, files, projects and sessions from the top bar."</p>
+                    <dl><div class="shortcut-row"><dt><kbd>"↑ / ↓"</kbd></dt><dd>"Choose a result"</dd></div><div class="shortcut-row"><dt><kbd>"Enter"</kbd></dt><dd>"Open the selected result"</dd></div><div class="shortcut-row"><dt><kbd>"Escape"</kbd></dt><dd>"Close search"</dd></div></dl>
+                </div>
             </DialogBody>
             <DialogActions><button class="btn" on:click=move |_| close.run(())>"Close"</button></DialogActions>
         </Modal>

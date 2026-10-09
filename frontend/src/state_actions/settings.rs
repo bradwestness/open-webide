@@ -439,3 +439,72 @@ fn effective_theme(preference: Theme) -> &'static str {
         preference.as_str()
     }
 }
+
+/// Serialize autosaves in the user-owned settings store so closing a dialog cannot
+/// discard a queued choice and an older response cannot replace a newer choice.
+pub fn set_model_defaults(
+    api: Api,
+    settings: SettingsState,
+    auth: crate::state::auth::AuthState,
+    ui: UiState,
+    defaults: openwebide_core::ModelDefaults,
+) {
+    let account = auth.generation.get_untracked();
+    settings
+        .model_setup
+        .update(|setup| setup.defaults = defaults.clone());
+    if let Some(primary) = &defaults.primary {
+        settings.default_connection.set(Some(primary.server_id));
+    }
+    settings
+        .model_defaults_revision
+        .update(|revision| *revision += 1);
+    settings
+        .pending_model_defaults
+        .set_value(Some((account, defaults)));
+    settings.model_defaults_error.set(None);
+    if settings.model_defaults_saving.get_untracked() == Some(account) {
+        return;
+    }
+    settings.model_defaults_saving.set(Some(account));
+    spawn_local(async move {
+        loop {
+            if auth.generation.try_get_untracked() != Some(account) {
+                return;
+            }
+            let mut pending = None;
+            settings.pending_model_defaults.update_value(|value| {
+                if value.as_ref().is_some_and(|(epoch, _)| *epoch == account) {
+                    pending = value.take();
+                }
+            });
+            let Some((_, defaults)) = pending else {
+                break;
+            };
+            let result = api
+                .with_value(Clone::clone)
+                .save_model_defaults(&defaults)
+                .await;
+            if auth.generation.try_get_untracked() != Some(account)
+                || settings.model_defaults_saving.try_get_untracked() != Some(Some(account))
+            {
+                return;
+            }
+            if settings.pending_model_defaults.with_value(Option::is_some) {
+                continue;
+            }
+            match result {
+                Ok(saved) => settings
+                    .model_setup
+                    .update(|setup| setup.defaults = saved.defaults),
+                Err(message) => {
+                    settings
+                        .model_defaults_error
+                        .set(Some((account, message.clone())));
+                    ui.notify(format!("Could not save model defaults: {message}"));
+                }
+            }
+        }
+        settings.model_defaults_saving.set(None);
+    });
+}

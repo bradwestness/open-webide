@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Organize Settings and keyboard shortcuts into accessible tabs with keyboard navigation, stable dialog sizes and automatic model-default saving with retry after errors. Restore header minimize controls for Files, Editor and Terminal, preserving open files, unsaved edits and running shells.
+
 - Reuse unchanged styled paragraph suffix measurements across insertions and
   deletions, with exact source/run/glyph and browser-overlap validation. Replay in
   bounded batches and freshly measure the complete extent; shifted tab grids and

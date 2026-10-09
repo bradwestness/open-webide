@@ -5,7 +5,7 @@ use crate::{
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use openwebide_core::{ModelDefaults, ModelSelection, ModelSettings, ServerSettingsUpdate};
+use openwebide_core::{ModelSelection, ModelSettings, ServerSettingsUpdate};
 
 #[derive(Clone, Debug)]
 struct ModelOption {
@@ -22,14 +22,15 @@ fn selection_value(selection: &Option<ModelSelection>) -> String {
 #[component]
 fn ModelChoice(
     label: &'static str,
-    value: RwSignal<Option<ModelSelection>>,
+    value: Signal<Option<ModelSelection>>,
+    on_change: Callback<Option<ModelSelection>>,
     choices: ReadSignal<Vec<ModelOption>>,
     empty: &'static str,
 ) -> impl IntoView {
     view! { <FormField label=label><super::dropdown::DropdownSelect label=label value=Signal::derive(move || selection_value(&value.get())) options=Signal::derive(move || {
         let mut options = vec![super::dropdown::SelectOption::new("", empty)];
         options.extend(choices.get().into_iter().map(|item| super::dropdown::SelectOption::new(selection_value(&Some(item.selection)), item.label))); options
-    }) on_change=Callback::new(move |selection: String| value.set(serde_json::from_str(&selection).ok())) /></FormField> }
+    }) on_change=Callback::new(move |selection: String| on_change.run(serde_json::from_str(&selection).ok())) /></FormField> }
 }
 
 #[component]
@@ -56,9 +57,7 @@ pub fn ModelSetupPanel(
     let auth = expect_context::<AuthState>();
     let settings = expect_context::<SettingsState>();
     let choices = RwSignal::new(Vec::<ModelOption>::new());
-    let primary = RwSignal::new(settings.model_setup.get_untracked().defaults.primary);
-    let fast = RwSignal::new(settings.model_setup.get_untracked().defaults.fast);
-    let busy = RwSignal::new(false);
+    let ui = expect_context::<crate::state::ui::UiState>();
     let loading = RwSignal::new(false);
     let error = RwSignal::new(Option::<String>::None);
     let reload = RwSignal::new(0_u64);
@@ -74,6 +73,7 @@ pub fn ModelSetupPanel(
         let epoch = auth.generation.get();
         generation.update_value(|value| *value += 1);
         let request = generation.get_value();
+        let defaults_revision = settings.model_defaults_revision.get_untracked();
         loading.set(true);
         spawn_local(async move {
             let backend = api.with_value(Clone::clone);
@@ -94,7 +94,15 @@ pub fn ModelSetupPanel(
             {
                 return;
             }
-            if let Ok(setup) = setup {
+            if let Ok(mut setup) = setup {
+                if settings.model_defaults_revision.get_untracked() != defaults_revision
+                    || settings.model_defaults_saving.get_untracked() == Some(epoch)
+                    || settings.model_defaults_error.with_untracked(|error| {
+                        error.as_ref().is_some_and(|(account, _)| *account == epoch)
+                    })
+                {
+                    setup.defaults = settings.model_setup.get_untracked().defaults;
+                }
                 settings.model_setup.set(setup);
             }
             let mut items = Vec::new();
@@ -171,34 +179,16 @@ pub fn ModelSetupPanel(
             discover.run(());
         }
     });
-    let save = move |_| {
-        let defaults = ModelDefaults {
-            primary: primary.get_untracked(),
-            fast: fast.get_untracked(),
-        };
-        let epoch = auth.generation.get_untracked();
-        busy.set(true);
-        error.set(None);
-        spawn_local(async move {
-            let result = api
-                .with_value(Clone::clone)
-                .save_model_defaults(&defaults)
-                .await;
-            if auth.generation.get_untracked() != epoch || busy.try_get_untracked().is_none() {
-                return;
-            }
-            busy.set(false);
-            match result {
-                Ok(setup) => {
-                    if let Some(primary) = &setup.defaults.primary {
-                        settings.default_connection.set(Some(primary.server_id));
-                    }
-                    settings.model_setup.set(setup);
-                }
-                Err(message) => error.set(Some(message)),
-            }
-        });
-    };
+    let save = Callback::new(move |defaults| {
+        crate::state_actions::settings::set_model_defaults(api, settings, auth, ui, defaults);
+    });
+    let save_error = Memo::new(move |_| {
+        settings
+            .model_defaults_error
+            .get()
+            .filter(|(epoch, _)| *epoch == auth.generation.get())
+            .map(|(_, error)| error)
+    });
     view! {
         <div class="model-setup">
             <Show when=move || !defaults_only>
@@ -218,12 +208,17 @@ pub fn ModelSetupPanel(
             <Show when=move || loading.get()><p class="form-hint">"Loading models from saved servers…"</p></Show>
             </Show>
             <Show when=move || defaults_only>
-            <ModelChoice label="Default model" value=primary choices=choices.read_only() empty="Use default server’s model" />
-            <ModelChoice label="Assistance model" value=fast choices=choices.read_only() empty="Use the primary model" />
+            <ModelChoice label="Default model" value=Signal::derive(move || settings.model_setup.get().defaults.primary) on_change=Callback::new(move |selection| {
+                let mut defaults = settings.model_setup.get_untracked().defaults; defaults.primary = selection; save.run(defaults);
+            }) choices=choices.read_only() empty="Use default server’s model" />
+            <ModelChoice label="Assistance model" value=Signal::derive(move || settings.model_setup.get().defaults.fast) on_change=Callback::new(move |selection| {
+                let mut defaults = settings.model_setup.get_untracked().defaults; defaults.fast = selection; save.run(defaults);
+            }) choices=choices.read_only() empty="Use the primary model" />
             <p class="form-hint">"Used for automatic names, summaries, suggestions, Git drafts, search, Auto approvals, context compaction and delegated tasks. Falls back to the primary model."</p>
 
             </Show>
-            <InlineActions><button class="btn" disabled=move || loading.get() on:click=move |_| reload.update(|value| *value += 1)>"Refresh models"</button><Show when=move || defaults_only><button class="btn send" disabled=move || busy.get() on:click=save>"Save model defaults"</button></Show></InlineActions>
+            <InlineActions><button class="btn" disabled=move || loading.get() on:click=move |_| reload.update(|value| *value += 1)>"Refresh models"</button><Show when=move || defaults_only><span class="form-hint" role="status" aria-live="polite">{move || if settings.model_defaults_saving.get() == Some(auth.generation.get()) { "Saving…" } else if save_error.get().is_some() { "Not saved" } else { "Changes save automatically." }}</span></Show></InlineActions>
+            <Show when=move || defaults_only && save_error.get().is_some()><FormNotice tone=NoticeTone::Error>{move || save_error.get()}<button class="btn" on:click=move |_| save.run(settings.model_setup.get_untracked().defaults)>"Retry"</button></FormNotice></Show>
             <Show when=move || error.get().is_some()><FormNotice tone=NoticeTone::Error>{move || error.get()}</FormNotice></Show>
 
         </div>

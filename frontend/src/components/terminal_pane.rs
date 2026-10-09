@@ -591,14 +591,8 @@ pub fn TerminalPane(bridge: BridgeConn, #[prop(into)] on_close: Callback<()>) ->
                         <super::ui::Icon name=super::ui::IconName::Square />"Kill"
                     </button>
 
-                    <button role="menuitem"
-                        class="ui-dropdown-item recent-item term-close-btn"
-                        title="Close terminal (Ctrl+`)"
-                        on:click=move |_| on_close.run(())
-                    >
-                        <super::ui::Icon name=super::ui::IconName::X /><span>"Close terminal"</span>
-                    </button>
                 </super::dropdown::ActionMenu>
+                <super::tool_panel::PanelMinimize panel=crate::state::layout::Panel::Terminal on_minimize=on_close />
             </super::ui::PanelToolbar>
 
             <div
