@@ -193,6 +193,10 @@ pub struct LexicalSnapshot {
     retokenized_rows: usize,
 }
 impl LexicalSnapshot {
+    #[cfg(feature = "editor-parser")]
+    pub(crate) fn source_snapshot(&self) -> &std::sync::Arc<String> {
+        &self.source
+    }
     pub fn tokens(&self) -> &std::sync::Arc<TokenRows> {
         &self.tokens
     }

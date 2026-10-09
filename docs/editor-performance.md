@@ -2672,6 +2672,17 @@ as does the existing near-limit styled horizontal-paint contract in both modes.
 Strict WASM lint passes. Uncapped construction still segments full rows, and no
 new timing/memory samples or completion-gate claims accompany this increment.
 
+Grammar-free SQL preparation now retains its plain-row job across cooperative
+worker tasks. Both drivers use the same scanner; yielded jobs publish no partial
+analysis, retain their original completion status and permit synchronous completion.
+The 500 parser-enabled and 394 minimal core tests pass, including synchronous/
+worker wire parity, LF/CRLF row equality, unchanged-row reuse, tab-width reuse,
+mid-job cancellation and source replacement. Both-mode Chromium contracts pass
+for SQL publication with LF/CRLF and stale file/project/account publication guards.
+Strict core and WASM lint pass. Whole oversized rows and final fold/record/message
+assembly remain synchronous; this has no new timing or memory samples and does
+not complete the bounded-publication or cold-layout gates.
+
 The accessible-input checkpoint also passes eight release-app cases: both modes,
 LF/CRLF and pending-worker/bounded-native input. Chromium exposes the file-specific
 input name and current keyboard description; trusted Ctrl+M, Tab and Shift+Tab

@@ -75,6 +75,7 @@ impl SyntaxDocument {
             return Some(SyntaxStatus::Ready { incremental: true });
         }
         self.prepared = None;
+        self.lexical_pending = None;
         self.outer_fallback = None;
         if self.parser.is_none() {
             self.text = source();
@@ -154,7 +155,53 @@ impl SyntaxDocument {
         let status = self
             .begin_update(&source, &mut *should_continue, || source.clone(), change)
             .or_else(|| self.advance_update(should_continue, should_yield))?;
+        let status = self.advance_lexical(status, should_continue, should_yield)?;
         Some(self.finish_preparation(status, tab_width, should_continue))
+    }
+
+    /// Both drivers retain the same row scanner. Yielding never publishes a
+    /// partial token table; status and old-row reuse survive each continuation.
+    pub(super) fn advance_lexical(
+        &mut self,
+        status: SyntaxStatus,
+        should_continue: &mut impl FnMut() -> bool,
+        should_yield: &mut impl FnMut() -> bool,
+    ) -> Option<SyntaxStatus> {
+        if !matches!(status, SyntaxStatus::Ready { .. })
+            || self.provider.is_some()
+            || self.language == Language::Plain
+            || self
+                .lexical
+                .as_ref()
+                .is_some_and(|snapshot| Arc::ptr_eq(snapshot.source_snapshot(), &self.text))
+        {
+            return Some(status);
+        }
+        let (_, lexical) = self.lexical_pending.get_or_insert_with(|| {
+            let mut lexical =
+                crate::highlight::LexicalPreparation::new(self.text.clone(), self.language);
+            if let Some(previous) = &self.lexical {
+                lexical = lexical.reuse(previous.clone());
+            }
+            (status, lexical)
+        });
+        while !lexical.is_complete() {
+            if !should_continue() {
+                self.clear();
+                return Some(SyntaxStatus::Cancelled);
+            }
+            if should_yield() {
+                return None;
+            }
+            // Whole-row tokenization admits one oversized row, matching the
+            // existing synchronous contract; long-row subdivision remains open.
+            lexical.advance(1, crate::highlight::LEXICAL_BATCH_BYTES);
+        }
+        let (status, lexical) = self.lexical_pending.take().expect("completed lexical job");
+        self.lexical = Some(Arc::new(
+            lexical.finish_snapshot().expect("completed lexical source"),
+        ));
+        Some(status)
     }
     pub(super) fn advance_update(
         &mut self,
@@ -445,6 +492,135 @@ fn parse_step(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn finish_plain_rows(
+        document: &mut SyntaxDocument,
+        source: Arc<String>,
+    ) -> (SyntaxStatus, Arc<SyntaxAnalysis>, usize) {
+        let mut turns = 0;
+        loop {
+            turns += 1;
+            assert!(turns < 2_000, "plain-row preparation must advance");
+            let mut checks = 0;
+            let result = document.prepare_cooperative(
+                source.clone(),
+                4,
+                || true,
+                || {
+                    checks += 1;
+                    checks >= 4
+                },
+            );
+            if let Some((status, analysis)) = result {
+                return (status, analysis.unwrap(), turns);
+            }
+            assert!(
+                document.prepared.is_none(),
+                "unfinished rows publish no analysis"
+            );
+            assert!(document.lexical_pending.is_some());
+        }
+    }
+
+    #[test]
+    fn plain_row_preparation_yields_reuses_rows_and_matches_synchronous_source() {
+        assert!(syntax_provider(Language::Sql).is_none());
+        for ending in ["\n", "\r\n"] {
+            let source = Arc::new(
+                (0..1_000)
+                    .map(|row| format!("SELECT '文😀', {row};{ending}"))
+                    .collect::<String>(),
+            );
+            let mut document = SyntaxDocument::new(Language::Sql).unwrap();
+            let (status, analysis, turns) = finish_plain_rows(&mut document, source.clone());
+            assert_eq!(status, SyntaxStatus::Ready { incremental: false });
+            assert!(turns > 100);
+            assert!(Arc::ptr_eq(analysis.source_snapshot(), &source));
+            let (_, expected) = SyntaxDocument::new(Language::Sql).unwrap().prepare_shared(
+                source.clone(),
+                4,
+                || true,
+            );
+            assert_eq!(analysis.highlights, expected.unwrap().highlights);
+            let lexical = document.lexical.as_ref().unwrap().clone();
+            let (_, width_changed) = document
+                .prepare_cooperative(source.clone(), 8, || true, || true)
+                .unwrap();
+            assert!(Arc::ptr_eq(&lexical, document.lexical.as_ref().unwrap()));
+            assert!(Arc::ptr_eq(
+                analysis.highlights.as_ref().unwrap(),
+                width_changed.unwrap().highlights.as_ref().unwrap()
+            ));
+            let changed =
+                Arc::new(source.replacen("SELECT '文😀', 500;", "SELECT 'different', 500;", 1));
+            let (status, changed_analysis, turns) =
+                finish_plain_rows(&mut document, changed.clone());
+            assert_eq!(status, SyntaxStatus::Ready { incremental: false });
+            assert!(turns > 100);
+            assert_eq!(document.lexical.as_ref().unwrap().retokenized_rows(), 1);
+            let (_, expected) = SyntaxDocument::new(Language::Sql).unwrap().prepare_shared(
+                changed.clone(),
+                4,
+                || true,
+            );
+            assert_eq!(changed_analysis.highlights, expected.unwrap().highlights);
+            assert_eq!(
+                analysis.source(),
+                source.as_str(),
+                "published sources stay immutable"
+            );
+        }
+    }
+
+    #[test]
+    fn plain_row_continuations_cancel_replace_source_and_allow_synchronous_completion() {
+        let source = Arc::new("SELECT '文😀';\r\n".repeat(1_000));
+        let mut document = SyntaxDocument::new(Language::Sql).unwrap();
+        assert!(
+            document
+                .prepare_cooperative(source.clone(), 4, || true, || true)
+                .is_none()
+        );
+        assert!(document.lexical_pending.is_some());
+        let mut checks = 0;
+        let cancelled = document
+            .prepare_cooperative(
+                source.clone(),
+                4,
+                || {
+                    checks += 1;
+                    checks < 4
+                },
+                || false,
+            )
+            .unwrap();
+        assert_eq!(checks, 4, "cancellation interrupts partially prepared rows");
+        assert_eq!(cancelled.0, SyntaxStatus::Cancelled);
+        assert!(cancelled.1.is_none());
+        assert!(document.lexical_pending.is_none());
+        assert!(
+            document
+                .prepare_cooperative(source.clone(), 4, || true, || true)
+                .is_none()
+        );
+        let replacement = Arc::new("SELECT 'replacement';\n".repeat(800));
+        let (_, analysis, turns) = finish_plain_rows(&mut document, replacement.clone());
+        assert!(turns > 100);
+        assert!(Arc::ptr_eq(analysis.source_snapshot(), &replacement));
+        assert!(analysis.highlights.as_ref().unwrap().iter().all(|row| {
+            row.iter()
+                .all(|token| token.kind == crate::highlight::TokenKind::Plain)
+        }));
+        assert!(
+            document
+                .prepare_cooperative(source.clone(), 4, || true, || true)
+                .is_none()
+        );
+        let (status, completed) = document.prepare_shared(source.clone(), 4, || true);
+        assert_eq!(status, SyntaxStatus::Ready { incremental: false });
+        assert!(document.lexical_pending.is_none());
+        assert_eq!(completed.unwrap().source(), source.as_str());
+    }
 
     #[test]
     fn outer_and_embedded_large_literal_scans_yield_and_cancel() {

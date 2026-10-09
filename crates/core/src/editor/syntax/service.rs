@@ -361,6 +361,7 @@ mod tests {
     #[test]
     fn synchronous_and_yielding_message_adapters_publish_identical_results() {
         for (language, source) in [
+            (Language::Sql, "SELECT '文😀';\r\n".repeat(1_000)),
             (
                 Language::Rust,
                 "fn main() {\r\n call(\"文😀\");\r\n}\r\n".repeat(300),

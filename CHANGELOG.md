@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Resume grammar-free plain row preparation between worker tasks, preserving
+  complete publication, raw-row reuse and cancellation for SQL documents.
+
 - Remember unavailable styled run tables within their exact source/style scope,
   avoiding repeated capped scans while preserving complete paragraph preparation.
 

@@ -124,6 +124,7 @@ pub struct SyntaxDocument {
     source_lines: Vec<super::lines::Line>,
     prepared: Option<(usize, Arc<SyntaxAnalysis>)>,
     lexical: Option<Arc<crate::highlight::LexicalSnapshot>>,
+    lexical_pending: Option<(SyntaxStatus, crate::highlight::LexicalPreparation)>,
     publication: Option<(u32, Arc<SyntaxAnalysis>)>,
     folds: std::cell::RefCell<folds::ParsedFolds>,
     contexts: std::cell::RefCell<contexts::ParsedContexts>,
@@ -157,6 +158,7 @@ impl SyntaxDocument {
             source_lines: provider.map_or_else(Vec::new, |_| super::lines::lines("")),
             prepared: None,
             lexical: None,
+            lexical_pending: None,
             publication: None,
             folds: std::cell::RefCell::default(),
             contexts: std::cell::RefCell::default(),
@@ -234,6 +236,9 @@ impl SyntaxDocument {
         tab_width: usize,
         should_continue: &mut impl FnMut() -> bool,
     ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
+        let status = self
+            .advance_lexical(status, should_continue, &mut || false)
+            .expect("synchronous lexical preparation does not yield");
         if !matches!(status, SyntaxStatus::Ready { .. }) {
             return (status, None);
         }
@@ -249,23 +254,13 @@ impl SyntaxDocument {
         } else {
             let structure = self.structure().map(Arc::new);
             let highlights = if self.provider.is_none() && self.language != Language::Plain {
-                let mut lexical =
-                    crate::highlight::LexicalPreparation::new(self.text.clone(), self.language);
-                if let Some(previous) = &self.lexical {
-                    lexical = lexical.reuse(previous.clone());
-                }
-                while !lexical.is_complete() {
-                    if !should_continue() {
-                        self.clear();
-                        return (SyntaxStatus::Cancelled, None);
-                    }
-                    // Keep the synchronous adapter's per-row cancellation contract.
-                    lexical.advance(1, crate::highlight::LEXICAL_BATCH_BYTES);
-                }
-                let lexical = Arc::new(lexical.finish_snapshot().expect("completed lexical job"));
-                let tokens = lexical.tokens().clone();
-                self.lexical = Some(lexical);
-                Some(tokens)
+                Some(
+                    self.lexical
+                        .as_ref()
+                        .expect("prepared lexical source")
+                        .tokens()
+                        .clone(),
+                )
             } else {
                 structure
                     .as_ref()
@@ -455,6 +450,7 @@ impl SyntaxDocument {
             .map_or_else(Vec::new, |_| super::lines::lines(""));
         self.prepared = None;
         self.lexical = None;
+        self.lexical_pending = None;
         self.publication = None;
         self.folds.borrow_mut().clear();
         self.contexts.borrow_mut().clear();
