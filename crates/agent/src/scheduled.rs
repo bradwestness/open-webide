@@ -50,7 +50,7 @@ pub fn definition(name: &str) -> ToolDefinition {
     if name == "monitor" {
         return ToolDefinition {
             name: name.into(),
-            description: "Check later in this conversation. Start requires prompt and delay_seconds (5–86399); interval_seconds (5–86400), max_checks (1–24) optional. Cancel requires id/revision. Host-owned checks survive browser closure, use normal approvals, and stop on failure or after 24h. Local projects require a paired host.".into(),
+            description: "Check later in this conversation. Start requires prompt and delay_seconds (5–86399); interval_seconds (5–86400), max_checks (1–24) optional. Cancel requires id/revision and prevents future checks. Host-owned checks survive browser closure, use normal approvals, and stop on failure or after 24h. Local projects require a paired host.".into(),
             parameters: serde_json::json!({"type":"object","properties":{
                 "action":{"type":"string","enum":["start","list","cancel"]},
                 "prompt":{"type":"string"},"delay_seconds":{"type":"integer"},

@@ -1,4 +1,4 @@
-use super::support::{Mounted, chat_view, mount_test, settle};
+use super::support::{Mounted, chat_view, mount_test, settle, wait_until};
 use leptos::prelude::*;
 use openwebide_core::{
     ChatCompletion, ChatResponse, Role, RunEvent, StopReason, TodoItem, TodoPlan, TodoStatus,
@@ -69,6 +69,7 @@ async fn idle(mounted: &Mounted) {
         sleep_ms(5).await;
         settle().await;
         if !mounted.state.chat.streaming.get_untracked()
+            && mounted.state.chat.loading_history.get_untracked().is_none()
             && !mounted.state.chat.todo_loading.get_untracked()
             && !mounted.state.chat.branching.get_untracked()
             && !mounted.state.chat.rewinding.get_untracked()
@@ -243,7 +244,9 @@ async fn plan_loads_on_session_selection_and_stale_responses_do_not_replace_anot
         } else {
             mounted.state.chat.active_session.set(Some(2));
         }
-        settle().await;
+        wait_until("plan cleared after scope change", || {
+            mounted.state.chat.todo_plan.get_untracked().is_none()
+        }).await;
         sender
             .send(Ok(Some(update(1, 1, TodoStatus::Completed))))
             .unwrap();
@@ -286,7 +289,9 @@ async fn failed_plan_load_keeps_the_displayed_revision_and_retry_recovers() {
     mounted.click(".todo-notice .btn");
     settle().await;
     sender.send(Err("network unavailable".into())).unwrap();
-    settle().await;
+    wait_until("plan retry failure displayed", || {
+        mounted.root.text_content().unwrap().contains("network unavailable")
+    }).await;
     assert_eq!(mounted.state.chat.todo_plan.get_untracked(), previous);
     assert!(
         mounted

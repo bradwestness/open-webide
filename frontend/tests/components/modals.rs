@@ -1065,6 +1065,9 @@ async fn settings_tabs_autosave_choices_and_support_keyboard_navigation_in_every
             false,
         );
         settle().await;
+        assert_eq!(active().id(), "settings-tab-host");
+        key(&mounted.element("#settings-tab-host"), "ArrowRight", false, false);
+        settle().await;
         assert_eq!(active().id(), "settings-tab-general");
         key(
             &mounted.element("#settings-tab-general"),
@@ -1073,9 +1076,9 @@ async fn settings_tabs_autosave_choices_and_support_keyboard_navigation_in_every
             false,
         );
         settle().await;
-        assert_eq!(active().id(), "settings-tab-bridge");
+        assert_eq!(active().id(), "settings-tab-host");
         key(
-            &mounted.element("#settings-tab-bridge"),
+            &mounted.element("#settings-tab-host"),
             "Home",
             false,
             false,

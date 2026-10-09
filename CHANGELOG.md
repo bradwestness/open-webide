@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Keep combined skill, question and scheduling tool discovery within an 8K context budget in both execution modes, with full skill content read on demand.
+
 - Yield while publishing parser line indexes after large-file edits, preserving
   the previous coordinates until the complete replacement is ready. Cancelled
   or superseded work cannot publish partial indexes in either workspace mode.

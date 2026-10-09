@@ -324,13 +324,13 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
                         .unwrap()
                         .definition()
                 }));
+                openwebide_agent::scheduled::configure(&mut tools);
                 openwebide_agent::skills::configure(
                     &mut tools,
                     &mut None,
                     &openwebide_core::ProjectSkills::default(),
                     None,
                 );
-                openwebide_agent::scheduled::configure(&mut tools);
                 tools.push(openwebide_agent::tasks::executor::definition());
                 assert_eq!(plan.request.tools, tools);
             } else {
