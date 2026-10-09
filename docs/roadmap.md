@@ -372,8 +372,9 @@ capability.
   and commit-pinned Git catalog schemas, offline validation/CI and a PR review
   reference skill compatible with manual project-skill import. Settings now supports
   explicit repository/commit/directory installation on either execution host, with
-  validated immutable snapshots and user-scoped database records. Marketplace
-  discovery/releases, contribution activation, runtime dependencies, lifecycle
+  validated immutable snapshots and user-scoped database records. The official
+  catalog lists the commit-pinned PR Review reference release. Marketplace
+  discovery, contribution activation, runtime dependencies, lifecycle
   controls and updates remain; host preparation alone does not enable plugins.
 - Use one package format with typed contributions rather than mutually exclusive
   plugin types. A package can combine skills, MCP servers/tools and language

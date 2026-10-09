@@ -10,7 +10,7 @@ lowercase commit ID, and the directory containing `plugin.json`. Use `.` for a
 package at the repository root. For the reference package:
 
 - Repository: `https://github.com/openwebide/plugins.git`
-- Commit: a full commit from that repository
+- Commit: `e79185c2b25f713503b70e23ee7e91e66c5af208` (PR Review 0.1.0)
 - Package directory: `plugins/pr-review`
 
 Local projects need their paired native bridge and folder access. Remote projects
@@ -47,6 +47,6 @@ leave the previous record and snapshot intact. Account, project, session or host
 changes prevent stale browser results from recording an installation. An already
 submitted server transaction may finish for its authenticated account.
 
-Marketplace browsing, published catalog releases, automatic updates, removal,
+Marketplace browsing, automatic updates, removal,
 rollback controls, dependency preparation and contribution activation remain on
 the roadmap. Language, MCP, UI and editor contributions are not accepted yet.
