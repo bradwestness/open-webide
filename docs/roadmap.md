@@ -76,7 +76,9 @@ tracks the remaining work rather than every optimization already shipped.
   over-limit styled run tables. Unchanged styled suffixes now map exact source and
   glyph positions in bounded replay batches, validate incoming browser overlap,
   and freshly measure the final extent. Ordered coordinate queries share cluster
-  traversal while preserving every old/new source-byte check. Shifted tabs retain
+  traversal while preserving every old/new source-byte check. Styled paragraph
+  anchor construction also shares traversal across ordered paint boundaries,
+  omitting boundaries inside clusters as before. Shifted tabs retain
   fresh measurement. Validated retained
   probes now share rectangle allocations directly and compare each prefix
   run-boundary interval once. Probe target/commit lookup now visits only sparse

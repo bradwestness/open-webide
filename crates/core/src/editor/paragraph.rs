@@ -103,12 +103,8 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         let mut anchor_glyphs = if runs.len() <= super::MAX_ROW_GEOMETRY_ANCHORS - 2 {
             let mut glyphs = Vec::with_capacity(runs.len() + 2);
             glyphs.push(0);
-            for &byte in runs.iter().filter(|byte| **byte < body.len()) {
-                let glyph = index.index_at_byte(body, byte)?;
-                if index.at(body, glyph)?.0 == byte {
-                    glyphs.push(glyph);
-                }
-            }
+            let end = runs.partition_point(|byte| *byte < body.len());
+            glyphs.extend(index.boundary_glyphs(body, &runs[..end])?);
             glyphs.push(index.len() - 2);
             glyphs
         } else {

@@ -2649,6 +2649,18 @@ Both dedicated release matrices also pass from the same retained artifact:
 font/features/whitespace geometry and near-limit complete-row geometry, each
 covering local and remote adapters.
 
+Styled paragraph anchor construction now uses ordered exact byte-boundary queries,
+sharing grapheme traversal between nearby runs and resuming sparse gaps from the
+immutable coordinate checkpoints. Interior grapheme bytes remain excluded, query
+budgets remain bounded, and over-budget run tables retain the sparse path. The
+Unicode contract compares against complete segmentation, including every byte,
+duplicate/terminal boundaries, sparse queries, oversized clusters and rejected
+inputs. All 337 editor core tests and strict core/WASM lint pass. Six release
+browser paragraph contracts pass: shifted suffixes, changed prefixes/stale scopes,
+failed overlaps, complete rounding, font/features/whitespace and near-limit rows.
+Both-mode geometry coverage remains intact. This is an algorithmic change without
+new timing or memory samples; cold/wrapped/unsupported layout gates stay open.
+
 The accessible-input checkpoint also passes eight release-app cases: both modes,
 LF/CRLF and pending-worker/bounded-native input. Chromium exposes the file-specific
 input name and current keyboard description; trusted Ctrl+M, Tab and Shift+Tab
