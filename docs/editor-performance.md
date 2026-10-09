@@ -2661,6 +2661,17 @@ failed overlaps, complete rounding, font/features/whitespace and near-limit rows
 Both-mode geometry coverage remains intact. This is an algorithmic change without
 new timing or memory samples; cold/wrapped/unsupported layout gates stay open.
 
+The bounded styled-run cache now retains unavailable-table results for its exact
+source/style scope. Repeated warm queries skip the capped attempt; complete
+paragraph construction still runs when metadata cannot be retained. The new
+both-mode facade contract distinguishes these paths by segmented source bytes,
+checks lossless complete-plan availability and rejects another project's result.
+A browser unit contract covers stale account/file/read/epoch scopes, changed view
+and styles, the eight-row retention bound and retry after eviction. Both pass,
+as does the existing near-limit styled horizontal-paint contract in both modes.
+Strict WASM lint passes. Uncapped construction still segments full rows, and no
+new timing/memory samples or completion-gate claims accompany this increment.
+
 The accessible-input checkpoint also passes eight release-app cases: both modes,
 LF/CRLF and pending-worker/bounded-native input. Chromium exposes the file-specific
 input name and current keyboard description; trusted Ctrl+M, Tab and Shift+Tab
