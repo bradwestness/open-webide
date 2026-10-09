@@ -132,7 +132,11 @@ tracks the remaining work rather than every optimization already shipped.
   native local folder handle. Coordinate with Offline & error-state recovery below.
 - [ ] **Accessibility and integration:** verify keyboard focus/Tab escape, assistive
   technology, touch, theme integration and PWA loading across the completed editor,
-  including the cold/fallback paths. Evaluate whether the current projected native
+  including the cold/fallback paths. File-specific input names, current Tab guidance
+  and live Ctrl+M announcements have browser contracts in both modes. Release-app
+  checks verify trusted forward/backward Tab escape and accessible input names with
+  pending syntax, bounded native input and LF/CRLF sources. Physical assistive-
+  technology verification remains. Evaluate whether the current projected native
   input and source-paint surface adequately supports the richer multiple-selection view.
 
 **Rust/WebAssembly architecture:** keep the editor in Rust/Leptos compiled to WASM;

@@ -48,6 +48,35 @@ def history_key(browser, redo=False):
         [{'type': 'keyUp', 'value': key} for key in reversed(keys)]}]})
 
 
+def keyboard_action(browser, keys):
+    browser.call('POST', '/actions', {'actions': [{'type': 'key', 'id': 'editor-accessibility', 'actions':
+        [{'type': 'keyDown', 'value': key} for key in keys] +
+        [{'type': 'keyUp', 'value': key} for key in reversed(keys)]}]})
+
+
+def check_tab_accessibility(browser):
+    browser.script("document.querySelector('textarea[data-editor-path]').focus();")
+    before = snapshot(browser)
+    tree = cdp(browser, 'Accessibility.getFullAXTree', {})['nodes']
+    inputs = [node for node in tree if node.get('role', {}).get('value') == 'textbox'
+              and node.get('name', {}).get('value') == 'Code editor: input.rs']
+    assert len(inputs) == 1, 'native editor must expose its file-specific accessible name'
+    assert 'Ctrl+M' in inputs[0].get('description', {}).get('value', '')
+    keyboard_action(browser, ['\ue009', 'm'])
+    wait('Tab navigation announcement', lambda: browser.script(
+        "return document.querySelector('[data-editor-tab-announcement]').textContent === 'Tab now moves keyboard focus.';"))
+    for keys in [['\ue004'], ['\ue008', '\ue004']]:
+        browser.script("document.querySelector('textarea[data-editor-path]').focus();")
+        keyboard_action(browser, keys)
+        assert browser.script("return document.activeElement !== document.querySelector('textarea[data-editor-path]');"), 'Tab must move focus out of the editor'
+        after = snapshot(browser)
+        assert (after['value'], after['start'], after['end']) == (before['value'], before['start'], before['end'])
+    browser.script("document.querySelector('textarea[data-editor-path]').focus();")
+    keyboard_action(browser, ['\ue009', 'm'])
+    wait('indentation announcement', lambda: browser.script(
+        "return document.querySelector('[data-editor-tab-announcement]').textContent.startsWith('Tab now indents.');"))
+
+
 def snapshot(browser):
     return browser.script("""
         const input = document.querySelector('textarea[data-editor-path]');
@@ -128,6 +157,7 @@ def check(mode, ending, windowed):
                 wait('worker result held during cold composition', lambda: browser.script('return editorInputWorker.held > 0;'))
             browser.script("document.querySelector('textarea[data-editor-path]').focus();")
             assert snapshot(browser)['start'] == snapshot(browser)['end'] == 0
+            check_tab_accessibility(browser)
             compose(browser, 'に')
             wait('first native candidate', lambda: snapshot(browser)['value'].startswith('に//'))
             compose(browser, '日本語😀')
@@ -164,7 +194,7 @@ def check(mode, ending, windowed):
             assert sum(event['type'] == 'compositionend' for event in events) >= 2
             assert any(event['type'] == 'input' and event['composing'] for event in events)
             print(json.dumps({'mode': mode, 'ending': 'CRLF' if ending == '\r\n' else 'LF',
-                'windowed': windowed, 'pending_syntax': not windowed, 'trusted_events': sum(event['trusted'] for event in events), 'commit_undo_redo_cancel': True}), flush=True)
+                'windowed': windowed, 'pending_syntax': not windowed, 'trusted_events': sum(event['trusted'] for event in events), 'commit_undo_redo_cancel': True, 'tab_focus_escape_and_accessible_name': True}), flush=True)
         finally:
             if browser:
                 browser.stop()
