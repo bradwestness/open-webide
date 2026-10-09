@@ -3092,29 +3092,29 @@ pub fn Editor(
                                 <Show when=move || open_file.get().is_some()>
                                     <super::dropdown::ActionMenu aria_label="Editor actions">
                                         <h3 class="ui-menu-heading">"File"</h3>
-                                        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=file_actions.is_none() on:click=move |_| { if let Some((actions, path)) = file_actions.zip(open_file.get_untracked()) { actions.copy_path(&path); } }>"Copy path"</button>
-                                        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=file_actions.is_none() on:click=move |_| { if let Some((actions, path)) = file_actions.zip(open_file.get_untracked()) { actions.reveal(&path); } }>"Reveal in Files"</button>
+                                        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=file_actions.is_none() on:click=move |_| { if let Some((actions, path)) = file_actions.zip(open_file.get_untracked()) { actions.copy_path(&path); } }><Icon name=IconName::Copy /><span>"Copy path"</span></button>
+                                        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=file_actions.is_none() on:click=move |_| { if let Some((actions, path)) = file_actions.zip(open_file.get_untracked()) { actions.reveal(&path); } }><Icon name=IconName::FolderOpen /><span>"Reveal in Files"</span></button>
 
-                                        <Show when=move || can_revert.get()><button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(action) = on_discard_git_diff { action.run(()); } }>"Discard changes…"</button></Show>
+                                        <Show when=move || can_revert.get()><button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(action) = on_discard_git_diff { action.run(()); } }><Icon name=IconName::Undo2 /><span>"Discard changes…"</span></button></Show>
                                         <Show when=move || view_mode.get() == ViewMode::Code && !read_only.get() && open_file.with(|path| path.as_ref().is_some_and(|path| !FileKind::from_path(path).is_non_text()))>
 
                                         <h3 class="ui-menu-heading">"Indentation"</h3>
-                                        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=read_only on:click=move |_| convert_indentation.run(())>"Convert indentation"</button>
+                                        <button role="menuitem" type="button" class="ui-dropdown-item recent-item" disabled=read_only on:click=move |_| convert_indentation.run(())><Icon name=IconName::ListIndentIncrease /><span>"Convert indentation"</span></button>
 
                                         <h3 class="ui-menu-heading">"Navigation"</h3>
-                                        <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title="Ctrl/Cmd+G" on:click=move |_| open_go.run(())>"Go to line/column"</button>
-                                        <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title="Ctrl/Cmd+Shift+\\" on:click=move |_| jump_bracket.run(())>"Jump to matching bracket"</button>
+                                        <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title="Ctrl/Cmd+G" on:click=move |_| open_go.run(())><Icon name=IconName::MapPin /><span>"Go to line/column"</span></button>
+                                        <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title="Ctrl/Cmd+Shift+\\" on:click=move |_| jump_bracket.run(())><Icon name=IconName::Brackets /><span>"Jump to matching bracket"</span></button>
 
                                         <h3 class="ui-menu-heading">"Selection"</h3>
                                         {[
-                                            ("Select next occurrence", openwebide_core::editor::SelectionCommand::NextOccurrence, "Ctrl/Cmd+D"),
-                                            ("Select all occurrences", openwebide_core::editor::SelectionCommand::AllOccurrences, "Ctrl/Cmd+Shift+L"),
-                                            ("Add cursor above", openwebide_core::editor::SelectionCommand::AddAbove, "Ctrl/Cmd+Alt+Up"),
-                                            ("Add cursor below", openwebide_core::editor::SelectionCommand::AddBelow, "Ctrl/Cmd+Alt+Down"),
-                                            ("Expand selection", openwebide_core::editor::SelectionCommand::Expand, "Alt+Shift+Right"),
-                                            ("Shrink selection", openwebide_core::editor::SelectionCommand::Shrink, "Alt+Shift+Left"),
-                                            ("Keep primary cursor", openwebide_core::editor::SelectionCommand::Single, "Escape"),
-                                        ].into_iter().map(move |(label, command, shortcut)| view! {
+                                            ("Select next occurrence", openwebide_core::editor::SelectionCommand::NextOccurrence, "Ctrl/Cmd+D", IconName::TextSearch),
+                                            ("Select all occurrences", openwebide_core::editor::SelectionCommand::AllOccurrences, "Ctrl/Cmd+Shift+L", IconName::ScanText),
+                                            ("Add cursor above", openwebide_core::editor::SelectionCommand::AddAbove, "Ctrl/Cmd+Alt+Up", IconName::ArrowUpToLine),
+                                            ("Add cursor below", openwebide_core::editor::SelectionCommand::AddBelow, "Ctrl/Cmd+Alt+Down", IconName::ArrowDownToLine),
+                                            ("Expand selection", openwebide_core::editor::SelectionCommand::Expand, "Alt+Shift+Right", IconName::Expand),
+                                            ("Shrink selection", openwebide_core::editor::SelectionCommand::Shrink, "Alt+Shift+Left", IconName::Shrink),
+                                            ("Keep primary cursor", openwebide_core::editor::SelectionCommand::Single, "Escape", IconName::TextCursor),
+                                        ].into_iter().map(move |(label, command, shortcut, icon)| view! {
                                             <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title=shortcut disabled=move || { workspace.editor_composition.track(); editor_actions.is_composing() } on:click=move |_| {
                                                 let Some(textarea) = ta.get_untracked().filter(|textarea| current_editor_target(editor_actions, textarea)) else { return; };
                                                 let (Some(project), Some(path)) = (workspace.active_project.get_untracked(), open_file.get_untracked()) else { return; };
@@ -3126,23 +3126,23 @@ pub fn Editor(
                                                     Err(error) => action_error.set(Some(error.to_string())),
                                                     Ok(None) => {}
                                                 }
-                                            }>{label}</button>
+                                            }><Icon name=icon /><span>{label}</span></button>
                                         }).collect_view()}
 
                                         <h3 class="ui-menu-heading">"Editing"</h3>
                                         {[
-                                            ("Move lines up", EditorCommand::Line(openwebide_core::editor::LineCommand::MoveUp), "Alt+Up"),
-                                            ("Move lines down", EditorCommand::Line(openwebide_core::editor::LineCommand::MoveDown), "Alt+Down"),
-                                            ("Duplicate lines above", EditorCommand::Line(openwebide_core::editor::LineCommand::DuplicateAbove), "Alt+Shift+Up"),
-                                            ("Duplicate lines below", EditorCommand::Line(openwebide_core::editor::LineCommand::Duplicate), "Alt+Shift+Down"),
-                                            ("Duplicate selection", EditorCommand::DuplicateSelection, "Ctrl/Cmd+Shift+D"),
-                                            ("Delete lines", EditorCommand::Line(openwebide_core::editor::LineCommand::Delete), "Ctrl/Cmd+Shift+K"),
-                                            ("Insert line above", EditorCommand::Line(openwebide_core::editor::LineCommand::InsertAbove), "Ctrl/Cmd+Shift+Enter"),
-                                            ("Insert line below", EditorCommand::Line(openwebide_core::editor::LineCommand::InsertBelow), "Ctrl/Cmd+Enter"),
-                                            ("Toggle line comment", EditorCommand::LineComment, "Ctrl/Cmd+/"),
-                                            ("Toggle block comment", EditorCommand::BlockComment, "Ctrl/Cmd+Shift+/"),
-                                            ("Reindent selected lines", EditorCommand::Reindent, ""),
-                                        ].into_iter().map(move |(label, command, shortcut)| view! {
+                                            ("Move lines up", EditorCommand::Line(openwebide_core::editor::LineCommand::MoveUp), "Alt+Up", IconName::ArrowUp),
+                                            ("Move lines down", EditorCommand::Line(openwebide_core::editor::LineCommand::MoveDown), "Alt+Down", IconName::ArrowDown),
+                                            ("Duplicate lines above", EditorCommand::Line(openwebide_core::editor::LineCommand::DuplicateAbove), "Alt+Shift+Up", IconName::CopyPlus),
+                                            ("Duplicate lines below", EditorCommand::Line(openwebide_core::editor::LineCommand::Duplicate), "Alt+Shift+Down", IconName::CopyPlus),
+                                            ("Duplicate selection", EditorCommand::DuplicateSelection, "Ctrl/Cmd+Shift+D", IconName::Copy),
+                                            ("Delete lines", EditorCommand::Line(openwebide_core::editor::LineCommand::Delete), "Ctrl/Cmd+Shift+K", IconName::ListMinus),
+                                            ("Insert line above", EditorCommand::Line(openwebide_core::editor::LineCommand::InsertAbove), "Ctrl/Cmd+Shift+Enter", IconName::ArrowUpToLine),
+                                            ("Insert line below", EditorCommand::Line(openwebide_core::editor::LineCommand::InsertBelow), "Ctrl/Cmd+Enter", IconName::ArrowDownToLine),
+                                            ("Toggle line comment", EditorCommand::LineComment, "Ctrl/Cmd+/", IconName::MessageSquare),
+                                            ("Toggle block comment", EditorCommand::BlockComment, "Ctrl/Cmd+Shift+/", IconName::Brackets),
+                                            ("Reindent selected lines", EditorCommand::Reindent, "", IconName::ListIndentIncrease),
+                                        ].into_iter().map(move |(label, command, shortcut, icon)| view! {
                                             <button type="button" role="menuitem" class="ui-dropdown-item recent-item" title=shortcut disabled=move || read_only.get() || {
                                                 let language = openwebide_core::highlight::language_from_path(&open_file.get().unwrap_or_default());
                                                 match command {
@@ -3153,27 +3153,27 @@ pub fn Editor(
                                                 }
                                             } on:click=move |_| {
                                                 if let Some(textarea) = ta.get() && !read_only.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_editor_command(editor_actions, command, &textarea); let _ = textarea.focus(); }
-                                            }>{label}</button>
+                                            }><Icon name=icon /><span>{label}</span></button>
                                         }).collect_view()}
                                         <h3 class="ui-menu-heading">"Folding"</h3>
                                         {[
-                                            ("Fold at cursor", openwebide_core::editor::FoldCommand::Collapse { recursive: false }),
-                                            ("Unfold at cursor", openwebide_core::editor::FoldCommand::Expand { recursive: false }),
-                                            ("Fold recursively", openwebide_core::editor::FoldCommand::Collapse { recursive: true }),
-                                            ("Unfold recursively", openwebide_core::editor::FoldCommand::Expand { recursive: true }),
-                                            ("Fold all", openwebide_core::editor::FoldCommand::CollapseAll),
-                                            ("Unfold all", openwebide_core::editor::FoldCommand::ExpandAll),
-                                        ].into_iter().map(move |(label, command)| view! {
+                                            ("Fold at cursor", openwebide_core::editor::FoldCommand::Collapse { recursive: false }, IconName::FoldVertical),
+                                            ("Unfold at cursor", openwebide_core::editor::FoldCommand::Expand { recursive: false }, IconName::UnfoldVertical),
+                                            ("Fold recursively", openwebide_core::editor::FoldCommand::Collapse { recursive: true }, IconName::ListCollapse),
+                                            ("Unfold recursively", openwebide_core::editor::FoldCommand::Expand { recursive: true }, IconName::ListTree),
+                                            ("Fold all", openwebide_core::editor::FoldCommand::CollapseAll, IconName::FoldVertical),
+                                            ("Unfold all", openwebide_core::editor::FoldCommand::ExpandAll, IconName::UnfoldVertical),
+                                        ].into_iter().map(move |(label, command, icon)| view! {
                                             <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move || fold_state.with(|state| state.ranges().is_empty()) on:click=move |_| {
                                                 if let Some(textarea) = ta.get_untracked() && current_editor_target(editor_actions, &textarea) { apply_fold_command(editor_actions, &textarea, command); }
-                                            }>{label}</button>
+                                            }><Icon name=icon /><span>{label}</span></button>
                                         }).collect_view()}
                                         </Show>
 
                                         <Show when=move || panel_actions.is_some()>
                                             <h3 class="ui-menu-heading">"Panel"</h3>
-                                            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = panel_actions { actions.move_panel.run((crate::state::layout::Panel::Editor, false)); } }>"Move panel left"</button>
-                                            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = panel_actions { actions.move_panel.run((crate::state::layout::Panel::Editor, true)); } }>"Move panel right"</button>
+                                            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = panel_actions { actions.move_panel.run((crate::state::layout::Panel::Editor, false)); } }><Icon name=IconName::ArrowLeft /><span>"Move panel left"</span></button>
+                                            <button role="menuitem" type="button" class="ui-dropdown-item recent-item" on:click=move |_| { if let Some(actions) = panel_actions { actions.move_panel.run((crate::state::layout::Panel::Editor, true)); } }><Icon name=IconName::ArrowRight /><span>"Move panel right"</span></button>
                                         </Show>
 </super::dropdown::ActionMenu>
                                 </Show>

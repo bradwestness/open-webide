@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Give editor action-menu entries consistent icons and aligned labels using the
+  shared menu and icon components in both workspace modes.
+
 - Compare and copy syntax-worker reply sources across bounded UTF-8 batches,
   preserving exact full/delta publication and discarding cancelled partial replies
   before they become a reusable analysis base. Native and browser adapters use
