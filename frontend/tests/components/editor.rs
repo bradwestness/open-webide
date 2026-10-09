@@ -8756,9 +8756,10 @@ async fn cooperative_worker_plain_rows_publish_complete_sql_in_both_modes() {
         for ending in ["\n", "\r\n"] {
             let source = format!(
                 "{}{ending}{}",
-                "SELECT value 文😀 ".repeat(8_000),
+                "SELECT value 文😀 ".repeat(30_000),
                 format!("SELECT '文😀';{ending}").repeat(1_000)
             );
+            assert!(source.len() > 8 * openwebide_core::highlight::LEXICAL_BATCH_BYTES);
             let transport = std::rc::Rc::new(DeferredSyntax::default());
             let installed = transport.clone();
             let initial = source.clone();

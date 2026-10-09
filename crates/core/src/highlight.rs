@@ -303,6 +303,28 @@ impl LexicalPreparation {
     pub const fn is_complete(&self) -> bool {
         self.complete
     }
+    /// Reuse a replacement already validated by shared syntax preparation or
+    /// materialized from a resolver delta. Only its exact retained base can
+    /// bypass comparison; other bases take ordinary cooperative validation.
+    #[cfg(feature = "editor-parser")]
+    pub(crate) fn reuse_validated_change(
+        self,
+        previous: std::sync::Arc<LexicalSnapshot>,
+        base: &std::sync::Arc<String>,
+        change: &crate::editor::TextChange,
+    ) -> Self {
+        let trusted = std::sync::Arc::ptr_eq(base, &previous.source)
+            && previous.language == self.language
+            && previous.normalize_crlf == self.normalize_crlf;
+        let mut result = self.reuse_cooperative(previous);
+        if trusted {
+            result.pending_change = None;
+            result.source_change = Some(change.clone());
+            result.unchanged = change.range.is_empty() && change.new_end == change.range.start;
+            result.complete = result.unchanged;
+        }
+        result
+    }
     /// Whole rows outside the validated replacement retain their raw boundaries.
     /// Terminal rows may only be reused when they still terminate the new source.
     fn indexed_row(&self) -> Option<(usize, usize, bool)> {

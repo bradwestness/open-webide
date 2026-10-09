@@ -165,11 +165,7 @@ impl SyntaxDocument {
         }
         let change = change.filter(|(base, _)| self.ready && Arc::ptr_eq(base, &self.text));
         let base = self.text.clone();
-        let compared = if change.is_none()
-            && self.ready
-            && self.parser.is_some()
-            && !Arc::ptr_eq(&base, &source)
-        {
+        let compared = if change.is_none() && self.ready && !Arc::ptr_eq(&base, &source) {
             match self.compare_source_cooperative(&source, should_continue, should_yield)? {
                 Ok(change) => Some(change),
                 Err(status) => return Some((status, None)),
@@ -182,7 +178,7 @@ impl SyntaxDocument {
         let status = self
             .begin_update(&source, &mut *should_continue, || source.clone(), change)
             .or_else(|| self.advance_update(should_continue, should_yield))?;
-        let status = self.advance_lexical(status, should_continue, should_yield)?;
+        let status = self.advance_lexical(status, should_continue, should_yield, change)?;
         Some(self.finish_preparation(status, tab_width, should_continue))
     }
 
@@ -241,6 +237,7 @@ impl SyntaxDocument {
         status: SyntaxStatus,
         should_continue: &mut impl FnMut() -> bool,
         should_yield: &mut impl FnMut() -> bool,
+        change: Option<(&Arc<String>, &crate::editor::TextChange)>,
     ) -> Option<SyntaxStatus> {
         if !matches!(status, SyntaxStatus::Ready { .. })
             || self.provider.is_some()
@@ -256,7 +253,11 @@ impl SyntaxDocument {
             let mut lexical =
                 crate::highlight::LexicalPreparation::new(self.text.clone(), self.language);
             if let Some(previous) = &self.lexical {
-                lexical = lexical.reuse_cooperative(previous.clone());
+                lexical = if let Some((base, change)) = change {
+                    lexical.reuse_validated_change(previous.clone(), base, change)
+                } else {
+                    lexical.reuse_cooperative(previous.clone())
+                };
             }
             (status, lexical)
         });
@@ -570,6 +571,8 @@ mod tests {
     fn parser_source_comparison_yields_and_matches_fresh_analysis() {
         for (language, prefix, suffix) in [
             (Language::Rust, "/*", "*/\nfn main() { let value = 1; }"),
+            (Language::Sql, "SELECT ", "\nSELECT 'done';"),
+            (Language::Plain, "Plain ", "\ntail"),
             (
                 Language::TypeScript,
                 "/*",
@@ -629,7 +632,12 @@ mod tests {
                             checks >= 8
                         },
                     ) {
-                        assert_eq!(status, SyntaxStatus::Ready { incremental: true });
+                        assert_eq!(
+                            status,
+                            SyntaxStatus::Ready {
+                                incremental: document.provider.is_some()
+                            }
+                        );
                         break analysis.unwrap();
                     }
                     assert!(document.prepared.is_none());
@@ -770,7 +778,7 @@ mod tests {
                 document.prepared.is_none(),
                 "unfinished rows publish no analysis"
             );
-            assert!(document.lexical_pending.is_some());
+            assert!(document.lexical_pending.is_some() || document.source_comparison.is_some());
         }
     }
 

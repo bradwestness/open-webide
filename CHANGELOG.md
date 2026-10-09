@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Yield during parser-free warm-source entry comparison and pass its validated
+  replacement into plain-row reuse, preserving exact-base checks and avoiding
+  a second comparison of the same source.
 - Resume retained-source comparison before parser-backed syntax updates, using
   the same bounded UTF-8 comparison as plain fallback preparation. Cancel or
   replace unfinished comparisons without publishing stale contexts or folds.
