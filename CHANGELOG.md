@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Compare retained plain sources across cooperative preparation batches in the
+  syntax worker and browser fallback, preserving exact Unicode boundaries,
+  complete publication and cancellation during warm edits.
+
 - Yield within long plain rows while scanning, validating retained rows and
   copying fallback text, preserving complete publication and cancellation in
   the syntax worker and browser fallback.

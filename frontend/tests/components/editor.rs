@@ -8838,6 +8838,54 @@ async fn cooperative_worker_plain_rows_publish_complete_sql_in_both_modes() {
             let input: web_sys::HtmlTextAreaElement =
                 mounted.element(".editor-textarea").unchecked_into();
             assert_editor_native_source(&input, mounted.state.workspace, &source);
+            let revised = source.replacen("SELECT value", "SELECT changed", 1);
+            mounted.state.workspace.content.set(revised.clone().into());
+            wait_until("warm SQL worker request", || {
+                !transport.pending.borrow().is_empty()
+            })
+            .await;
+            let DeferredSyntaxReply { message, sender } =
+                transport.pending.borrow_mut().pop_front().unwrap();
+            assert!(worker.enqueue(&message).is_none());
+            let mut batches = 0;
+            let reply = loop {
+                batches += 1;
+                assert!(batches < 2_000);
+                let mut checks = 0;
+                if let Some(reply) = worker.advance(
+                    || true,
+                    || {
+                        checks += 1;
+                        checks >= 4
+                    },
+                ) {
+                    break reply;
+                }
+                assert!(worker.has_work());
+                assert!(actions.syntax_is_pending());
+                if batches % 32 == 0 {
+                    openwebide_frontend::util::yield_task().await;
+                }
+            };
+            assert!(
+                batches > 2,
+                "{mode:?}: warm plain-source preparation must yield"
+            );
+            sender.send(Ok(reply)).unwrap();
+            wait_until("warm SQL rows published", || !actions.syntax_is_pending()).await;
+            let (prepared, next_rows) = actions.syntax_paint();
+            assert!(prepared);
+            assert_eq!(
+                next_rows
+                    .iter()
+                    .map(|row| row
+                        .iter()
+                        .map(|token| token.text.as_str())
+                        .collect::<String>())
+                    .collect::<Vec<_>>(),
+                revised.split('\n').map(str::to_owned).collect::<Vec<_>>()
+            );
+            assert_editor_native_source(&input, mounted.state.workspace, &revised);
         }
     }
 }

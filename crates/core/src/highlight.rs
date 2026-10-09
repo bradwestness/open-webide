@@ -213,7 +213,8 @@ struct LexicalRow {
 
 /// A source-owned plain-row job that preserves source boundaries across cooperative
 /// batches. Callers can discard it on cancellation; unfinished paint is never
-/// returned by finish. Budgets count whole rows, allowing one oversized row.
+/// returned by finish. The synchronous driver admits whole rows; the bounded
+/// driver also yields within source comparison, scanning, validation and copying.
 pub struct LexicalPreparation {
     source: std::sync::Arc<String>,
     language: Language,
@@ -228,6 +229,7 @@ pub struct LexicalPreparation {
     source_change: Option<crate::editor::TextChange>,
     previous_row: usize,
     pending_row: Option<preparation::LexicalRowPreparation>,
+    pending_change: Option<preparation::LexicalSourceComparison>,
     #[cfg(test)]
     indexed_searches: std::cell::Cell<usize>,
     #[cfg(test)]
@@ -249,6 +251,7 @@ impl LexicalPreparation {
             source_change: None,
             previous_row: 0,
             pending_row: None,
+            pending_change: None,
             #[cfg(test)]
             indexed_searches: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -266,23 +269,32 @@ impl LexicalPreparation {
     /// unchanged offsets and the total byte shift, validating every candidate;
     /// insertions, deletions and disjoint edits cannot reuse mismatching context.
     pub fn reuse(mut self, previous: std::sync::Arc<LexicalSnapshot>) -> Self {
+        self = self.reuse_cooperative(previous);
+        while self.pending_change.is_some() {
+            self.advance_source_comparison(usize::MAX);
+        }
+        self
+    }
+    /// Retain the previous source without synchronously comparing its text.
+    /// Exact unchanged allocations complete immediately; other comparisons
+    /// resume within the same byte budget as plain-row preparation.
+    pub fn reuse_cooperative(mut self, previous: std::sync::Arc<LexicalSnapshot>) -> Self {
         if previous.language == self.language && previous.normalize_crlf == self.normalize_crlf {
             self.next = 0;
             self.previous_row = 0;
             self.pending_row = None;
+            self.pending_change = None;
             self.rows.clear();
             self.contexts.clear();
             self.retokenized_rows = 0;
             self.complete = false;
             self.unchanged = false;
-            self.source_change = if std::sync::Arc::ptr_eq(&self.source, &previous.source) {
-                None
-            } else {
-                crate::editor::text_change(&previous.source, &self.source)
-            };
-            if self.source_change.is_none() {
+            self.source_change = None;
+            if std::sync::Arc::ptr_eq(&self.source, &previous.source) {
                 self.unchanged = true;
                 self.complete = true;
+            } else {
+                self.pending_change = Some(preparation::LexicalSourceComparison::default());
             }
             self.previous = Some(previous);
         }
@@ -363,8 +375,11 @@ impl LexicalPreparation {
     pub fn advance(&mut self, max_rows: usize, max_bytes: usize) -> usize {
         let mut count = 0;
         let mut bytes = 0;
-        if max_bytes == 0 {
+        if max_bytes == 0 || max_rows == 0 {
             return 0;
+        }
+        while self.pending_change.is_some() {
+            self.advance_source_comparison(usize::MAX);
         }
         if max_rows > 0 && self.pending_row.is_some() {
             let start = self.next;

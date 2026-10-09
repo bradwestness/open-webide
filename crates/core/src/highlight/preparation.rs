@@ -2,6 +2,13 @@
 use super::{LexicalPreparation, LexicalRow, Token, TokenKind};
 use std::sync::Arc;
 
+#[derive(Default)]
+pub(super) struct LexicalSourceComparison {
+    prefix: usize,
+    suffix: usize,
+    prefix_complete: bool,
+}
+
 pub(super) struct LexicalRowPreparation {
     scan: usize,
     extent: Option<(usize, bool)>,
@@ -20,7 +27,10 @@ impl LexicalPreparation {
             return 0;
         }
         let mut completed = 0;
-        let mut remaining = max_bytes;
+        let mut remaining = max_bytes.saturating_sub(self.advance_source_comparison(max_bytes));
+        if self.pending_change.is_some() {
+            return 0;
+        }
         while !self.complete && completed < max_rows && remaining > 0 {
             if self.pending_row.is_none() {
                 if let Some((index, next, newline)) = self.indexed_row() {
@@ -120,6 +130,77 @@ impl LexicalPreparation {
         completed
     }
 
+    /// Compare raw bytes cooperatively; round only the finished boundaries to
+    /// valid UTF-8 positions before exposing them to indexed row reuse.
+    pub(super) fn advance_source_comparison(&mut self, budget: usize) -> usize {
+        let Some(mut comparison) = self.pending_change.take() else {
+            return 0;
+        };
+        let old = &self
+            .previous
+            .as_ref()
+            .expect("retained comparison source")
+            .source;
+        let new = &self.source;
+        let mut remaining = budget;
+        if !comparison.prefix_complete {
+            let limit = old.len().min(new.len());
+            let end = limit.min(comparison.prefix.saturating_add(remaining));
+            let equal = old.as_bytes()[comparison.prefix..end]
+                .iter()
+                .zip(&new.as_bytes()[comparison.prefix..end])
+                .take_while(|(a, b)| a == b)
+                .count();
+            remaining =
+                remaining.saturating_sub(equal + usize::from(equal < end - comparison.prefix));
+            comparison.prefix += equal;
+            if comparison.prefix < end || end == limit {
+                comparison.prefix_complete = true;
+                while !old.is_char_boundary(comparison.prefix)
+                    || !new.is_char_boundary(comparison.prefix)
+                {
+                    comparison.prefix -= 1;
+                }
+                if comparison.prefix == old.len() && old.len() == new.len() {
+                    self.complete = true;
+                    self.unchanged = true;
+                    return budget - remaining;
+                }
+            }
+        }
+        if comparison.prefix_complete {
+            let limit = old.len().min(new.len()) - comparison.prefix;
+            let end = limit.min(comparison.suffix.saturating_add(remaining));
+            let equal = old.as_bytes()[old.len() - end..old.len() - comparison.suffix]
+                .iter()
+                .rev()
+                .zip(
+                    new.as_bytes()[new.len() - end..new.len() - comparison.suffix]
+                        .iter()
+                        .rev(),
+                )
+                .take_while(|(a, b)| a == b)
+                .count();
+            remaining =
+                remaining.saturating_sub(equal + usize::from(equal < end - comparison.suffix));
+            comparison.suffix += equal;
+            if comparison.suffix < end || end == limit {
+                while !old.is_char_boundary(old.len() - comparison.suffix)
+                    || !new.is_char_boundary(new.len() - comparison.suffix)
+                {
+                    comparison.suffix -= 1;
+                }
+                self.source_change = Some(crate::editor::TextChange {
+                    range: comparison.prefix..old.len() - comparison.suffix,
+                    new_end: new.len() - comparison.suffix,
+                });
+                return budget - remaining;
+            }
+        }
+        self.pending_change = Some(comparison);
+        budget - remaining
+    }
+
     fn bounded_reuse_candidates(&self, end: usize) -> [Option<usize>; 2] {
         let Some(previous) = &self.previous else {
             return [None; 2];
@@ -165,6 +246,95 @@ impl LexicalPreparation {
 mod tests {
     use super::*;
     use crate::highlight::{Language, highlight_lines, share_token_rows};
+
+    #[test]
+    fn cooperative_source_comparison_matches_exact_unicode_changes() {
+        let variants = [
+            "",
+            "a",
+            "ab",
+            "文😀e\u{301}",
+            "文😃e\u{301}",
+            "文😀\r\n",
+            "\n文😀",
+            "文😀tail",
+        ];
+        for old in variants {
+            let mut prior = LexicalPreparation::new(Arc::new(old.into()), Language::Sql);
+            while !prior.is_complete() {
+                prior.advance(128, usize::MAX);
+            }
+            let prior = Arc::new(prior.finish_snapshot().unwrap());
+            for new in variants {
+                for budget in [1, 2, 7, 64] {
+                    let source = Arc::new(new.to_string());
+                    let mut job = LexicalPreparation::new(source.clone(), Language::Sql)
+                        .reuse_cooperative(prior.clone());
+                    assert!(!job.is_complete());
+                    assert!(job.pending_change.is_some());
+                    let mut turns = 0;
+                    while job.pending_change.is_some() {
+                        assert!(job.advance_source_comparison(budget) <= budget);
+                        turns += 1;
+                        assert!(turns < 100);
+                    }
+                    assert_eq!(job.source_change, crate::editor::text_change(old, new));
+                    while !job.is_complete() {
+                        job.advance_bounded(2, budget);
+                    }
+                    let snapshot = job.finish_snapshot().unwrap();
+                    assert!(Arc::ptr_eq(&source, &snapshot.source));
+                    assert_eq!(
+                        snapshot.tokens().as_ref(),
+                        &share_token_rows(highlight_lines(new, Language::Sql))
+                    );
+                    if old == new {
+                        assert!(Arc::ptr_eq(snapshot.tokens(), prior.tokens()));
+                        assert!(Arc::ptr_eq(&snapshot.rows, &prior.rows));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn long_source_comparison_yields_before_row_publication_and_can_restart() {
+        let source = Arc::new(format!(
+            "header\r\n{}\r\nfooter",
+            "文😀e\u{301} ".repeat(40_000)
+        ));
+        let mut prior = LexicalPreparation::for_textarea(source.clone(), Language::Sql);
+        while !prior.is_complete() {
+            prior.advance(128, usize::MAX);
+        }
+        let prior = Arc::new(prior.finish_snapshot().unwrap());
+        let current = Arc::new(source.replace("header", "changed"));
+        let mut job = LexicalPreparation::for_textarea(current.clone(), Language::Sql)
+            .reuse_cooperative(prior.clone());
+        assert_eq!(job.advance_bounded(128, 4096), 0);
+        assert!(job.pending_change.is_some());
+        assert!(job.rows.is_empty());
+        assert!(!job.is_complete());
+        assert!(
+            LexicalPreparation::for_textarea(current.clone(), Language::Sql)
+                .reuse_cooperative(prior.clone())
+                .finish_snapshot()
+                .is_none()
+        );
+        while !job.is_complete() {
+            job.advance_bounded(128, 4096);
+        }
+        let snapshot = job.finish_snapshot().unwrap();
+        assert_eq!(snapshot.retokenized_rows(), 1);
+        assert!(Arc::ptr_eq(&snapshot.tokens()[1], &prior.tokens()[1]));
+        let reset = LexicalPreparation::for_textarea(current, Language::Sql)
+            .reuse_cooperative(prior.clone())
+            .reuse_cooperative(prior.clone());
+        assert!(reset.pending_change.is_some());
+        let reset = reset.reuse_cooperative(Arc::new(snapshot));
+        assert!(reset.is_complete());
+        assert!(reset.pending_change.is_none());
+    }
 
     #[test]
     fn bounded_long_rows_preserve_unicode_newlines_and_complete_publication() {
