@@ -369,10 +369,11 @@ capability.
   loading bounded through the deferred-tool-loading work above. Add context/run hooks later when
   needed; declarative UI contributions are a later stage of this same system.
   The skills-only baseline is shipped: package/catalog schemas, offline authoring
-  validation and CI, and a commit-pinned PR Review reference release. Settings
-  browses the official/custom Git catalogs, installs validated immutable snapshots
-  on either host, enables managed skills per project, applies manual version
-  changes/rollback and removes packages. Sources, caches and installation records
+  validation and CI, and a commit-pinned PR Review reference release. The status-bar
+  Plugins interface browses the official/custom Git catalogs and installs validated
+  immutable snapshots on either host, enables managed skills per project, applies manual version
+  changes/rollback and removes packages. Settings configures marketplace sources;
+  the official source is always available. Sources, caches and installation records
   are user-scoped database data, and runs pin their package skill content. Remaining
   work covers tool/runtime contributions, dependencies/configuration, automatic
   update policies, file-based suggestions and agent-facing plugin management.
@@ -489,7 +490,7 @@ capability.
   GitHub topic discovery can follow the catalog/direct-install baseline.
 - Add agent-facing tools to search/browse catalogs, inspect plugins, create and
   validate packages, install, configure, enable/disable, update, remove and roll
-  back plugins, and manage marketplace sources. Extend the existing Settings
+  back plugins, and manage marketplace sources. Extend the existing Plugins
   controls to new contribution types, sharing validation, ownership, revision
   checks and mutation-approval policy. Plugin instructions and handlers remain
   subject to granted tool capabilities.

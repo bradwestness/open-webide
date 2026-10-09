@@ -1,6 +1,7 @@
 # Plugins and marketplaces
 
-Settings → Plugins browses the official marketplace and any custom public Git
+The **Plugins** button beside **Output** in the status bar opens discovery and
+package management. Browse the official marketplace and any custom public Git
 marketplaces configured for your account. Search the cached catalog, choose a
 release, inspect its publisher and pinned source, and install it on the open
 project's execution host. Packages currently contribute agent skills.
@@ -8,18 +9,23 @@ project's execution host. Packages currently contribute agent skills.
 Installation does not enable a package. **Enable for project** loads the verified
 instructions/resources into the database as managed project skills. They appear
 in Skills and use the existing `skill_list` and `skill_read` agent tools. Their
-package provenance is visible; edit, disable or remove them through Plugins.
+package provenance is visible; update, disable or remove them through Plugins.
 Personal skills remain independent, and a duplicate skill name aborts activation
 without overwriting it. The project's global Skills switch still applies.
 
+Use **Manage marketplace sources** to open Settings → Plugins. That settings tab
+only configures marketplace sources; search, install, uninstall and project
+enable/disable controls live in the Plugins interface.
+
 The official source is `https://github.com/openwebide/plugins.git`, using its
-default branch and root `marketplace.json`. It is built in and cannot be removed. Additional sources accept a public
-Git repository URL, optional branch/tag/commit reference, and catalog file path.
+default branch and root `marketplace.json`. It is built in and cannot be removed.
+Additional sources accept a public Git repository URL, optional branch/tag/commit
+reference, and catalog file path.
 Releases declare only their immutable commit and package directory; every package
 inherits its marketplace's repository. Refreshing catalogs updates discovery,
 while installed versions remain pinned. A failed refresh preserves cached
-releases and reports the failed source. Removing a custom source stops discovery without
-uninstalling its packages. Sources and caches are user-scoped database settings.
+releases and reports the failed source. Removing a custom source stops discovery
+without uninstalling its packages. Sources and caches are user-scoped database settings.
 
 Select another catalog release to update or roll back an installation, then
 **Apply installed version** to change this project's active skills. Other projects

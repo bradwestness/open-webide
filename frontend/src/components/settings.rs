@@ -18,11 +18,12 @@ pub fn Settings(
     on_set_default_prompt: Callback<Option<i64>>,
     on_set_bridge_url: Callback<String>,
 ) -> impl IntoView {
-    let tab = RwSignal::new(0_usize);
+    let settings = expect_context::<SettingsState>();
+    let tab = RwSignal::new(settings.requested_tab.get_untracked());
+    settings.requested_tab.set(0);
     let host_available = use_context::<crate::host_admin::HostState>().is_some();
     let layout = expect_context::<crate::state::layout::LayoutState>();
     let layout_actions = use_context::<crate::state_actions::layout::LayoutActions>();
-    let settings = expect_context::<SettingsState>();
     let theme = settings.theme.read_only();
     let notifications = crate::notifications::RunNotifications::from_context();
     let default_prompt = settings.default_prompt.read_only();
@@ -49,7 +50,7 @@ pub fn Settings(
                 super::ui::DialogTab::new("Plugins", "settings-tab-plugins", "settings-panel-plugins"),
             ] selected=tab.read_only().into() on_change=Callback::new(move |index| tab.set(index)) />
             <DialogBody class="settings-body ui-tabbed-body">
-                <div id="settings-panel-plugins" class="ui-tab-panel" role="tabpanel" aria-labelledby="settings-tab-plugins" tabindex="0" hidden=move||tab.get()!=5><Show when=move||tab.get()==5><super::plugins::Plugins/></Show></div>
+                <div id="settings-panel-plugins" class="ui-tab-panel" role="tabpanel" aria-labelledby="settings-tab-plugins" tabindex="0" hidden=move||tab.get()!=5><Show when=move||tab.get()==5><super::plugins::PluginMarketplaceSources/></Show></div>
                 <div id="settings-panel-host" class="ui-tab-panel" role="tabpanel" aria-labelledby="settings-tab-host" tabindex="0" hidden=move||tab.get()!=4><Show when=move||host_available && tab.get()==4><super::host_admin::HostSettings/></Show></div>
                 <div id="settings-panel-general" class="ui-tab-panel" role="tabpanel" aria-labelledby="settings-tab-general" tabindex="0" hidden=move || tab.get() != 0>
                 <FormSection title="Appearance" description="Changes apply immediately." class="ui-form-grid">

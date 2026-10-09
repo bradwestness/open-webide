@@ -59,7 +59,7 @@ pub fn Skills() -> impl IntoView {
                     </div>
                 </Show>
                 <For each=move ||state.data.get().map_or_else(Vec::new,|data|data.entries) key=|entry|(entry.id,entry.revision) children=move |entry| {
-                    let managed=entry.plugin.is_some();let origin=entry.plugin.as_ref().map(|p|format!("From {}/{} {}. Manage in Settings → Plugins.",p.publisher,p.name,p.version));let edit=StoredValue::new(entry.clone());let export=entry.clone();let id=entry.id;let revision=entry.revision;let name=entry.draft.name.clone();let disabled= !entry.draft.enabled;
+                    let managed=entry.plugin.is_some();let origin=entry.plugin.as_ref().map(|p|format!("From {}/{} {}. Manage from Plugins in the status bar.",p.publisher,p.name,p.version));let edit=StoredValue::new(entry.clone());let export=entry.clone();let id=entry.id;let revision=entry.revision;let name=entry.draft.name.clone();let disabled= !entry.draft.enabled;
                     view! {<super::ui::DisclosurePanel class="memory-entry" summary=move ||view!{<span class="memory-title">{name.clone()}{disabled.then_some(" (disabled)")}</span>}>
                         <p class="memory-content">{entry.draft.description}</p><p class="memory-content">{entry.draft.instructions}</p>
                         <p class="form-hint">{format!("{} supporting resources",entry.draft.resources.len())}</p>

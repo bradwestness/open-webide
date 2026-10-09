@@ -9,8 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Open plugin search and package lifecycle controls beside Output in the status bar, with a direct link to marketplace-only settings.
 - Keep the official plugin marketplace permanently available, restore it in older account settings, and allow removal only for custom sources.
-- Browse the official and custom public Git marketplaces in Settings → Plugins,
+- Browse the official and custom public Git marketplaces from the status-bar Plugins interface,
   with searchable cached releases and repository inheritance. Install pinned
   skills packages on local or remote execution hosts, enable/disable them per
   project, apply version changes or rollbacks explicitly, and uninstall their

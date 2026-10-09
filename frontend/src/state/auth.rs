@@ -152,6 +152,8 @@ impl AuthState {
         settings.default_prompt.set(None);
         chat.show_terminal.set(false);
         chat.active_editor_context.set(None);
+        ui.plugins_open.set(false);
+        settings.requested_tab.set(0);
         ui.clear_toast();
 
         object_urls

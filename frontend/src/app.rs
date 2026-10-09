@@ -523,6 +523,9 @@ pub fn App() -> impl IntoView {
                             on_select_branch=git_actions.on_select_branch
                             on_sync_click=on_sync_click
                         />
+                        <Show when=move || ui.plugins_open.get()>
+                            <crate::components::PluginsDialog/>
+                        </Show>
                         <Show when=move || show_settings.get() fallback=|| ()>
                             <Settings
                                 on_set_theme=on_set_theme

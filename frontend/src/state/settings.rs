@@ -48,6 +48,8 @@ pub enum ConfigurationSection {
 #[derive(Clone, Copy)]
 pub struct SettingsState {
     pub show_settings: RwSignal<bool>,
+    /// Initial category requested when opening the settings dialog.
+    pub requested_tab: RwSignal<usize>,
     pub configuration: RwSignal<Option<ConfigurationSection>>,
     pub model_setup: RwSignal<openwebide_core::ModelSetup>,
     pub model_defaults_saving: RwSignal<Option<u64>>,
@@ -96,6 +98,7 @@ impl SettingsState {
     pub fn new(theme: Theme, bridge_url: String) -> Self {
         Self {
             show_settings: RwSignal::new(false),
+            requested_tab: RwSignal::new(0),
             configuration: RwSignal::new(None),
             model_setup: RwSignal::new(Default::default()),
             model_defaults_saving: RwSignal::new(None),

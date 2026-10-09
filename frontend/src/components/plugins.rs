@@ -17,6 +17,8 @@ pub fn Plugins() -> impl IntoView {
     let state = expect_context::<PluginsState>();
     let actions = expect_context::<ProjectPluginActions>();
     let projects = expect_context::<ProjectsState>();
+    let ui = expect_context::<crate::state::ui::UiState>();
+    let settings = expect_context::<crate::state::settings::SettingsState>();
     let attempted = RwSignal::new(false);
     let auth = expect_context::<crate::state::auth::AuthState>();
     Effect::new(move |_| {
@@ -53,17 +55,11 @@ pub fn Plugins() -> impl IntoView {
             <FormSection title="Installed packages" description="Enabling a package adds managed skills to this project. Version changes take effect here when you apply them.">
                 <For each=move ||state.installations.get() key=|e|(e.prepared.source.repository.clone(),e.prepared.source.path.clone(),e.revision) children=move |entry|view!{<InstalledPackage entry=entry/>}/>
             </FormSection>
-            <DisclosurePanel summary=||"Marketplace sources">
-                <p class="form-hint">"Each catalog lists packages in its own public Git repository. Leave the reference empty to follow its default branch."</p>
-                <For each=move ||state.marketplaces.get().sources key=|s|(s.repository.clone(),s.reference.clone(),s.path.clone()) children=move |source| {
-                    let official=source==MarketplaceSource::official();let remove=StoredValue::new(source.clone());
-                    view!{<p class="form-hint">{format!("{} · {} · {}",source.repository,if source.reference.is_empty(){"default branch"}else{&source.reference},source.path)}</p><Show when=move ||official><p class="form-hint">"Official marketplace · always available"</p></Show><Show when=move ||!official><Button disabled=state.busy.read_only() on_click=Callback::new(move |_|{let mut sources=state.marketplaces.get_untracked().sources;sources.retain(|s|s!=&remove.get_value());actions.save_sources.run(sources);})>"Remove marketplace"</Button></Show>}
-                }/>
-                <FormField label="Repository URL"><TextInput label="Marketplace repository URL" value=state.marketplace_repository.read_only() on_change=Callback::new(move |v|state.marketplace_repository.set(v)) maxlength=2048 disabled=state.busy.read_only()/></FormField>
-                <FormField label="Reference"><TextInput label="Marketplace reference" value=state.marketplace_reference.read_only() on_change=Callback::new(move |v|state.marketplace_reference.set(v)) maxlength=256 disabled=state.busy.read_only()/></FormField>
-                <FormField label="Catalog path"><TextInput label="Marketplace catalog path" value=state.marketplace_path.read_only() on_change=Callback::new(move |v|state.marketplace_path.set(v)) maxlength=512 disabled=state.busy.read_only()/></FormField>
-                <InlineActions><Button disabled=state.busy.read_only() on_click=Callback::new(move |_|{let mut sources=state.marketplaces.get_untracked().sources;sources.push(MarketplaceSource{repository:state.marketplace_repository.get_untracked().trim().into(),reference:state.marketplace_reference.get_untracked().trim().into(),path:state.marketplace_path.get_untracked().trim().into()});actions.save_sources.run(sources);})>"Add marketplace"</Button></InlineActions>
-            </DisclosurePanel>
+            <Button on_click=Callback::new(move |_| {
+                ui.plugins_open.set(false);
+                settings.requested_tab.set(5);
+                settings.show_settings.set(true);
+            })>"Manage marketplace sources"</Button>
             <DisclosurePanel summary=||"Install a pinned package manually">
                 <FormField label="Repository URL"><TextInput label="Plugin repository URL" value=state.repository.read_only() on_change=Callback::new(move |v|state.repository.set(v)) maxlength=2048 disabled=state.busy.read_only()/></FormField>
                 <FormField label="Commit"><TextInput label="Plugin commit" value=state.commit.read_only() on_change=Callback::new(move |v|state.commit.set(v)) maxlength=64 disabled=state.busy.read_only()/></FormField>
@@ -74,6 +70,50 @@ pub fn Plugins() -> impl IntoView {
         </FormSection>
     }
 }
+/// Search and package lifecycle controls opened from the status bar.
+#[component]
+pub fn PluginsDialog() -> impl IntoView {
+    let ui = expect_context::<crate::state::ui::UiState>();
+    view! {
+        <super::modal::Modal title=Signal::derive(|| "Plugins".to_string())
+            on_close=Callback::new(move |()| ui.plugins_open.set(false))
+            size=super::ui::DialogSize::Wide>
+            <super::ui::DialogBody><Plugins/></super::ui::DialogBody>
+        </super::modal::Modal>
+    }
+}
+
+/// Marketplace configuration stays separate from discovery and package lifecycle.
+#[component]
+pub fn PluginMarketplaceSources() -> impl IntoView {
+    let state = expect_context::<PluginsState>();
+    let actions = expect_context::<ProjectPluginActions>();
+    let ui = expect_context::<crate::state::ui::UiState>();
+    let settings = expect_context::<crate::state::settings::SettingsState>();
+    view! {
+        <FormSection title="Plugin marketplaces" description="Configure the public Git repositories used to discover plugins.">
+            <Show when=move ||state.busy.get()><p class="form-hint" role="status">"Working…"</p></Show>
+            <Show when=move ||state.error.get().is_some()><p class="error" role="alert">{move ||state.error.get().unwrap_or_default()}</p></Show>
+            <FormSection title="Marketplace sources">
+                <p class="form-hint">"Each catalog lists packages in its own public Git repository. Leave the reference empty to follow its default branch."</p>
+                <For each=move ||state.marketplaces.get().sources key=|s|(s.repository.clone(),s.reference.clone(),s.path.clone()) children=move |source| {
+                    let official=source==MarketplaceSource::official();let remove=StoredValue::new(source.clone());
+                    view!{<p class="form-hint">{format!("{} · {} · {}",source.repository,if source.reference.is_empty(){"default branch"}else{&source.reference},source.path)}</p><Show when=move ||official><p class="form-hint">"Official marketplace · always available"</p></Show><Show when=move ||!official><Button disabled=state.busy.read_only() on_click=Callback::new(move |_|{let mut sources=state.marketplaces.get_untracked().sources;sources.retain(|s|s!=&remove.get_value());actions.save_sources.run(sources);})>"Remove marketplace"</Button></Show>}
+                }/>
+                <FormField label="Repository URL"><TextInput label="Marketplace repository URL" value=state.marketplace_repository.read_only() on_change=Callback::new(move |v|state.marketplace_repository.set(v)) maxlength=2048 disabled=state.busy.read_only()/></FormField>
+                <FormField label="Reference"><TextInput label="Marketplace reference" value=state.marketplace_reference.read_only() on_change=Callback::new(move |v|state.marketplace_reference.set(v)) maxlength=256 disabled=state.busy.read_only()/></FormField>
+                <FormField label="Catalog path"><TextInput label="Marketplace catalog path" value=state.marketplace_path.read_only() on_change=Callback::new(move |v|state.marketplace_path.set(v)) maxlength=512 disabled=state.busy.read_only()/></FormField>
+                <InlineActions><Button disabled=state.busy.read_only() on_click=Callback::new(move |_|{let mut sources=state.marketplaces.get_untracked().sources;sources.push(MarketplaceSource{repository:state.marketplace_repository.get_untracked().trim().into(),reference:state.marketplace_reference.get_untracked().trim().into(),path:state.marketplace_path.get_untracked().trim().into()});actions.save_sources.run(sources);})>"Add marketplace"</Button></InlineActions>
+            </FormSection>
+
+            <Button on_click=Callback::new(move |_| {
+                settings.show_settings.set(false);
+                ui.plugins_open.set(true);
+            })>"Browse plugins"</Button>
+        </FormSection>
+    }
+}
+
 #[component]
 fn CatalogPackage(catalog: CachedMarketplace, plugin: CatalogPlugin) -> impl IntoView {
     let state = expect_context::<PluginsState>();

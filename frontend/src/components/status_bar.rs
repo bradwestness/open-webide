@@ -20,6 +20,7 @@ pub fn StatusBar(
     let chat = expect_context::<ChatState>();
     let git = expect_context::<GitState>();
     let show_terminal = chat.show_terminal.read_only();
+    let ui = expect_context::<crate::state::ui::UiState>();
     let layout = expect_context::<crate::state::layout::LayoutState>();
     let git_status: Signal<Option<openwebide_core::GitRepoStatus>> =
         Signal::derive(move || git.status.get());
@@ -77,6 +78,11 @@ pub fn StatusBar(
                     <super::ui::LoadingStatus label="Preparing syntax…" compact=true />
                 </Show>
             </span>
+            <button type="button" class=move || if ui.plugins_open.get() { "status-btn active" } else { "status-btn" }
+                title="Browse and manage plugins" aria-haspopup="dialog" aria-expanded=move || ui.plugins_open.get().to_string()
+                on:click=move |_| ui.plugins_open.update(|open| *open = !*open)>
+                <super::ui::Icon name=super::ui::IconName::Puzzle />"Plugins"
+            </button>
             <button
                 class=move || if show_terminal.get() { "status-btn active" } else { "status-btn" }
                 disabled=move || !layout.available(crate::state::layout::Panel::Terminal)

@@ -417,7 +417,7 @@ async fn plugins_only_custom_marketplaces_can_be_removed_in_both_modes() {
                 role: UserRole::User,
                 created_at: 0,
             });
-            view! {<openwebide_frontend::components::Plugins/>}
+            view! {<openwebide_frontend::components::PluginMarketplaceSources/>}
         });
         settle().await;
         let text = mounted.root.text_content().unwrap();
@@ -425,5 +425,105 @@ async fn plugins_only_custom_marketplaces_can_be_removed_in_both_modes() {
         assert_eq!(text.matches("Remove marketplace").count(), 1);
         assert!(!text.contains("Restore official marketplace"));
         assert!(text.contains(&MarketplaceSource::official().repository));
+    }
+}
+
+#[wasm_bindgen_test]
+async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_modes() {
+    use openwebide_frontend::components::{PluginsDialog, Settings, StatusBar};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test_with_backend(Rc::new(FakeBackend::default()), move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.auth.set_user(User {
+                id: UserId::new(1),
+                username: "test".into(),
+                role: UserRole::User,
+                created_at: 0,
+            });
+            let ui = state.ui;
+            let settings = state.settings;
+            view! {
+                <StatusBar health=RwSignal::new(None).read_only() on_toggle_terminal=|| {} />
+                <Show when=move || ui.plugins_open.get()><PluginsDialog/></Show>
+                <Show when=move || settings.show_settings.get()>
+                    <Settings on_set_theme=Callback::new(|_| ()) on_set_notifications=Callback::new(|_| ())
+                        on_set_default_prompt=Callback::new(|_| ()) on_set_bridge_url=Callback::new(|_| ()) />
+                </Show>
+            }
+        });
+        settle().await;
+        mounted.click("button[title='Browse and manage plugins']");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector("input[aria-label='Search plugins']")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            !mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Add marketplace")
+        );
+        assert!(
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Installed packages")
+        );
+        mounted.click_text("Manage marketplace sources");
+        settle().await;
+        assert!(!mounted.state.ui.plugins_open.get_untracked());
+        assert_eq!(
+            mounted
+                .element("#settings-tab-plugins")
+                .get_attribute("aria-selected")
+                .as_deref(),
+            Some("true")
+        );
+        assert!(
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Add marketplace")
+        );
+        assert!(
+            !mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Installed packages")
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector("input[aria-label='Search plugins']")
+                .unwrap()
+                .is_none()
+        );
+        mounted.click_text("Browse plugins");
+        settle().await;
+        assert!(mounted.state.ui.plugins_open.get_untracked());
+        assert!(!mounted.state.settings.show_settings.get_untracked());
+        mounted.state.auth.logout();
+        mounted.state.auth.reset_user_state(
+            mounted.state.projects,
+            mounted.state.workspace,
+            mounted.state.git,
+            mounted.state.chat,
+            mounted.state.settings,
+            mounted.state.ui,
+        );
+        settle().await;
+        assert!(!mounted.state.ui.plugins_open.get_untracked());
     }
 }
