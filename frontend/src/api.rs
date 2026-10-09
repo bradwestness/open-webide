@@ -1071,6 +1071,15 @@ impl BackendApi {
         )
         .await
     }
+    pub async fn question_command(
+        &self,
+        session: i64,
+        command: &openwebide_core::questions::QuestionCommand,
+    ) -> Result<openwebide_core::questions::QuestionResult, String> {
+        self.post(&format!("/sessions/{session}/questions"), command)
+            .await
+    }
+
     pub async fn get_todo_plan(
         &self,
         session: i64,

@@ -251,6 +251,18 @@ impl ProjectRuns {
             })
         });
         if let Some(resume) = input.resume {
+            let questions = self
+                .api
+                .get_value()
+                .question_command(
+                    input.session,
+                    &openwebide_core::questions::QuestionCommand::List,
+                )
+                .await?;
+            if !current() {
+                return Ok(());
+            }
+            openwebide_core::questions::ensure_resumable(&questions.questions, resume.anchor_id)?;
             self.chat.current_run_anchor.set(Some(resume.anchor_id));
         }
         let browser_preferences = crate::browser_preferences::capture();

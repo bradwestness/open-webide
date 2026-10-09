@@ -334,6 +334,17 @@ impl openwebide_agent::session::RunPersistence for SessionPersistence {
     async fn finish(&self) {
         let _ = self
             .store
+            .question_command(
+                self.user,
+                self.session,
+                &openwebide_core::questions::QuestionCommand::CancelRun {
+                    anchor: self.anchor,
+                },
+                now(),
+            )
+            .await;
+        let _ = self
+            .store
             .clear_tool_permissions_for_run(self.session, self.anchor)
             .await;
     }
@@ -1266,8 +1277,10 @@ type SpinMemoryExecutor = openwebide_agent::memory::MemoryTools<
     >,
     SpinMemoryPersistence,
 >;
-type SpinTaskExecutor =
+type SpinBaseTaskExecutor =
     openwebide_agent::scheduled::ScheduledTools<SpinMemoryExecutor, SpinScheduledPersistence>;
+type SpinTaskExecutor =
+    openwebide_agent::questions::QuestionTools<SpinBaseTaskExecutor, SpinQuestionPersistence>;
 type SpinTaskGate =
     openwebide_agent::policy::PolicyGate<PermissionPoller, crate::api::approvals::ApprovalAdapter>;
 #[derive(Clone)]
@@ -1282,6 +1295,17 @@ struct SpinTaskFactory {
 }
 impl SpinTaskFactory {
     fn executor(&self) -> SpinTaskExecutor {
+        openwebide_agent::questions::QuestionTools::new(
+            self.base_executor(),
+            SpinQuestionPersistence {
+                store: self.store.clone(),
+                user: self.user,
+                session: self.session,
+            },
+            self.anchor,
+        )
+    }
+    fn base_executor(&self) -> SpinBaseTaskExecutor {
         let workspace = self.base.as_ref().map(|base| {
             VfsToolExecutor::with_web_and_bridge(
                 HostFsVfs::new(base.clone()),
@@ -1527,5 +1551,25 @@ mod memory_tests {
                 assert!(executor.execute(&call).await.ok);
             }
         });
+    }
+}
+
+struct SpinQuestionPersistence {
+    store: Arc<Store<AppDb>>,
+    user: openwebide_core::UserId,
+    session: i64,
+}
+impl openwebide_agent::questions::QuestionStore for SpinQuestionPersistence {
+    async fn command(
+        &self,
+        command: &openwebide_core::questions::QuestionCommand,
+    ) -> Result<openwebide_core::questions::QuestionResult, String> {
+        self.store
+            .question_command(self.user, self.session, command, now())
+            .await
+            .map_err(|error| error.to_string())
+    }
+    async fn wait(&self) {
+        spin_sdk::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 }

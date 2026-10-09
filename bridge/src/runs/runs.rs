@@ -516,6 +516,7 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                 &mut plan.request,
                 &run.cancel,
                 SessionPersistence {
+                    anchor: anchor_id,
                     run: &run,
                     backend: &*backend,
                 },
@@ -531,6 +532,7 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
             }
             let mut events = Box::pin(openwebide_agent::session::chat_events(
                 SessionPersistence {
+                    anchor: anchor_id,
                     run: &run,
                     backend: &*backend,
                 },
@@ -619,6 +621,7 @@ pub(crate) async fn record_tool_stream_memo<B: RunBackend>(
 }
 
 struct SessionPersistence<'a, B> {
+    anchor: i64,
     run: &'a Run,
     backend: &'a B,
 }
@@ -720,6 +723,16 @@ impl<B: RunBackend> openwebide_agent::session::RunPersistence for SessionPersist
         self.run.gate.prepare(id);
     }
     async fn finish(&self) {
+        let _ = self
+            .backend
+            .question_command(
+                self.run.owner,
+                self.run.session_id,
+                &openwebide_core::questions::QuestionCommand::CancelRun {
+                    anchor: self.anchor,
+                },
+            )
+            .await;
         self.run.gate.clear();
     }
 }
@@ -730,7 +743,11 @@ async fn map_agent_events<B: RunBackend>(
     events: impl Stream<Item = AgentEvent> + Send,
 ) {
     let mut events = Box::pin(openwebide_agent::session::events(
-        SessionPersistence { run, backend },
+        SessionPersistence {
+            run,
+            backend,
+            anchor,
+        },
         run.session_id,
         anchor,
         events,
@@ -816,9 +833,13 @@ type BridgeMemoryExecutor<B> = openwebide_agent::memory::MemoryTools<
     >,
     BridgeMemoryPersistence<B>,
 >;
-type BridgeTaskExecutor<B> = openwebide_agent::scheduled::ScheduledTools<
+type BridgeBaseTaskExecutor<B> = openwebide_agent::scheduled::ScheduledTools<
     BridgeMemoryExecutor<B>,
     BridgeScheduledPersistence<B>,
+>;
+type BridgeTaskExecutor<B> = openwebide_agent::questions::QuestionTools<
+    BridgeBaseTaskExecutor<B>,
+    BridgeQuestionPersistence<B>,
 >;
 type BridgeTaskGate<B> =
     openwebide_agent::policy::PolicyGate<BridgeGate, super::backend_client::ApprovalAdapter<B>>;
@@ -846,6 +867,17 @@ impl<B> Clone for BridgeTaskFactory<B> {
 }
 impl<B: RunBackend + 'static> BridgeTaskFactory<B> {
     fn executor(&self) -> BridgeTaskExecutor<B> {
+        openwebide_agent::questions::QuestionTools::new(
+            self.base_executor(),
+            BridgeQuestionPersistence {
+                backend: self.backend.clone(),
+                user: self.run.owner,
+                session: self.run.session_id,
+            },
+            self.anchor,
+        )
+    }
+    fn base_executor(&self) -> BridgeBaseTaskExecutor<B> {
         let workspace = self.dir.as_ref().map(|dir| {
             VfsToolExecutor::with_web_and_bridge(
                 NativeFsVfs { root: dir.clone() },
@@ -944,5 +976,24 @@ impl<B: RunBackend + 'static> openwebide_agent::tasks::host::TaskFactory for Bri
             super::http_client::ReqwestHttpClient::default().with_transport(runtime.transport),
         );
         Ok((provider, self.executor(), self.gate(request)))
+    }
+}
+
+struct BridgeQuestionPersistence<B> {
+    backend: Arc<B>,
+    user: i64,
+    session: i64,
+}
+impl<B: RunBackend> openwebide_agent::questions::QuestionStore for BridgeQuestionPersistence<B> {
+    async fn command(
+        &self,
+        command: &openwebide_core::questions::QuestionCommand,
+    ) -> Result<openwebide_core::questions::QuestionResult, String> {
+        self.backend
+            .question_command(self.user, self.session, command)
+            .await
+    }
+    async fn wait(&self) {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 }

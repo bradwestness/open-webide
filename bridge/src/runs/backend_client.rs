@@ -57,6 +57,15 @@ pub trait RunBackend: Send + Sync {
     ) -> impl Future<Output = Result<openwebide_core::ProjectMemories, String>> + Send {
         async { Err("Project memory unavailable".into()) }
     }
+    fn question_command(
+        &self,
+        _user: i64,
+        _session: i64,
+        _command: &openwebide_core::questions::QuestionCommand,
+    ) -> impl Future<Output = Result<openwebide_core::questions::QuestionResult, String>> + Send
+    {
+        async { Err("Questions unavailable".into()) }
+    }
     fn get_todo_plan(
         &self,
         _user: i64,
@@ -414,6 +423,20 @@ impl RunBackend for BackendClient {
             user,
             "POST",
             &format!("/sessions/{session}/memories"),
+            serde_json::to_value(command).map_err(|error| error.to_string())?,
+        )
+        .await
+    }
+    async fn question_command(
+        &self,
+        user: i64,
+        session: i64,
+        command: &openwebide_core::questions::QuestionCommand,
+    ) -> Result<openwebide_core::questions::QuestionResult, String> {
+        self.call(
+            user,
+            "POST",
+            &format!("/sessions/{session}/questions"),
             serde_json::to_value(command).map_err(|error| error.to_string())?,
         )
         .await
@@ -1029,5 +1052,61 @@ mod assistance_tests {
         assert!(request.starts_with("post /api/models/background http/1.1"));
         assert!(request.contains("x-openwebide-user: 42\r\n"));
         assert!(request.contains("\"timeout_seconds\":5"));
+    }
+}
+
+#[cfg(test)]
+mod question_tests {
+    use super::*;
+    #[tokio::test]
+    async fn question_transport_authenticates_the_owner_and_preserves_commands_and_failures() {
+        use openwebide_core::questions::*;
+        for status in [200, 401, 500] {
+            let body = serde_json::to_string(&QuestionResult { questions: vec![] }).unwrap();
+            let response = format!(
+                "HTTP/1.1 {status} Response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let (url, captured) =
+                crate::runs::http_client::tests::capture(Box::leak(response.into_boxed_str()))
+                    .await;
+            let client = BackendClient::new(
+                format!("{url}/api"),
+                "secret".into(),
+                ReqwestHttpClient::default(),
+            );
+            let command = QuestionCommand::Reply {
+                id: "a3t1c0".into(),
+                reply: QuestionReply::Answer {
+                    answers: vec![QuestionAnswer {
+                        id: "path".into(),
+                        value: AnswerValue::Text {
+                            text: "/srv/media".into(),
+                        },
+                    }],
+                },
+            };
+            assert_eq!(
+                client.question_command(42, 7, &command).await.is_ok(),
+                status == 200
+            );
+            let request = captured.await.unwrap();
+            assert!(request.starts_with("POST /api/sessions/7/questions HTTP/1.1"));
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("x-openwebide-user: 42\r\n")
+            );
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer secret\r\n")
+            );
+            let body = request.split("\r\n\r\n").nth(1).unwrap();
+            assert_eq!(
+                serde_json::from_str::<QuestionCommand>(body).unwrap(),
+                command
+            );
+        }
     }
 }

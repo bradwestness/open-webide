@@ -25,6 +25,7 @@ UI actions, slash commands, and background refresh use the same feature entry po
 | Files and search | `Workspace`, core `Vfs`, shared path validation and ordering | Browser `BrowserFsaVfs`, backend `HostFsVfs`, bridge `NativeFsVfs` |
 | Git and terminals | `ProjectGit` / `ProjectHost`, shared Git types and bridge execution | Backend REST or authenticated browser bridge transport |
 | Chat and agent runs | `ProjectRuns`, agent `session::plan`, `chat_events`, `events`, agent loop and approval policy | Browser, Spin and bridge persistence, cancellation, permission and HTTP adapters |
+| Agent questions | Core `questions` validation, agent `QuestionTools` waiting workflow, frontend `QuestionsState` and owned SQLite question/result transactions | Browser, bridge and Spin HTTP/database and clock primitives |
 | Host administration | Core `host_request`, `inspect_host`, operation execution/recovery policy, agent host tools and frontend `HostState` | SSH OS/process primitives, resident bridge scheduling, scoped SQLite journal and authenticated API transport; server-only, project-less scope |
 | Model setup | Frontend `model_setup` connect/discover/apply facade, core detection default merging and shared provider probes | Backend server/model/configuration primitives, execution-host discovery adapters |
 | Model requests | `ModelRuntime::apply_to`, provider wire messages and stream state machines | Protocol parsers and browser/Spin/native HTTP clients |

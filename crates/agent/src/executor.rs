@@ -617,6 +617,11 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             Tool::RunCommand(args) => self.run_command(&args).await,
             Tool::Scheduled(_) => fail("schedule", "", "Scheduled task persistence is unavailable"),
             Tool::Memory(_) => fail("memory", "", "Project memory persistence is unavailable"),
+            Tool::AskUserQuestion(_) => fail(
+                "ask_user_question",
+                "",
+                "Question persistence is unavailable",
+            ),
             Tool::TodoWrite(_) => fail("todo_write", "", "Session plan persistence is unavailable"),
             Tool::HostInfo => match self.bridge.host_info().await {
                 Ok(info) => ToolOutcome {
@@ -1216,7 +1221,12 @@ mod tests {
         ]);
         let existing_tools = vfs_tools()
             .into_iter()
-            .filter(|tool| !matches!(tool.name.as_str(), "host_info" | "todo_write"))
+            .filter(|tool| {
+                !matches!(
+                    tool.name.as_str(),
+                    "host_info" | "todo_write" | "ask_user_question"
+                )
+            })
             .collect::<Vec<_>>();
         let baseline_tokens = serde_json::to_vec(&snapshot).unwrap().len().div_ceil(3);
         assert!(openwebide_core::context::tool_schema_tokens(&existing_tools) < baseline_tokens);

@@ -515,6 +515,13 @@ pub trait Backend {
     ) -> LocalBoxFuture<'a, Result<openwebide_core::ProjectMemories, String>> {
         Box::pin(async { Err("Project memory unavailable".into()) })
     }
+    fn question_command<'a>(
+        &'a self,
+        _session: i64,
+        _command: &'a openwebide_core::questions::QuestionCommand,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::questions::QuestionResult, String>> {
+        Box::pin(async { Err("Questions unavailable".into()) })
+    }
     fn get_todo_plan(
         &self,
         session: i64,
@@ -1308,6 +1315,13 @@ impl Backend for BackendApi {
         session: bool,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::ProjectMemories, String>> {
         Box::pin(BackendApi::memory_command(self, id, command, session))
+    }
+    fn question_command<'a>(
+        &'a self,
+        session: i64,
+        command: &'a openwebide_core::questions::QuestionCommand,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::questions::QuestionResult, String>> {
+        Box::pin(BackendApi::question_command(self, session, command))
     }
     fn get_todo_plan(
         &self,

@@ -364,7 +364,11 @@ fn render_tool_step(
                 >
                     <div class="tui-tool-pending">
                         <span class="tui-spinner"/>
-                        " executing tool call on host..."
+                        {move || if name_sig.get() == openwebide_core::questions::TOOL_NAME {
+                            " waiting for your answers..."
+                        } else {
+                            " executing tool call on host..."
+                        }}
                     </div>
                 </Show>
 
@@ -713,6 +717,8 @@ pub fn ChatPane(
     let chat = expect_context::<ChatState>();
     let layout = expect_context::<LayoutState>();
     let projects = expect_context::<ProjectsState>();
+    let questions = use_context::<crate::state::questions::QuestionsState>();
+    let questions_available = questions.is_some();
     let host_available = use_context::<crate::host_admin::HostState>().is_some();
     let assistance = crate::state_actions::assistance::ChatAssistance::new(
         expect_context::<crate::backend::Api>(),
@@ -919,6 +925,7 @@ pub fn ChatPane(
                 on:drop=move |event: web_sys::DragEvent| { if let Some(files) = event.data_transfer().and_then(|transfer| transfer.files()) && files.length() > 0 { event.prevent_default(); prompt_composer.import(files); } }
             style=move || format!("width: {}px; flex: none;", layout.chat_width.get())
         >
+            <Show when=move||questions_available><super::questions::QuestionsPanel/></Show>
             <Show when=move||host_available && projects.active_project.get().is_none()><super::host_admin::HostPanel/></Show>
             <div class="messages tui-stream" node_ref=scroll_ref>
             <Show
@@ -1016,7 +1023,7 @@ pub fn ChatPane(
                     <Show when=move || chat.interrupted_run.get().is_some() && !streaming.get()>
                         <div class="tui-stopped-marker">
                             "This run was interrupted. Resume continues from saved history without replaying unfinished tools. "
-                            <button class="btn send" on:click=move |_| on_resume_run.run(())>"Resume"</button>
+                            <button class="btn send" disabled=move||questions.is_some_and(|state|!state.questions.with(Vec::is_empty)) on:click=move |_| on_resume_run.run(())>"Resume"</button>
                             <button class="btn" on:click=move |_| chat.dismiss_interrupted_run()>"Dismiss"</button>
                         </div>
                     </Show>

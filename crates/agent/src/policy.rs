@@ -17,6 +17,7 @@ use crate::tools::ToolName;
 pub const AUTO_APPROVED: &[&str] = &[
     "schedule_list",
     "todo_write",
+    "ask_user_question",
     "memory_search",
     "memory_read",
     "host_info",

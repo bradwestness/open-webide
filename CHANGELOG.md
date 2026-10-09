@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add `ask_user_question` for explicit choices and free-text replies in local,
+  remote and project-less chat. Persist questions and answers across reconnects
+  and devices, reject stale replies, and support cancellation, keyboard submission
+  and phone layouts. Interrupted local runs resume from their saved answers.
+
 - Yield during parser-free warm-source entry comparison and pass its validated
   replacement into plain-row reuse, preserving exact-base checks and avoiding
   a second comparison of the same source.

@@ -109,6 +109,7 @@ pub enum Tool {
     GitStatus,
     HostInfo,
     TodoWrite(openwebide_core::TodoPlan),
+    AskUserQuestion(openwebide_core::questions::QuestionRequest),
     Memory(openwebide_core::MemoryCommand),
     Scheduled(openwebide_core::scheduled::TaskCommand),
     GitDiff(GitDiffArgs),
@@ -164,6 +165,7 @@ impl Tool {
                 }
                 openwebide_core::MemoryCommand::SetEnabled { .. } => "toggle project memory".into(),
             },
+            Tool::AskUserQuestion(_) => "Ask the user for clarification".into(),
             Tool::TodoWrite(plan) => format!("update plan ({} items)", plan.todos.len()),
             Tool::GitDiff(args) => match args.path.as_deref() {
                 Some(p) => format!("inspect git diff for '{p}'"),
@@ -195,6 +197,7 @@ pub enum ToolName {
     GitStatus,
     HostInfo,
     TodoWrite,
+    AskUserQuestion,
     ScheduleList,
     ScheduleCreate,
     ScheduleUpdate,
@@ -215,7 +218,8 @@ impl ToolName {
     pub fn cancellable(self) -> bool {
         matches!(
             self,
-            Self::RunCommand
+            Self::AskUserQuestion
+                | Self::RunCommand
                 | Self::FetchWebPage
                 | Self::SearchWeb
                 | Self::Search
@@ -236,6 +240,7 @@ impl ToolName {
         ToolName::GitStatus,
         ToolName::HostInfo,
         ToolName::TodoWrite,
+        ToolName::AskUserQuestion,
         ToolName::ScheduleList,
         ToolName::ScheduleCreate,
         ToolName::ScheduleUpdate,
@@ -263,6 +268,7 @@ impl ToolName {
             ToolName::RunCommand => "run_command",
             ToolName::GitStatus => "git_status",
             ToolName::HostInfo => "host_info",
+            ToolName::AskUserQuestion => "ask_user_question",
             ToolName::TodoWrite => "todo_write",
             ToolName::ScheduleList => "schedule_list",
             ToolName::ScheduleCreate => "schedule_create",
@@ -289,6 +295,7 @@ impl ToolName {
             ToolName::MemoryRead => ToolDefinition { name: self.as_str().into(), description: "Read a full project memory, including its current revision.".into(), parameters: json!({"type":"object","properties":{"id":{"type":"integer","minimum":1}},"required":["id"],"additionalProperties":false}) },
             ToolName::MemoryUpdate => ToolDefinition { name: self.as_str().into(), description: "Update a project memory using its current revision; read again after a conflict.".into(), parameters: json!({"type":"object","properties":{"id":{"type":"integer","minimum":1},"revision":{"type":"integer","minimum":1},"auto_title":{"type":"boolean"},"title":{"type":"string","maxLength":120},"content":{"type":"string","maxLength":4000}},"required":["id","revision","content"],"additionalProperties":false}) },
             ToolName::MemoryDelete => ToolDefinition { name: self.as_str().into(), description: "Delete a project memory using its current revision.".into(), parameters: json!({"type":"object","properties":{"id":{"type":"integer","minimum":1},"revision":{"type":"integer","minimum":1}},"required":["id","revision"],"additionalProperties":false}) },
+            ToolName::AskUserQuestion => crate::questions::definition(),
             ToolName::TodoWrite => ToolDefinition {
                 name: "todo_write".into(),
                 description: "Replace the checklist: stable IDs, at most one in_progress; [] clears it.".into(),
@@ -461,6 +468,7 @@ impl ToolName {
                 | ToolName::Search
                 | ToolName::GrepSearch
                 | ToolName::HostInfo
+                | ToolName::AskUserQuestion
                 | ToolName::TodoWrite
                 | ToolName::ScheduleList
                 | ToolName::MemoryRead
@@ -509,6 +517,7 @@ impl FromStr for ToolName {
             "run_command" => Ok(ToolName::RunCommand),
             "git_status" => Ok(ToolName::GitStatus),
             "host_info" => Ok(ToolName::HostInfo),
+            "ask_user_question" => Ok(ToolName::AskUserQuestion),
             "todo_write" => Ok(ToolName::TodoWrite),
             "schedule_list" => Ok(ToolName::ScheduleList),
             "schedule_create" => Ok(ToolName::ScheduleCreate),
@@ -648,6 +657,9 @@ pub fn parse(call: &ToolCall) -> Result<Tool, ToolArgError> {
                     error: error.to_string(),
                 })
         }
+        ToolName::AskUserQuestion => {
+            parse_as!(AskUserQuestion, openwebide_core::questions::QuestionRequest)
+        }
         ToolName::TodoWrite => parse_as!(TodoWrite, openwebide_core::TodoPlan),
         ToolName::ReadFile => parse_as!(ReadFile, ReadFileArgs),
         ToolName::WriteFile => parse_as!(WriteFile, WriteFileArgs),
@@ -774,6 +786,7 @@ mod tests {
                 openwebide_core::MemoryCommand::Delete { .. } => ToolName::MemoryDelete,
                 openwebide_core::MemoryCommand::SetEnabled { .. } => unreachable!(),
             },
+            Tool::AskUserQuestion(_) => ToolName::AskUserQuestion,
             Tool::TodoWrite(_) => ToolName::TodoWrite,
             Tool::GitDiff(_) => ToolName::GitDiff,
             Tool::GitCommit(_) => ToolName::GitCommit,
@@ -884,6 +897,7 @@ mod tests {
             ToolName::GitStatus,
             ToolName::HostInfo,
             ToolName::TodoWrite,
+            ToolName::AskUserQuestion,
             ToolName::MemorySearch,
             ToolName::MemoryRead,
             ToolName::GitDiff,

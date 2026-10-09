@@ -45,6 +45,7 @@ enum Route {
     SaveHostConnection,
     HostProbe,
     HostInput,
+    Questions,
     ScheduledResult,
     SessionRunLease,
     GetSettings,
@@ -247,6 +248,7 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("GET", ["sessions", _, "goal"]) => Some(Route::GetGoal),
         ("POST", ["sessions", _, "goal"]) => Some(Route::UpdateGoal),
         ("POST", ["sessions", _, "compact"]) => Some(Route::CompactSession),
+        ("POST", ["sessions", id, "questions"]) if numeric_id(id) => Some(Route::Questions),
         ("GET", ["sessions", _, "todos"]) => Some(Route::GetTodoPlan),
         ("POST", ["sessions", _, "todos"]) => Some(Route::WriteTodoPlan),
         ("POST", ["sessions", _, "tool-steps", "upsert"]) => Some(Route::UpsertToolStep),
@@ -567,6 +569,9 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::CompactSession), Some(user)) => {
             api::sessions::compact_session(req, state, &path, user).await
+        }
+        (Some(Route::Questions), Some(user)) => {
+            api::questions::command(req, &state, &path, user).await
         }
         (Some(Route::GetTodoPlan), Some(user)) => {
             api::sessions::get_todo_plan(&state, &path, user).await
@@ -993,6 +998,7 @@ mod tests {
             ("DELETE", "sessions/5/queue", Route::RemoveQueuedPrompt),
             ("POST", "sessions/5/queue/send", Route::ConsumeQueuedPrompt),
             ("POST", "sessions/5/fork", Route::ForkSession),
+            ("POST", "sessions/5/questions", Route::Questions),
             ("GET", "sessions/5/todos", Route::GetTodoPlan),
             ("POST", "sessions/5/todos", Route::WriteTodoPlan),
             (

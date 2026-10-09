@@ -3546,3 +3546,10 @@ button.browser-item {
 .host-resource summary, .host-operation summary { cursor: pointer; color: var(--text); }
 .host-panel pre { font-family: var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-muted); max-height: 24vh; overflow: auto; }
 .host-output { background: var(--bg); padding: 8px; }
+
+.agent-questions { border: 1px solid var(--border); background: var(--bg-panel); padding: .75rem; max-height: 55vh; overflow: auto; }
+.agent-question-form { display: grid; gap: .5rem; min-width: 0; }
+.agent-question-form fieldset { min-width: 0; }
+.agent-question-option { display: flex; gap: .5rem; align-items: start; color: var(--text); overflow-wrap: anywhere; }
+.agent-question-option small { display: block; }
+.agent-question-form textarea { width: 100%; box-sizing: border-box; }

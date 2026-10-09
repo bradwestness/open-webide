@@ -28,6 +28,7 @@ pub mod host_admin;
 pub mod memory;
 pub mod model;
 pub mod policy;
+pub mod questions;
 pub mod scheduled;
 pub mod session;
 pub mod tasks;
@@ -1504,6 +1505,219 @@ mod tests {
 
     /// An executor that pops queued outcomes, records the names of the calls
     /// it runs, and describes calls by name + args.
+    #[derive(Default)]
+    struct QuestionFixture {
+        question: Mutex<Option<openwebide_core::questions::AgentQuestion>>,
+        reply: Mutex<Option<openwebide_core::questions::QuestionReply>>,
+        fail: bool,
+        cancel_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+        cancel_sender: Mutex<Option<futures::channel::oneshot::Sender<()>>>,
+    }
+    impl crate::questions::QuestionStore for Arc<QuestionFixture> {
+        async fn command(
+            &self,
+            command: &openwebide_core::questions::QuestionCommand,
+        ) -> Result<openwebide_core::questions::QuestionResult, String> {
+            use openwebide_core::questions::*;
+            if self.fail {
+                return Err("database offline".into());
+            }
+            let mut question = self.question.lock().unwrap();
+            if let QuestionCommand::Create {
+                id,
+                anchor,
+                request,
+            } = command
+                && question.is_none()
+            {
+                *question = Some(AgentQuestion {
+                    id: id.clone(),
+                    session_id: 1,
+                    anchor_message_id: *anchor,
+                    request: request.clone(),
+                    reply: None,
+                    created_at: 1,
+                });
+            }
+            Ok(QuestionResult {
+                questions: question.iter().cloned().collect(),
+            })
+        }
+        async fn wait(&self) {
+            let reply = self.reply.lock().unwrap().clone();
+            if let Some(reply) = reply {
+                self.question.lock().unwrap().as_mut().unwrap().reply = Some(reply);
+            } else {
+                if let Some(sender) = self.cancel_sender.lock().unwrap().take() {
+                    if let Some(flag) = &self.cancel_flag {
+                        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    let _ = sender.send(());
+                }
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+    #[test]
+    fn questions_wait_for_real_replies_feed_the_model_and_cancel_without_approval_in_every_scope() {
+        use openwebide_core::questions::*;
+        futures::executor::block_on(async {
+            let request_args = QuestionRequest {
+                questions: vec![Question {
+                    id: "path".into(),
+                    title: "Which directory?".into(),
+                    options: vec![QuestionOption {
+                        label: "Default (Recommended)".into(),
+                        description: String::new(),
+                    }],
+                }],
+            };
+            for mode in [
+                Some(openwebide_core::WorkspaceMode::Local),
+                Some(openwebide_core::WorkspaceMode::Remote),
+                None,
+            ] {
+                for reply in [
+                    QuestionReply::Answer {
+                        answers: vec![QuestionAnswer {
+                            id: "path".into(),
+                            value: AnswerValue::Text {
+                                text: "/srv/media".into(),
+                            },
+                        }],
+                    },
+                    QuestionReply::Cancel,
+                ] {
+                    let store = Arc::new(QuestionFixture::default());
+                    *store.reply.lock().unwrap() = Some(reply.clone());
+                    let (provider, seen) = FakeProvider::new(vec![
+                        Ok(no_usage(ChatResponse::ToolCalls(vec![call(
+                            "wire-question",
+                            TOOL_NAME,
+                            &serde_json::to_string(&request_args).unwrap(),
+                        )]))),
+                        Ok(no_usage(ChatResponse::Text(
+                            "Continue with the reply".into(),
+                        ))),
+                    ]);
+                    let executor = crate::questions::QuestionTools::new(
+                        VfsToolExecutor::new(openwebide_core::MemoryVfs::new()).with_context(
+                            openwebide_core::RunEnvironment {
+                                mode,
+                                ..Default::default()
+                            },
+                        ),
+                        store.clone(),
+                        1,
+                    );
+                    let mut request = request();
+                    request.tools = vec![crate::questions::definition()];
+                    let events = run(
+                        provider,
+                        executor,
+                        request,
+                        AgentConfig::default(),
+                        NoopCancel,
+                        NoopGate,
+                        1,
+                    )
+                    .collect::<Vec<_>>()
+                    .await;
+                    assert!(
+                        !events
+                            .iter()
+                            .any(|event| matches!(event, AgentEvent::PermissionRequest { .. }))
+                    );
+                    let requests = seen.lock().unwrap();
+                    let result = requests[1]
+                        .messages
+                        .iter()
+                        .find(|message| message.role == Role::Tool)
+                        .unwrap();
+                    assert_eq!(result.tool_call_id.as_deref(), Some("wire-question"));
+                    assert_eq!(result.content, request_args.result_text(&reply).unwrap());
+                    assert_eq!(
+                        store
+                            .question
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .unwrap()
+                            .anchor_message_id,
+                        1
+                    );
+                }
+            }
+            // No preselected recommendation can complete a pending call, even after a transport drops.
+            let store = Arc::new(QuestionFixture::default());
+            let call = call(
+                "pending",
+                TOOL_NAME,
+                &serde_json::to_string(&request_args).unwrap(),
+            );
+            assert!(
+                futures::FutureExt::now_or_never(crate::questions::ask(&store, 1, &call)).is_none()
+            );
+            assert!(
+                store
+                    .question
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .reply
+                    .is_none()
+            );
+            let offline = Arc::new(QuestionFixture {
+                fail: true,
+                ..Default::default()
+            });
+            assert!(!crate::questions::ask(&offline, 1, &call).await.ok);
+            let (sender, receiver) = futures::channel::oneshot::channel();
+            let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stopped = Arc::new(QuestionFixture {
+                cancel_flag: Some(flag.clone()),
+                cancel_sender: Mutex::new(Some(sender)),
+                ..Default::default()
+            });
+            let (provider, _) =
+                FakeProvider::new(vec![Ok(no_usage(ChatResponse::ToolCalls(vec![
+                    call.clone(),
+                ])))]);
+            let executor =
+                crate::questions::QuestionTools::new(FakeExecutor::new(vec![]), stopped, 1);
+            let mut request = request();
+            request.tools = vec![crate::questions::definition()];
+            let cancel = TimedCancel {
+                flag,
+                receiver: futures::FutureExt::shared(futures::FutureExt::boxed(async move {
+                    let _ = receiver.await;
+                })),
+            };
+            let events = run(
+                provider,
+                executor,
+                request,
+                AgentConfig::default(),
+                cancel,
+                NoopGate,
+                1,
+            )
+            .collect::<Vec<_>>()
+            .await;
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::Cancelled))
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::ToolResult { ok: false, .. }))
+            );
+        });
+    }
+
     struct FakeExecutor {
         outcomes: Arc<Mutex<VecDeque<ToolOutcome>>>,
         executed: Arc<Mutex<Vec<String>>>,
