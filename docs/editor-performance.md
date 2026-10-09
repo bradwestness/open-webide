@@ -3227,3 +3227,31 @@ the green native/WASI/WASM/platform/browser/Docker checks after `53b9092`. This
 remains checkpoint evidence; the goal's complete release and PWA gates are open.
 The roadmap now keeps shipped preparation details in its implemented baseline
 and performance evidence, and lists only unfinished work under implementation.
+
+### Cooperative worker reply-source publication (2026-10-09)
+
+The shared source-publication policy now advances the existing resumable UTF-8
+comparison before selecting the exact minimal source delta or full source, then
+copies the selected body across byte-budgeted tasks. Synchronous publication
+drains that same policy; the syntax worker retains the completed analysis and
+its exact previous publication through 8-KiB comparison/copy batches. The wire
+shape, no-op delta behavior and 96-byte envelope threshold are unchanged.
+No parser admission limit, record cap, progress budget or timeout was raised.
+
+The worker cannot install a publication base until the source body finishes and
+the complete reply passes existing shaping checks. Cancellation during this phase
+releases the retained analysis/source and emits no partial data. An independent
+copy of the prior source policy checks full/no-op/changed/deleted sources,
+multibyte UTF-8 and combining characters with LF/CRLF at budgets 4, 7 and 8192.
+The worker cancellation test interrupts a truly near-limit literal publication,
+checks source release and missing partial bases, then verifies full recovery.
+All 567 parser-enabled core tests passed (4.21 s), and strict core all-target lint
+passed. All six optimized cooperative browser contracts passed (5.05 s) in
+both modes; 424 parser-free core tests passed (3.91 s), and strict optimized
+WASM component-test lint passed.
+
+Record-count traversal, structure/token metadata materialization, paint-source
+comparisons, JSON encoding/decoding, message-size fallback publication and runtime
+capacity growth remain unbounded. Browser request construction still drains the
+shared source policy synchronously. This change does not establish the full
+responsiveness, memory, geometry or physical PWA release gates.

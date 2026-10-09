@@ -81,6 +81,9 @@ struct SyntaxTask {
     previous: Option<(u32, std::sync::Arc<super::SyntaxAnalysis>)>,
     change: Option<crate::editor::TextChange>,
     document: super::SyntaxDocument,
+    publication: Option<super::transfer::SourcePublication>,
+    prepared: Option<(SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>)>,
+    reply_source: Option<SyntaxSource>,
 }
 enum Start {
     Task(Box<SyntaxTask>),
@@ -153,6 +156,9 @@ impl SyntaxPreparations<String> {
             previous,
             change,
             document,
+            publication: None,
+            prepared: None,
+            reply_source: None,
         })))
     }
 }
@@ -182,13 +188,54 @@ impl SyntaxTask {
             .as_ref()
             .zip(self.change.as_ref())
             .map(|((_, analysis), change)| (analysis.source_snapshot(), change));
-        self.document.prepare_resolved_cooperative(
+        if self.prepared.is_some() {
+            return self.advance_publication(should_continue, should_yield);
+        }
+        let result = self.document.prepare_resolved_cooperative(
             self.source.as_ref()?.clone(),
             self.tab_width,
             should_continue,
             should_yield,
             change,
-        )
+        )?;
+        if let Some(analysis) = &result.1 {
+            self.publication = Some(super::transfer::SourcePublication::new(
+                analysis.source().len(),
+                self.previous.is_some(),
+            ));
+            self.prepared = Some(result);
+            self.advance_publication(should_continue, should_yield)
+        } else {
+            Some(result)
+        }
+    }
+
+    fn advance_publication(
+        &mut self,
+        should_continue: &mut impl FnMut() -> bool,
+        should_yield: &mut impl FnMut() -> bool,
+    ) -> Option<(SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>)> {
+        loop {
+            if !should_continue() {
+                return Some((SyntaxStatus::Cancelled, None));
+            }
+            if should_yield() {
+                return None;
+            }
+            let source = self.prepared.as_ref()?.1.as_ref()?.source();
+            let previous = self
+                .previous
+                .as_ref()
+                .map(|(_, analysis)| analysis.source());
+            if self.publication.as_mut()?.advance(
+                source,
+                previous,
+                crate::highlight::LEXICAL_BATCH_BYTES,
+            ) {
+                self.reply_source = self.publication.take()?.finish();
+                return self.prepared.take();
+            }
+        }
     }
     fn finish(
         mut self,
@@ -201,6 +248,7 @@ impl SyntaxTask {
             status,
             prepared.as_ref(),
             self.previous.as_ref(),
+            self.reply_source.take(),
         )?;
         if let Some(prepared) = prepared {
             if published {
@@ -216,10 +264,15 @@ fn shape_reply(
     mut status: SyntaxStatus,
     prepared: Option<&std::sync::Arc<super::SyntaxAnalysis>>,
     previous: Option<&(u32, std::sync::Arc<super::SyntaxAnalysis>)>,
+    source: Option<SyntaxSource>,
 ) -> Option<(String, bool)> {
     let analysis = prepared.and_then(|value| {
-        value
-            .transfer_data_reusing(previous.map(|(ticket, analysis)| (*ticket, analysis.as_ref())))
+        let previous = previous.map(|(ticket, analysis)| (*ticket, analysis.as_ref()));
+        source
+            .map_or_else(
+                || value.transfer_data_reusing(previous),
+                |source| value.transfer_data_with_source(previous, source),
+            )
             .or_else(|| value.transfer_data())
     });
     if matches!(status, SyntaxStatus::Ready { .. }) && analysis.is_none() {
@@ -602,6 +655,84 @@ mod tests {
                 assert!(!worker.has_work());
                 assert_eq!(worker.retained_request_bytes(), 0);
             }
+        }
+    }
+
+    #[test]
+    fn pending_source_publication_cancels_without_installing_a_partial_base() {
+        for ending in ["\n", "\r\n"] {
+            let source = format!(
+                "const VALUE: &str = \"{}\";{ending}",
+                "文😀".repeat(149_000)
+            );
+            let request =
+                SyntaxRequest::new(900, "publication".into(), Language::Rust, &source, 4, None);
+            let message = serde_json::to_string(&request).unwrap();
+            let mut worker = SyntaxWorker::default();
+            assert!(worker.enqueue(&message).is_none());
+            let mut turns = 0;
+            loop {
+                let mut checks = 0;
+                assert!(
+                    worker
+                        .advance(
+                            || true,
+                            || {
+                                checks += 1;
+                                checks >= 2
+                            }
+                        )
+                        .is_none()
+                );
+                turns += 1;
+                assert!(turns < 10_000);
+                if worker
+                    .active
+                    .as_ref()
+                    .is_some_and(|task| task.publication.is_some())
+                {
+                    break;
+                }
+            }
+            let task = worker.active.as_ref().unwrap();
+            let prepared = task.prepared.as_ref().unwrap().1.as_ref().unwrap();
+            let weak = std::sync::Arc::downgrade(prepared.source_snapshot());
+            assert!(task.reply_source.is_none());
+            assert!(
+                worker
+                    .service
+                    .previous_publication(&"publication".to_owned())
+                    .is_none()
+            );
+            let mut checks = 0;
+            assert!(
+                worker
+                    .advance(
+                        || true,
+                        || {
+                            checks += 1;
+                            checks >= 2
+                        }
+                    )
+                    .is_none()
+            );
+            let reply = worker.advance(|| false, || false).unwrap();
+            let reply: SyntaxReply = serde_json::from_str(&reply).unwrap();
+            assert_eq!(reply.status, SyntaxStatus::Cancelled);
+            assert!(reply.analysis.is_none());
+            assert!(!worker.has_work());
+            assert!(weak.upgrade().is_none());
+            assert!(
+                worker
+                    .service
+                    .previous_publication(&"publication".to_owned())
+                    .is_none()
+            );
+            assert!(worker.enqueue(&message).is_none());
+            let reply = worker.advance(|| true, || false).unwrap();
+            let (status, prepared) = SyntaxReply::receive(&reply, 900, &source).unwrap();
+            assert!(matches!(status, SyntaxStatus::Ready { .. }));
+            assert_eq!(prepared.unwrap().source(), source);
         }
     }
 

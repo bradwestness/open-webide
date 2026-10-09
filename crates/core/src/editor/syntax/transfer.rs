@@ -1,9 +1,11 @@
 //! Validated data crossing the worker boundary; parser allocations never cross it.
+mod publication;
 use super::{super::structure::StructurePublication, SyntaxAnalysis};
 use crate::{
     editor::*,
     highlight::{Token, TokenKind},
 };
+pub(super) use publication::SourcePublication;
 use std::sync::Arc;
 
 pub const MAX_ANALYSIS_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
@@ -107,25 +109,9 @@ impl SourceReplacement {
 
 impl SyntaxSource {
     pub fn publication(source: &str, previous: Option<&str>) -> Self {
-        if let Some(previous) = previous {
-            let change = text_change(previous, source);
-            let (start, end, text) = change.map_or((0, 0, ""), |change| {
-                (
-                    change.range.start,
-                    change.range.end,
-                    &source[change.range.start..change.new_end],
-                )
-            });
-            // Reserve envelope overhead; full replacements remain standalone.
-            if text.len().saturating_add(96) < source.len() {
-                return Self::Replace {
-                    start,
-                    end,
-                    text: text.into(),
-                };
-            }
-        }
-        Self::Full(source.into())
+        let mut work = SourcePublication::new(source.len(), previous.is_some());
+        while !work.advance(source, previous, crate::highlight::LEXICAL_BATCH_BYTES) {}
+        work.finish().expect("completed source publication")
     }
 
     pub(super) fn result_length(&self, previous: Option<&str>) -> Option<usize> {
@@ -252,6 +238,17 @@ impl SyntaxAnalysis {
         &self,
         previous: Option<(u32, &SyntaxAnalysis)>,
     ) -> Option<SyntaxAnalysisData> {
+        let source = SyntaxSource::publication(
+            &self.source,
+            previous.map(|(_, analysis)| analysis.source()),
+        );
+        self.transfer_data_with_source(previous, source)
+    }
+    pub(super) fn transfer_data_with_source(
+        &self,
+        previous: Option<(u32, &SyntaxAnalysis)>,
+        source: SyntaxSource,
+    ) -> Option<SyntaxAnalysisData> {
         if self.record_count() > MAX_ANALYSIS_RECORDS {
             return None;
         }
@@ -303,10 +300,6 @@ impl SyntaxAnalysis {
             }
             data
         });
-        let source = SyntaxSource::publication(
-            &self.source,
-            previous.map(|(_, analysis)| analysis.source()),
-        );
         reused |= matches!(source, SyntaxSource::Replace { .. });
         let data = SyntaxAnalysisData {
             source,

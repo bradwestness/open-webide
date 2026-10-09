@@ -60,7 +60,7 @@ tracks the remaining work rather than every optimization already shipped.
 | Navigation and review | Find/Replace; line numbers; horizontal scrolling and linked split scrolling; Edit/Inline/Split diffs; supported previews and Markdown change gutters/word differences; pending-edit review and agent context. |
 | Tabs, appearance and recovery | Tab context actions; five Monaspace families; texture healing and ligature toggles enabled by default; retained caret/selection/scroll and database-backed editor recovery. Real folder-permission recovery still needs device verification. |
 | Selection and browser input | Multiple/rectangular selections and clipboard transactions; scoped native windows for eligible unwrapped views; automated Chromium composition and pointer checks. The recorded line-end caret bug is fixed and user-verified in the localhost PWA. |
-| Preparation and ownership | Rust/WASM worker and cooperative fallback; retained source/token/structure allocations; bounded worker delta reconstruction and final structure metadata, parsed/lexical region reconciliation and retained fallback collection; bounded eligible unwrapped paragraph probes, exact overlap validation, exact carets from retained anchors/current painted coverage and conservative complete-layout fallback. Current-file progress is shown during preparation. Matching trusted font notifications retain current in-flight work. |
+| Preparation and ownership | Rust/WASM worker and cooperative fallback; retained source/token/structure allocations; bounded worker delta reconstruction/reply-source publication and final structure metadata, parsed/lexical region reconciliation and retained fallback collection; bounded eligible unwrapped paragraph probes, exact overlap validation, exact carets from retained anchors/current painted coverage and conservative complete-layout fallback. Current-file progress is shown during preparation. Matching trusted font notifications retain current in-flight work. |
 
 **Remaining implementation**:
 
@@ -85,7 +85,8 @@ tracks the remaining work rather than every optimization already shipped.
   scratch allocation and remaining final publication work. Synchronous document
   indexes still shift/splice in place; immutable retained tables must remain exact.
 - [ ] **Source ownership and storage:** finish external parser snapshots,
-  changed-revision paint/transport source comparisons, transport serialization,
+  remaining changed-revision paint/transport comparisons, metadata materialization
+  and transport serialization,
   message decoding, diff shaping and native-text materialization. Bound remaining
   initial capacity allocation, folded/bounded projection assembly, retained
   row/coordinate copies, changed indentation-guide copies and storage suffix

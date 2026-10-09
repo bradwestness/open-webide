@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Compare and copy syntax-worker reply sources across bounded UTF-8 batches,
+  preserving exact full/delta publication and discarding cancelled partial replies
+  before they become a reusable analysis base.
+
 - Collect retained lexical fallback regions across bounded batches before parsed
   context reconciliation, sharing metadata until individual records are copied
   and shifted into document coordinates in both workspace modes.
