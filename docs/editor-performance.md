@@ -2608,3 +2608,36 @@ and near-limit geometry matrices pass, as do trusted release composition,
 undo/redo and full LF/CRLF source checks in both modes. These are supporting engine
 checks, not physical IME, touch, assistive-technology or native folder-permission
 verification. This checkpoint's CI remains required.
+
+
+### Editor verification follow-ups (2026-10-09 UTC)
+
+Main checkpoint `87fd6cb`, which contains the ordered-coordinate improvements
+and accessible native-input labels, passed all five jobs in
+[CI run 37872165452](https://github.com/openwebide/openwebide/actions/runs/37872165452).
+The preceding `3f36586` run failed its UI suite. Its first failure was the pointer
+tooltip contract; later menu/composer focus failures followed. A local release run
+reproduced the tooltip and three later failures (454 passed, four failed), whereas
+the two tooltip contracts passed in isolation.
+
+The pointer fixture omitted the app stylesheet: its popup participated in page
+layout instead of being a fixed overlay. With production styles restored, the
+complete ordinary release suite passes 18 unit, 458 component and four adapter
+contracts, including every formerly failing case. Assertions and timeouts remain
+unchanged. The two dedicated font/limit matrices are separate from this ordinary
+suite; their preceding passes remain historical evidence.
+
+The next cold-input checkpoint retains tab presence in each immutable long-row
+coordinate index. Admission reuses that fact instead of rescanning the source;
+its unsupported-layout rules remain unchanged. All 497 core tests, strict
+core/WASM lint and the existing both-mode initial-input admission/failure/ownership
+contract pass. This change has no new performance samples and does not complete
+wrapped/nonuniform startup or the responsiveness/memory gate.
+
+The accessible-input checkpoint also passes eight release-app cases: both modes,
+LF/CRLF and pending-worker/bounded-native input. Chromium exposes the file-specific
+input name and current keyboard description; trusted Ctrl+M, Tab and Shift+Tab
+move focus in both directions without changing text or selection. Commit/cancel,
+undo/redo and recovered source remain lossless. These disposable local drafts have
+no native directory handles. Physical input devices, installed PWAs, screen
+readers, touch, folder permissions and the remaining editor gates stay open.

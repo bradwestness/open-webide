@@ -59,7 +59,9 @@ tracks the remaining work rather than every optimization already shipped.
 - [ ] **Cold startup and native input:** finish bounded initial input for wrapped,
   nonuniform and unsupported long tabbed/bidirectional rows, and remove remaining
   initial full-source shaping. Eligible unwrapped uniform files now use bounded
-  startup input regardless of the initial caret or long-row position. Finish cold
+  startup input regardless of the initial caret or long-row position. Long-row tab
+  admission reuses immutable coordinate metadata; wrapped, nonuniform and unsupported
+  rows still require complete layout. Finish cold
   wrapped input, touch pointer selection,
   source-owned caret/selection and complete document extents. Preserve composition
   mappings and complete-native fallback where a bounded view cannot be proved.

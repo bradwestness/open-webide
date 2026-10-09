@@ -9,6 +9,12 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Use production tooltip styling in browser regressions, avoiding layout-induced
+  dismissal and cascading menu/composer focus failures.
+
+- Reuse immutable long-row tab metadata during cold native-input admission,
+  avoiding repeated source scans while preserving complete-layout fallbacks.
+
 - Name the editor input for its file and announce Ctrl+M Tab-navigation changes
   to assistive technology, with current keyboard guidance on the native input.
 
