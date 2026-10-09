@@ -2790,3 +2790,25 @@ seconds. Combined ordinary coverage is 461 component contracts, all 19 unit
 tests and four adapter integrations. Both expensive matrices passed in the first
 complete run with the same production parser code. These are local results;
 the partitioned Linux workflow still needs its own successful run.
+
+### Cooperative parser-free entry and replacement reuse (2026-10-09)
+
+Cooperative preparation now compares warm parser-free sources with the same
+resumable UTF-8 job used for parser-backed files. The entry equality check no
+longer synchronously traverses an unresolved retained plain source. Its validated
+replacement passes into plain-row preparation, where only the exact compatible
+retained base may bypass a second comparison. Other base allocations still take
+ordinary cooperative comparison; source settings/language mismatches take fresh
+preparation. Existing synchronous callers remain synchronous.
+
+All 511 parser-enabled and 399 minimal core tests pass, with strict core and
+WASM frontend lint. The fresh-analysis comparison matrix now includes SQL and
+plain documents alongside Rust, TypeScript and admitted Markdown, with LF/CRLF.
+Exact-base row reuse, equal text in distinct allocations, normalization, incompatible
+languages and warm cancellation retain regression coverage. All three optimized
+cooperative Chromium contracts pass, including a larger SQL document with a
+630-kB first row, warm updates and exact raw-source publication in both modes.
+
+Admission, row/index assembly, paint/transport comparisons, final publication,
+geometry, process memory and physical input/device gates remain open. These
+results do not establish full editor completion or Linux CI reliability.

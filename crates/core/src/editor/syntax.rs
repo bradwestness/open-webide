@@ -239,7 +239,7 @@ impl SyntaxDocument {
         should_continue: &mut impl FnMut() -> bool,
     ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
         let status = self
-            .advance_lexical(status, should_continue, &mut || false)
+            .advance_lexical(status, should_continue, &mut || false, None)
             .expect("synchronous lexical preparation does not yield");
         if !matches!(status, SyntaxStatus::Ready { .. }) {
             return (status, None);

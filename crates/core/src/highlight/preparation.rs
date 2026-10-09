@@ -192,6 +192,80 @@ mod tests {
     use super::*;
     use crate::highlight::{Language, highlight_lines, share_token_rows};
 
+    #[cfg(feature = "editor-parser")]
+    #[test]
+    fn validated_replacements_reuse_only_the_exact_compatible_base() {
+        let source = Arc::new(format!(
+            "header\r\n{}\r\ntail",
+            "文😀e\u{301} ".repeat(20_000)
+        ));
+        for normalize in [false, true] {
+            let make = |source| {
+                if normalize {
+                    LexicalPreparation::for_textarea(source, Language::Sql)
+                } else {
+                    LexicalPreparation::new(source, Language::Sql)
+                }
+            };
+            let mut prior = make(source.clone());
+            while !prior.is_complete() {
+                prior.advance(128, usize::MAX);
+            }
+            let prior = Arc::new(prior.finish_snapshot().unwrap());
+            let revised = Arc::new(source.replacen("header", "revised", 1));
+            let change = crate::editor::text_change(&source, &revised).unwrap();
+            for trusted in [false, true] {
+                let base = if trusted {
+                    source.clone()
+                } else {
+                    Arc::new(source.as_ref().clone())
+                };
+                let mut job =
+                    make(revised.clone()).reuse_validated_change(prior.clone(), &base, &change);
+                assert_eq!(job.pending_change.is_some(), !trusted);
+                while !job.is_complete() {
+                    job.advance_bounded(128, 4096);
+                }
+                let snapshot = job.finish_snapshot().unwrap();
+                assert!(Arc::ptr_eq(&snapshot.source, &revised));
+                assert_eq!(snapshot.retokenized_rows(), 1);
+                assert!(Arc::ptr_eq(&snapshot.tokens()[1], &prior.tokens()[1]));
+                let expected = if normalize {
+                    revised.replace("\r\n", "\n")
+                } else {
+                    revised.to_string()
+                };
+                assert_eq!(
+                    snapshot.tokens().as_ref(),
+                    &share_token_rows(highlight_lines(&expected, Language::Sql))
+                );
+            }
+            let equal = Arc::new(source.as_ref().clone());
+            let job = make(equal.clone()).reuse_validated_change(
+                prior.clone(),
+                &source,
+                &crate::editor::TextChange {
+                    range: 0..0,
+                    new_end: 0,
+                },
+            );
+            assert!(job.is_complete());
+            let equal = job.finish_snapshot().unwrap();
+            assert!(Arc::ptr_eq(equal.tokens(), prior.tokens()));
+            assert!(Arc::ptr_eq(&equal.rows, &prior.rows));
+            let mut incompatible = LexicalPreparation::new(revised.clone(), Language::Plain)
+                .reuse_validated_change(prior, &source, &change);
+            assert!(incompatible.previous.is_none());
+            while !incompatible.is_complete() {
+                incompatible.advance_bounded(128, 4096);
+            }
+            assert_eq!(
+                incompatible.finish().unwrap(),
+                share_token_rows(highlight_lines(&revised, Language::Plain))
+            );
+        }
+    }
+
     #[test]
     fn cooperative_source_comparison_matches_exact_unicode_changes() {
         let variants = [
