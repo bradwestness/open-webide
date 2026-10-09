@@ -62,7 +62,7 @@ export function fakeBridgeHttp() {
         const body = JSON.parse((await request.text()) || '{}');
         const path = new URL(request.url).pathname;
         mock.calls.push({ path, body, authorization: request.headers.get('Authorization') });
-        if (path === '/plugins/prepare') return mock.invalid ? new Response(JSON.stringify({error:'preparation failed'}), {status:400}) : new Response(mock.plugin);
+        if (path === '/plugins/prepare' || path === '/plugins/package') return mock.invalid ? new Response(JSON.stringify({error:'preparation failed'}), {status:400}) : new Response(mock.plugin);
         if (path === '/scheduler/host') return new Response(JSON.stringify({id:'paired-host', name:'Test host', last_seen:0}));
         if (path === '/host/info' && !mock.hanging) return new Response(JSON.stringify({host_name:'bridge-host', os:'linux', scope:'bridge host', cpu:'Test CPU', logical_cores:8, ram_total_bytes:32000000000, ram_available_bytes:16000000000, disks:[], temperatures:[], gpus:[], fans:[], notes:[]}));
         if (path === '/environment' && !mock.hanging) return new Response(JSON.stringify({os: 'linux', shell: 'sh'}));
@@ -2179,6 +2179,16 @@ async fn local_plugin_transport_uses_paired_credentials_and_propagates_host_fail
         calls[0]["body"]["source"],
         serde_json::to_value(&prepared.source).unwrap()
     );
+    let package = openwebide_core::plugins::testing::package();
+    set_bridge_plugin(&http.0, &serde_json::to_string(&package).unwrap());
+    assert_eq!(client.plugin_package(&prepared).await.unwrap(), package);
+    let calls: Vec<serde_json::Value> = serde_json::from_str(&bridge_calls(&http.0)).unwrap();
+    assert_eq!(calls[1]["path"], "/plugins/package");
+    assert_eq!(calls[1]["authorization"], "Bearer plugin-test-token");
+    assert_eq!(
+        calls[1]["body"]["prepared"],
+        serde_json::to_value(&prepared).unwrap()
+    );
     bridge_invalid(&http.0);
     assert!(
         client
@@ -2187,6 +2197,157 @@ async fn local_plugin_transport_uses_paired_credentials_and_propagates_host_fail
             .unwrap_err()
             .contains("HTTP 400")
     );
+    assert!(
+        client
+            .plugin_package(&prepared)
+            .await
+            .unwrap_err()
+            .contains("HTTP 400")
+    );
+    openwebide_frontend::idb::set_bridge_pairing_token(previous.as_deref().unwrap_or(""))
+        .await
+        .unwrap();
+}
+
+#[wasm_bindgen_test]
+async fn plugins_install_and_enable_use_the_same_workflow_on_paired_and_remote_hosts() {
+    use openwebide_core::{
+        User, UserId, UserRole, WorkspaceMode,
+        plugins::{ProjectPlugin, testing::package},
+    };
+    use openwebide_frontend::{
+        project_plugins::ProjectPluginActions, state::plugins::PluginsState,
+    };
+    let previous = openwebide_frontend::idb::get_bridge_pairing_token()
+        .await
+        .unwrap();
+    openwebide_frontend::idb::set_bridge_pairing_token("plugin-contract-token")
+        .await
+        .unwrap();
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let http = HttpGuard(fake_bridge_http());
+        set_bridge_plugin(
+            &http.0,
+            &serde_json::to_string(&package().prepared).unwrap(),
+        );
+        let fixture = contractFolder().await;
+        let handle = contractHandle(&fixture);
+        let captured = std::rc::Rc::new(std::cell::Cell::new(None));
+        let slot = captured.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.auth.set_user(User {
+                id: UserId::new(1),
+                username: "owner".into(),
+                role: UserRole::User,
+                created_at: 0,
+            });
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.projects.local_handles.update(|handles| {
+                handles.insert(1, handle.unchecked_into());
+            });
+            state
+                .settings
+                .bridge_url
+                .set("ws://bridge.test:3001".into());
+            slot.set(Some((
+                expect_context::<PluginsState>(),
+                expect_context::<ProjectPluginActions>(),
+            )));
+            view! {<div/>}
+        });
+        settle().await;
+        let (plugins, actions) = captured.get().unwrap();
+        let package = package();
+        let (send, receive) = futures::channel::oneshot::channel();
+        send.send(Ok(package.prepared.clone())).unwrap();
+        mounted
+            .state
+            .fake
+            .plugin_preparations
+            .borrow_mut()
+            .push_back(receive);
+        plugins
+            .repository
+            .set(package.prepared.source.repository.clone());
+        plugins.commit.set(package.prepared.source.commit.clone());
+        plugins.path.set(package.prepared.source.path.clone());
+        actions.install.run(());
+        super::support::wait_until("plugin host installation", move || {
+            !plugins.busy.get_untracked()
+        })
+        .await;
+        assert!(
+            plugins.error.get_untracked().is_none(),
+            "{:?}",
+            plugins.error.get_untracked()
+        );
+        assert_eq!(plugins.installations.get_untracked().len(), 1);
+        assert!(mounted.state.fake.plugin_commands.borrow().is_empty());
+        set_bridge_plugin(&http.0, &serde_json::to_string(&package).unwrap());
+        let (send, receive) = futures::channel::oneshot::channel();
+        send.send(Ok(package.clone())).unwrap();
+        mounted
+            .state
+            .fake
+            .plugin_packages
+            .borrow_mut()
+            .push_back(receive);
+        let (send, receive) = futures::channel::oneshot::channel();
+        send.send(Ok(vec![ProjectPlugin {
+            id: 1,
+            revision: 1,
+            enabled: true,
+            prepared: package.prepared.clone(),
+        }]))
+        .unwrap();
+        mounted
+            .state
+            .fake
+            .project_plugin_results
+            .borrow_mut()
+            .push_back(receive);
+        actions
+            .enable
+            .run(plugins.installations.get_untracked()[0].clone());
+        super::support::wait_until("plugin activation", move || !plugins.busy.get_untracked())
+            .await;
+        assert!(
+            plugins.error.get_untracked().is_none(),
+            "{:?}",
+            plugins.error.get_untracked()
+        );
+        assert!(plugins.project_plugins.get_untracked()[0].enabled);
+        let commands = mounted.state.fake.plugin_commands.borrow().clone();
+        let openwebide_core::plugins::ProjectPluginCommand::Enable {
+            package: enabled, ..
+        } = &commands[0].1
+        else {
+            panic!("Expected activation")
+        };
+        assert_eq!(**enabled, package);
+        if mode == WorkspaceMode::Local {
+            assert!(mounted.state.fake.plugin_requests.borrow().is_empty());
+            let calls: Vec<serde_json::Value> =
+                serde_json::from_str(&bridge_calls(&http.0)).unwrap();
+            assert!(
+                calls
+                    .iter()
+                    .filter(|c| c["path"]
+                        .as_str()
+                        .is_some_and(|p| p.starts_with("/plugins/")))
+                    .all(|c| c["authorization"] == "Bearer plugin-contract-token")
+            );
+        } else {
+            assert_eq!(mounted.state.fake.plugin_requests.borrow().len(), 1);
+        }
+        drop(commands);
+        drop(mounted);
+        contractCleanup(&fixture).await;
+    }
     openwebide_frontend::idb::set_bridge_pairing_token(previous.as_deref().unwrap_or(""))
         .await
         .unwrap();

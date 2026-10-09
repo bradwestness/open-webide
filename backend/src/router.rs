@@ -64,6 +64,13 @@ enum Route {
     SessionSkillCommand,
     ListProjects,
     ListPlugins,
+    ListMarketplaces,
+    SaveMarketplaces,
+    RefreshMarketplaces,
+    ListProjectPlugins,
+    ProjectPluginCommand,
+    RemovePlugin,
+    PluginPackage,
     RecordPlugin,
     PreparePlugin,
     GetEditorRecovery,
@@ -220,6 +227,17 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("GET", ["sessions", id, "skills"]) if numeric_id(id) => Some(Route::GetSessionSkills),
         ("POST", ["sessions", id, "skills"]) if numeric_id(id) => Some(Route::SessionSkillCommand),
         ("GET", ["projects"]) => Some(Route::ListProjects),
+        ("GET", ["plugin-marketplaces"]) => Some(Route::ListMarketplaces),
+        ("POST", ["plugin-marketplaces"]) => Some(Route::SaveMarketplaces),
+        ("POST", ["plugin-marketplaces", "refresh"]) => Some(Route::RefreshMarketplaces),
+        ("POST", ["plugins", "remove"]) => Some(Route::RemovePlugin),
+        ("GET", ["projects", id, "plugins"]) if numeric_id(id) => Some(Route::ListProjectPlugins),
+        ("POST", ["projects", id, "plugins"]) if numeric_id(id) => {
+            Some(Route::ProjectPluginCommand)
+        }
+        ("POST", ["projects", id, "plugins", "package"]) if numeric_id(id) => {
+            Some(Route::PluginPackage)
+        }
         ("GET", ["plugins"]) => Some(Route::ListPlugins),
         ("POST", ["plugins"]) => Some(Route::RecordPlugin),
         ("POST", ["projects", id, "plugins", "prepare"]) if numeric_id(id) => {
@@ -461,6 +479,25 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::GetProjectSkills), Some(user)) => {
             api::skills::get(&state, &path, user, false).await
+        }
+        (Some(Route::ListMarketplaces), Some(user)) => {
+            api::plugins::marketplaces(&state, user).await
+        }
+        (Some(Route::SaveMarketplaces), Some(user)) => {
+            api::plugins::save_marketplaces(req, &state, user).await
+        }
+        (Some(Route::RefreshMarketplaces), Some(user)) => {
+            api::plugins::refresh_marketplaces(&state, user).await
+        }
+        (Some(Route::RemovePlugin), Some(user)) => api::plugins::remove(req, &state, user).await,
+        (Some(Route::ListProjectPlugins), Some(user)) => {
+            api::plugins::project_list(&state, &path, user).await
+        }
+        (Some(Route::ProjectPluginCommand), Some(user)) => {
+            api::plugins::project_command(req, &state, &path, user).await
+        }
+        (Some(Route::PluginPackage), Some(user)) => {
+            api::plugins::package(req, &state, &path, user).await
         }
         (Some(Route::ListPlugins), Some(user)) => api::plugins::list(&state, user).await,
         (Some(Route::RecordPlugin), Some(user)) => api::plugins::record(req, &state, user).await,
@@ -1093,6 +1130,17 @@ mod tests {
             ("POST", "projects/5/files/create", Route::FilesPost),
             ("POST", "projects/5/files/copy", Route::FilesPost),
             ("DELETE", "projects/5/files/delete", Route::FilesDelete),
+            ("GET", "plugin-marketplaces", Route::ListMarketplaces),
+            ("POST", "plugin-marketplaces", Route::SaveMarketplaces),
+            (
+                "POST",
+                "plugin-marketplaces/refresh",
+                Route::RefreshMarketplaces,
+            ),
+            ("POST", "plugins/remove", Route::RemovePlugin),
+            ("GET", "projects/5/plugins", Route::ListProjectPlugins),
+            ("POST", "projects/5/plugins", Route::ProjectPluginCommand),
+            ("POST", "projects/5/plugins/package", Route::PluginPackage),
             ("GET", "plugins", Route::ListPlugins),
             ("POST", "plugins", Route::RecordPlugin),
             ("POST", "projects/5/plugins/prepare", Route::PreparePlugin),

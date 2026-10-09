@@ -59,11 +59,11 @@ pub fn Skills() -> impl IntoView {
                     </div>
                 </Show>
                 <For each=move ||state.data.get().map_or_else(Vec::new,|data|data.entries) key=|entry|(entry.id,entry.revision) children=move |entry| {
-                    let edit=entry.clone();let export=entry.clone();let id=entry.id;let revision=entry.revision;let name=entry.draft.name.clone();let disabled= !entry.draft.enabled;
+                    let managed=entry.plugin.is_some();let origin=entry.plugin.as_ref().map(|p|format!("From {}/{} {}. Manage in Settings → Plugins.",p.publisher,p.name,p.version));let edit=StoredValue::new(entry.clone());let export=entry.clone();let id=entry.id;let revision=entry.revision;let name=entry.draft.name.clone();let disabled= !entry.draft.enabled;
                     view! {<super::ui::DisclosurePanel class="memory-entry" summary=move ||view!{<span class="memory-title">{name.clone()}{disabled.then_some(" (disabled)")}</span>}>
                         <p class="memory-content">{entry.draft.description}</p><p class="memory-content">{entry.draft.instructions}</p>
                         <p class="form-hint">{format!("{} supporting resources",entry.draft.resources.len())}</p>
-                        <div class="form-actions"><button class="btn ghost" disabled=move ||state.busy.get() on:click=move |_|actions.edit.run(Some(edit.clone()))>"Edit"</button><button class="btn ghost" disabled=move ||state.busy.get() on:click=move |_|actions.export.run(export.clone())>"Export ZIP"</button><button class="btn ghost" disabled=move ||state.busy.get() on:click=move |_|actions.command.run(SkillCommand::Delete {id,revision})>"Delete"</button></div>
+                        <p class="form-hint">{origin}</p><div class="form-actions"><Show when=move ||!managed><button class="btn ghost" disabled=move ||state.busy.get() on:click=move |_|actions.edit.run(Some(edit.get_value()))>"Edit"</button></Show><button class="btn ghost" disabled=move ||state.busy.get() on:click=move |_|actions.export.run(export.clone())>"Export ZIP"</button><Show when=move ||!managed><button class="btn ghost" disabled=move ||state.busy.get() on:click=move |_|actions.command.run(SkillCommand::Delete {id,revision})>"Delete"</button></Show></div>
                     </super::ui::DisclosurePanel>}
                 }/>
                 <Show when=move ||state.data.with(|data|data.as_ref().is_some_and(|data|data.entries.is_empty()))><p class="empty">"No project skills yet."</p></Show>

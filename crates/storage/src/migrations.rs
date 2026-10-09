@@ -22,7 +22,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 43;
+pub const SCHEMA_VERSION: i64 = 44;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -478,6 +478,11 @@ async fn apply_step<D: Db>(
         }
         43 => {
             db.execute("CREATE TABLE IF NOT EXISTS monitors (task_id INTEGER PRIMARY KEY REFERENCES scheduled_tasks(id) ON DELETE CASCADE, session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, interval_seconds INTEGER NOT NULL, remaining INTEGER NOT NULL, expires_at INTEGER NOT NULL)", &[]).await?;
+            Ok(())
+        }
+        44 => {
+            db.execute("CREATE TABLE IF NOT EXISTS project_plugins (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, repository TEXT NOT NULL, path TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, prepared TEXT NOT NULL, UNIQUE(user_id, project_id, repository, path))", &[]).await?;
+            db.execute("CREATE TABLE IF NOT EXISTS project_plugin_skills (plugin_id INTEGER NOT NULL REFERENCES project_plugins(id) ON DELETE CASCADE, skill_id INTEGER NOT NULL UNIQUE REFERENCES project_skills(id) ON DELETE CASCADE, PRIMARY KEY(plugin_id, skill_id))", &[]).await?;
             Ok(())
         }
         other => Err(StorageError::Db(format!("unknown migration step {other}"))),

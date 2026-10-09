@@ -399,6 +399,7 @@ mod tests {
             enabled: true,
             entries: (1..=25)
                 .map(|id| openwebide_core::ProjectSkill {
+                    plugin: None,
                     id,
                     revision: 1,
                     updated_at: 0,
@@ -594,6 +595,219 @@ mod tests {
                     .await
                     .ok
             );
+        });
+    }
+}
+
+/// Capture only active package contributions; personal skills remain live.
+pub fn package_snapshot(data: &ProjectSkills) -> Vec<openwebide_core::ProjectSkill> {
+    if !data.enabled {
+        return Vec::new();
+    }
+    data.entries
+        .iter()
+        .filter(|entry| entry.draft.enabled && entry.plugin.is_some())
+        .cloned()
+        .collect()
+}
+
+/// Package contributions are pinned once at run planning; user-authored skills stay live.
+pub async fn pinned_command(
+    command: &SkillCommand,
+    pinned: &[openwebide_core::ProjectSkill],
+    live: impl Future<Output = Result<ProjectSkills, String>>,
+) -> Result<ProjectSkills, String> {
+    command.validate()?;
+    if let SkillCommand::Read { id, resource } = command
+        && let Some(entry) = pinned.iter().find(|entry| entry.id == *id)
+    {
+        if resource.as_ref().is_some_and(|name| {
+            !entry
+                .draft
+                .resources
+                .iter()
+                .any(|asset| asset.name == *name)
+        }) {
+            return Err("Skill resource not found".into());
+        }
+        return Ok(ProjectSkills {
+            enabled: true,
+            entries: vec![entry.clone()],
+        });
+    }
+    if let SkillCommand::Update { id, .. } | SkillCommand::Delete { id, .. } = command
+        && pinned.iter().any(|entry| entry.id == *id)
+    {
+        return Err("Manage package skills through Settings → Plugins.".into());
+    }
+    let mut result = live.await?;
+    match command {
+        SkillCommand::List { query } => {
+            result.entries.retain(|entry| entry.plugin.is_none());
+            let query = query.to_lowercase();
+            let mut entries = pinned
+                .iter()
+                .filter(|entry| {
+                    entry.draft.name.to_lowercase().contains(&query)
+                        || entry.draft.description.to_lowercase().contains(&query)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            entries.extend(result.entries);
+            entries.truncate(openwebide_core::skills::MAX_SKILLS);
+            entries.sort_by(|a, b| a.draft.name.cmp(&b.draft.name).then(a.id.cmp(&b.id)));
+            result.entries = entries;
+        }
+        SkillCommand::Read { .. } if result.entries.iter().any(|entry| entry.plugin.is_some()) => {
+            return Err("This package skill was not enabled when the run started.".into());
+        }
+        _ => {}
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod plugin_run_tests {
+    use super::*;
+    use openwebide_core::{ProjectSkill, SkillDraft, SkillResource, plugins::PluginSkillOrigin};
+    fn entry(id: i64, managed: bool) -> ProjectSkill {
+        ProjectSkill {
+            id,
+            revision: 1,
+            updated_at: 0,
+            plugin: managed.then(|| PluginSkillOrigin {
+                publisher: "openwebide".into(),
+                name: "pr-review".into(),
+                version: "0.1.0".into(),
+                commit: "a".repeat(40),
+            }),
+            draft: SkillDraft {
+                name: format!("skill-{id}"),
+                description: "Review changes".into(),
+                instructions: "Original instructions".into(),
+                enabled: true,
+                resources: vec![SkillResource {
+                    name: "references/check.md".into(),
+                    content: "Original resource".into(),
+                    binary: false,
+                }],
+                metadata: Default::default(),
+            },
+        }
+    }
+    #[test]
+    fn running_package_reads_remain_pinned_after_update_disable_or_uninstall() {
+        futures::executor::block_on(async {
+            let pinned = vec![entry(1, true)];
+            for resource in [None, Some("references/check.md".into())] {
+                let result =
+                    pinned_command(&SkillCommand::Read { id: 1, resource }, &pinned, async {
+                        panic!("Pinned read must not consult live storage")
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(result.entries, pinned);
+            }
+            assert!(
+                pinned_command(
+                    &SkillCommand::Read {
+                        id: 1,
+                        resource: Some("missing.md".into())
+                    },
+                    &pinned,
+                    async { panic!("Unexpected live read") }
+                )
+                .await
+                .is_err()
+            );
+            for command in [
+                SkillCommand::Delete { id: 1, revision: 1 },
+                SkillCommand::Update {
+                    id: 1,
+                    revision: 1,
+                    draft: pinned[0].draft.clone(),
+                },
+            ] {
+                assert!(
+                    pinned_command(&command, &pinned, async {
+                        panic!("Package edit must be rejected")
+                    })
+                    .await
+                    .is_err()
+                );
+            }
+        });
+    }
+    #[test]
+    fn running_catalog_excludes_new_packages_and_keeps_personal_skills_live() {
+        futures::executor::block_on(async {
+            let pinned = vec![entry(1, true)];
+            let mut updated = entry(1, true);
+            updated.draft.instructions = "New package instructions".into();
+            let mut personal = entry(3, false);
+            personal.draft.instructions = "Current personal instructions".into();
+            let live = ProjectSkills {
+                enabled: true,
+                entries: vec![updated, entry(2, true), personal.clone()],
+            };
+            let list = pinned_command(
+                &SkillCommand::List {
+                    query: String::new(),
+                },
+                &pinned,
+                async { Ok(live.clone()) },
+            )
+            .await
+            .unwrap();
+            assert_eq!(list.entries, vec![pinned[0].clone(), personal.clone()]);
+            assert!(
+                pinned_command(
+                    &SkillCommand::Read {
+                        id: 2,
+                        resource: None
+                    },
+                    &pinned,
+                    async {
+                        Ok(ProjectSkills {
+                            enabled: true,
+                            entries: vec![entry(2, true)],
+                        })
+                    }
+                )
+                .await
+                .is_err()
+            );
+            let read = pinned_command(
+                &SkillCommand::Read {
+                    id: 3,
+                    resource: None,
+                },
+                &pinned,
+                async {
+                    Ok(ProjectSkills {
+                        enabled: true,
+                        entries: vec![personal.clone()],
+                    })
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(read.entries, vec![personal]);
+            let list = pinned_command(
+                &SkillCommand::List {
+                    query: "skill-1".into(),
+                },
+                &pinned,
+                async {
+                    Ok(ProjectSkills {
+                        enabled: true,
+                        entries: Vec::new(),
+                    })
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(list.entries, pinned);
         });
     }
 }

@@ -9,12 +9,14 @@ for what's still ahead.
 
 ## [Unreleased]
 
-- Install skills-only plugin packages from a repository URL, full Git commit ID
-  and package directory in Settings → Plugins. Local projects use their paired
-  host bridge and remote projects use the server bridge. Both share package
-  validation, immutable host snapshots and user-scoped database installation
-  records; failed preparation preserves previous versions. Plugin contribution
-  activation and marketplace discovery remain planned.
+- Browse the official and custom public Git marketplaces in Settings → Plugins,
+  with searchable cached releases and repository inheritance. Install pinned
+  skills packages on local or remote execution hosts, enable/disable them per
+  project, apply version changes or rollbacks explicitly, and uninstall their
+  managed skills across projects. Database revisions guard concurrent changes;
+  failed refreshes retain cached catalogs, failed preparation preserves installed
+  versions, and running tasks retain their original package instructions/resources.
+  Package skills include provenance and use existing agent skill tools.
 
 - Reveal omitted wrapped caret endpoints from exact retained glyph geometry in
   both workspace modes. Align source paint with the current scroll position

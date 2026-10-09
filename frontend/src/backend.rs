@@ -531,6 +531,55 @@ pub trait Backend {
     ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectSkills, String>> {
         Box::pin(async { Err("Project skills unavailable".into()) })
     }
+    fn plugin_marketplaces<'a>(
+        &'a self,
+    ) -> LocalBoxFuture<
+        'a,
+        Result<openwebide_core::plugins::marketplace::MarketplaceSettings, String>,
+    > {
+        Box::pin(async { Err("Plugin management unavailable".into()) })
+    }
+    fn save_plugin_marketplaces<'a>(
+        &'a self,
+        _request: &'a openwebide_core::plugins::marketplace::SaveMarketplaces,
+    ) -> LocalBoxFuture<
+        'a,
+        Result<openwebide_core::plugins::marketplace::MarketplaceSettings, String>,
+    > {
+        Box::pin(async { Err("Plugin management unavailable".into()) })
+    }
+    fn refresh_plugin_marketplaces<'a>(
+        &'a self,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::marketplace::MarketplaceRefresh, String>>
+    {
+        Box::pin(async { Err("Plugin management unavailable".into()) })
+    }
+    fn project_plugins<'a>(
+        &'a self,
+        _project: i64,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::plugins::ProjectPlugin>, String>> {
+        Box::pin(async { Err("Plugin management unavailable".into()) })
+    }
+    fn project_plugin_command<'a>(
+        &'a self,
+        _project: i64,
+        _command: &'a openwebide_core::plugins::ProjectPluginCommand,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::plugins::ProjectPlugin>, String>> {
+        Box::pin(async { Err("Plugin management unavailable".into()) })
+    }
+    fn remove_plugin<'a>(
+        &'a self,
+        _request: &'a openwebide_core::plugins::RemovePlugin,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::plugins::PluginInstallation>, String>> {
+        Box::pin(async { Err("Plugin management unavailable".into()) })
+    }
+    fn plugin_package<'a>(
+        &'a self,
+        _project: i64,
+        _expected: &'a openwebide_core::plugins::PreparedPlugin,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::PluginPackage, String>> {
+        Box::pin(async { Err("Plugin management unavailable".into()) })
+    }
     fn plugin_installations(
         &self,
     ) -> LocalBoxFuture<'_, Result<Vec<openwebide_core::plugins::PluginInstallation>, String>> {
@@ -1413,6 +1462,55 @@ impl Backend for BackendApi {
         project: i64,
     ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectSkills, String>> {
         Box::pin(BackendApi::skills(self, project, false))
+    }
+    fn plugin_marketplaces<'a>(
+        &'a self,
+    ) -> LocalBoxFuture<
+        'a,
+        Result<openwebide_core::plugins::marketplace::MarketplaceSettings, String>,
+    > {
+        Box::pin(BackendApi::plugin_marketplaces(self))
+    }
+    fn save_plugin_marketplaces<'a>(
+        &'a self,
+        request: &'a openwebide_core::plugins::marketplace::SaveMarketplaces,
+    ) -> LocalBoxFuture<
+        'a,
+        Result<openwebide_core::plugins::marketplace::MarketplaceSettings, String>,
+    > {
+        Box::pin(BackendApi::save_plugin_marketplaces(self, request))
+    }
+    fn refresh_plugin_marketplaces<'a>(
+        &'a self,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::marketplace::MarketplaceRefresh, String>>
+    {
+        Box::pin(BackendApi::refresh_plugin_marketplaces(self))
+    }
+    fn project_plugins<'a>(
+        &'a self,
+        project: i64,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::plugins::ProjectPlugin>, String>> {
+        Box::pin(BackendApi::project_plugins(self, project))
+    }
+    fn project_plugin_command<'a>(
+        &'a self,
+        project: i64,
+        command: &'a openwebide_core::plugins::ProjectPluginCommand,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::plugins::ProjectPlugin>, String>> {
+        Box::pin(BackendApi::project_plugin_command(self, project, command))
+    }
+    fn remove_plugin<'a>(
+        &'a self,
+        request: &'a openwebide_core::plugins::RemovePlugin,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::plugins::PluginInstallation>, String>> {
+        Box::pin(BackendApi::remove_plugin(self, request))
+    }
+    fn plugin_package<'a>(
+        &'a self,
+        project: i64,
+        expected: &'a openwebide_core::plugins::PreparedPlugin,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::PluginPackage, String>> {
+        Box::pin(BackendApi::plugin_package(self, project, expected))
     }
     fn plugin_installations(
         &self,

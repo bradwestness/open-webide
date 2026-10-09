@@ -238,6 +238,7 @@ fn plan(kind: RunKind, content: &str) -> RunPlan {
         tools.push(openwebide_agent::tasks::executor::definition());
     }
     RunPlan {
+        plugin_skills: Vec::new(),
         transport: Default::default(),
         environment: openwebide_core::RunEnvironment::default(),
         kind,

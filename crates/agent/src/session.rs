@@ -130,6 +130,7 @@ pub fn plan(runtime: &ModelRuntime, input: PlanInput) -> openwebide_core::RunPla
         _ => openwebide_core::RunKind::Chat,
     };
     openwebide_core::RunPlan {
+        plugin_skills: Vec::new(),
         connection: runtime.connection.clone(),
         transport: runtime.transport.clone(),
         request,

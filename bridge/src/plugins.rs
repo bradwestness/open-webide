@@ -24,6 +24,138 @@ impl NativePluginInstaller {
         }
     }
 
+    pub async fn package(
+        &self,
+        owner: &str,
+        host_id: String,
+        expected: &PreparedPlugin,
+    ) -> Result<openwebide_core::plugins::PluginPackage, PluginError> {
+        let _guard = self.lock.lock().await;
+        let root = self
+            .root
+            .as_ref()
+            .ok_or_else(|| host_error("Configure OPENWEBIDE_PLUGIN_DIR on this execution host."))?;
+        if !root.is_absolute() {
+            return Err(host_error("Plugin cache path must be absolute."));
+        }
+        let host = ScopedHost {
+            root: root.join(key(owner)),
+            host_id,
+        };
+        openwebide_core::plugins::load_plugin_package(&host, expected).await
+    }
+    pub async fn catalog(
+        &self,
+        owner: &str,
+        source: &openwebide_core::plugins::marketplace::MarketplaceSource,
+        now: i64,
+    ) -> Result<openwebide_core::plugins::marketplace::CachedMarketplace, PluginError> {
+        use openwebide_core::plugins::marketplace::{
+            CachedMarketplace, MAX_CATALOG_BYTES, MarketplaceCatalog,
+        };
+        source.validate()?;
+        let _guard = self.lock.lock().await;
+        let root = self
+            .root
+            .as_ref()
+            .ok_or_else(|| host_error("Configure OPENWEBIDE_PLUGIN_DIR on this execution host."))?;
+        if !root.is_absolute() {
+            return Err(host_error("Plugin cache path must be absolute."));
+        }
+        let host = ScopedHost {
+            root: root.join(key(owner)),
+            host_id: String::new(),
+        };
+        let repo = host.root.join("repositories").join(key(&source.repository));
+        let parent = repo.parent().expect("repository parent");
+        create_directory(parent)?;
+        if !repo.exists() {
+            let stage = tempfile::tempdir_in(parent).map_err(io_error)?;
+            let advertised = git(
+                stage.path(),
+                &["ls-remote", "--", &source.repository, "HEAD"],
+                4096,
+                false,
+            )
+            .await?
+            .expect("Git output");
+            let hash = std::str::from_utf8(&advertised)
+                .map_err(|_| host_error("Invalid Git advertisement."))?
+                .split_whitespace()
+                .next()
+                .unwrap_or_default();
+            let format = if hash.len() == 64 {
+                "--object-format=sha256"
+            } else {
+                "--object-format=sha1"
+            };
+            git(stage.path(), &["init", "--bare", format, "."], 4096, false).await?;
+            std::fs::rename(stage.path(), &repo).map_err(io_error)?;
+        }
+        reject_link(&repo)?;
+        let reference = if source.reference.is_empty() {
+            "HEAD"
+        } else {
+            &source.reference
+        };
+        git(
+            &repo,
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--depth=1",
+                "--",
+                &source.repository,
+                reference,
+            ],
+            4096,
+            false,
+        )
+        .await?;
+        let commit = git(
+            &repo,
+            &["rev-parse", "--verify", "FETCH_HEAD^{commit}"],
+            256,
+            false,
+        )
+        .await?
+        .expect("Git output");
+        let commit = String::from_utf8(commit)
+            .map_err(|_| host_error("Invalid catalog commit."))?
+            .trim()
+            .to_owned();
+        let object = format!("{commit}:{}", source.path);
+        let metadata = git(
+            &repo,
+            &["ls-tree", &commit, "--", &source.path],
+            4096,
+            false,
+        )
+        .await?
+        .expect("Git output");
+        if !metadata.starts_with(b"100644 blob ") && !metadata.starts_with(b"100755 blob ") {
+            return Err(PluginError::Invalid(
+                "Marketplace must be a regular Git file.".into(),
+            ));
+        }
+        let bytes = git(
+            &repo,
+            &["cat-file", "blob", &object],
+            MAX_CATALOG_BYTES,
+            false,
+        )
+        .await?
+        .expect("Git output");
+        let snapshot = CachedMarketplace {
+            source: source.clone(),
+            commit,
+            catalog: MarketplaceCatalog::parse(&bytes)?,
+            fetched_at: now,
+        };
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
     pub async fn prepare(
         &self,
         owner: &str,
@@ -389,7 +521,10 @@ async fn git(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openwebide_core::plugins::testing::{review_files, source};
+    use openwebide_core::plugins::{
+        marketplace::MarketplaceSource,
+        testing::{review_files, source},
+    };
 
     fn command(cwd: &Path, args: &[&str]) -> String {
         let result = std::process::Command::new("git")
@@ -427,6 +562,27 @@ mod tests {
         );
         let mut input = source();
         input.commit = command(fixture.path(), &["rev-parse", "HEAD"]);
+        let mut catalog = openwebide_core::plugins::testing::catalog().catalog;
+        catalog.plugins[0].releases[0].source.commit = input.commit.clone();
+        std::fs::write(
+            fixture.path().join("marketplace.json"),
+            serde_json::to_vec(&catalog).unwrap(),
+        )
+        .unwrap();
+        command(fixture.path(), &["add", "marketplace.json"]);
+        command(
+            fixture.path(),
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.org",
+                "commit",
+                "-qm",
+                "catalog",
+            ],
+        );
+
         let scoped = ScopedHost {
             root: root.join(key(owner)),
             host_id: "host".into(),
@@ -525,12 +681,42 @@ mod tests {
             repository.file_name().unwrap().to_str().unwrap()
         );
         let installer = NativePluginInstaller::new(Some(root.path().into()));
+        let marketplace = MarketplaceSource {
+            repository: source.repository.clone(),
+            reference: String::new(),
+            path: "marketplace.json".into(),
+        };
+        let catalog = installer.catalog("user:1", &marketplace, 1).await.unwrap();
+        let plugin = &catalog.catalog.plugins[0];
+        assert_eq!(
+            catalog
+                .catalog
+                .resolve(
+                    &marketplace,
+                    &plugin.publisher,
+                    &plugin.name,
+                    &plugin.releases[0].version
+                )
+                .unwrap(),
+            source
+        );
         let prepared = installer
             .prepare("user:1", "remote-host".into(), &source)
             .await
             .unwrap();
         daemon.kill().await.unwrap();
         assert_eq!(prepared.manifest.name, "pr-review");
+        let package = installer
+            .package("user:1", "remote-host".into(), &prepared)
+            .await
+            .unwrap();
+        assert_eq!(package.prepared, prepared);
+        assert!(
+            package.skills[0]
+                .resources
+                .iter()
+                .any(|r| r.name == "references/review-checks.md")
+        );
         assert_eq!(
             installer
                 .prepare("user:1", "remote-host".into(), &source)
@@ -564,6 +750,40 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(file).unwrap(), "corrupted");
     }
+    #[tokio::test]
+    #[ignore = "Smoke test against the published official marketplace; requires network access"]
+    async fn official_marketplace_reference_package_installs_and_loads_on_both_host_scopes() {
+        let root = tempfile::tempdir().unwrap();
+        let installer = NativePluginInstaller::new(Some(root.path().into()));
+        for (owner, host) in [("paired", "local-host"), ("user:1", "remote-host")] {
+            let source = MarketplaceSource::official();
+            let catalog = installer.catalog(owner, &source, 1).await.unwrap();
+            let plugin = catalog
+                .catalog
+                .plugins
+                .iter()
+                .find(|p| p.publisher == "openwebide" && p.name == "pr-review")
+                .unwrap();
+            let release = &plugin.releases[0];
+            let source = catalog
+                .catalog
+                .resolve(&source, &plugin.publisher, &plugin.name, &release.version)
+                .unwrap();
+            let prepared = installer
+                .prepare(owner, host.into(), &source)
+                .await
+                .unwrap();
+            assert_eq!(prepared.manifest.version, release.version);
+            let package = installer
+                .package(owner, host.into(), &prepared)
+                .await
+                .unwrap();
+            package.validate().unwrap();
+            assert!(!package.skills.is_empty());
+            assert!(!package.skills[0].resources.is_empty());
+        }
+    }
+
     #[tokio::test]
     async fn preparation_requires_configured_host_and_rejects_unpinned_requests() {
         let installer = NativePluginInstaller::new(None);

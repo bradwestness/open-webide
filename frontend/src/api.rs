@@ -1133,6 +1133,50 @@ impl BackendApi {
         ))
         .await
     }
+    pub async fn plugin_marketplaces(
+        &self,
+    ) -> Result<openwebide_core::plugins::marketplace::MarketplaceSettings, String> {
+        self.get("/plugin-marketplaces").await
+    }
+    pub async fn save_plugin_marketplaces(
+        &self,
+        request: &openwebide_core::plugins::marketplace::SaveMarketplaces,
+    ) -> Result<openwebide_core::plugins::marketplace::MarketplaceSettings, String> {
+        self.post("/plugin-marketplaces", request).await
+    }
+    pub async fn refresh_plugin_marketplaces(
+        &self,
+    ) -> Result<openwebide_core::plugins::marketplace::MarketplaceRefresh, String> {
+        self.post("/plugin-marketplaces/refresh", &()).await
+    }
+    pub async fn project_plugins(
+        &self,
+        project: i64,
+    ) -> Result<Vec<openwebide_core::plugins::ProjectPlugin>, String> {
+        self.get(&format!("/projects/{project}/plugins")).await
+    }
+    pub async fn project_plugin_command(
+        &self,
+        project: i64,
+        command: &openwebide_core::plugins::ProjectPluginCommand,
+    ) -> Result<Vec<openwebide_core::plugins::ProjectPlugin>, String> {
+        self.post(&format!("/projects/{project}/plugins"), command)
+            .await
+    }
+    pub async fn remove_plugin(
+        &self,
+        request: &openwebide_core::plugins::RemovePlugin,
+    ) -> Result<Vec<openwebide_core::plugins::PluginInstallation>, String> {
+        self.post("/plugins/remove", request).await
+    }
+    pub async fn plugin_package(
+        &self,
+        project: i64,
+        expected: &openwebide_core::plugins::PreparedPlugin,
+    ) -> Result<openwebide_core::plugins::PluginPackage, String> {
+        self.post(&format!("/projects/{project}/plugins/package"), expected)
+            .await
+    }
     pub async fn plugin_installations(
         &self,
     ) -> Result<Vec<openwebide_core::plugins::PluginInstallation>, String> {

@@ -193,6 +193,7 @@ pub fn agent_stream(
     session_id: i64,
     user_message: ChatMessage,
     request: ChatRequest,
+    plugin_skills: Vec<openwebide_core::ProjectSkill>,
     provider: Provider<SpinHttpClient>,
     base: Option<String>,
     environment: openwebide_core::RunEnvironment,
@@ -206,6 +207,7 @@ pub fn agent_stream(
         user: user_id,
         session: session_id,
         anchor: anchor_id,
+        plugin_skills: Arc::new(plugin_skills),
         base,
         environment,
         manual: gate,
@@ -1280,6 +1282,7 @@ type SpinMemoryExecutor = openwebide_agent::memory::MemoryTools<
 type SpinScheduledExecutor =
     openwebide_agent::scheduled::ScheduledTools<SpinMemoryExecutor, SpinScheduledPersistence>;
 struct SpinSkillPersistence {
+    pinned: Arc<Vec<openwebide_core::ProjectSkill>>,
     store: Arc<Store<AppDb>>,
     user: openwebide_core::UserId,
     session: i64,
@@ -1289,10 +1292,13 @@ impl openwebide_agent::skills::SkillStore for SpinSkillPersistence {
         &self,
         command: &openwebide_core::SkillCommand,
     ) -> Result<openwebide_core::ProjectSkills, String> {
-        self.store
-            .session_skill_command(self.user, self.session, command, now())
-            .await
-            .map_err(|error| error.to_string())
+        openwebide_agent::skills::pinned_command(command, &self.pinned, async {
+            self.store
+                .session_skill_command(self.user, self.session, command, now())
+                .await
+                .map_err(|error| error.to_string())
+        })
+        .await
     }
 }
 type SpinBaseTaskExecutor =
@@ -1301,6 +1307,7 @@ type SpinTaskGate =
     openwebide_agent::policy::PolicyGate<PermissionPoller, crate::api::approvals::ApprovalAdapter>;
 #[derive(Clone)]
 struct SpinTaskFactory {
+    plugin_skills: Arc<Vec<openwebide_core::ProjectSkill>>,
     store: Arc<Store<AppDb>>,
     user: openwebide_core::UserId,
     session: i64,
@@ -1368,6 +1375,7 @@ impl SpinTaskFactory {
                 },
             ),
             SpinSkillPersistence {
+                pinned: self.plugin_skills.clone(),
                 store: self.store.clone(),
                 user: self.user,
                 session: self.session,
@@ -1614,6 +1622,7 @@ mod skill_tests {
                 let executor = openwebide_agent::skills::SkillTools::new(
                     VfsToolExecutor::new(openwebide_core::MemoryVfs::new()),
                     SpinSkillPersistence {
+                        pinned: Arc::new(Vec::new()),
                         store: store.clone(),
                         user,
                         session,

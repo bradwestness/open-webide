@@ -368,14 +368,14 @@ capability.
   and [database-backed project skills](agent-skills.md); keep discovery and context
   loading bounded through the deferred-tool-loading work above. Add context/run hooks later when
   needed; declarative UI contributions are a later stage of this same system.
-  The initial authoring work in `openwebide/plugins` provides skills-only package
-  and commit-pinned Git catalog schemas, offline validation/CI and a PR review
-  reference skill compatible with manual project-skill import. Settings now supports
-  explicit repository/commit/directory installation on either execution host, with
-  validated immutable snapshots and user-scoped database records. The official
-  catalog lists the commit-pinned PR Review reference release. Marketplace
-  discovery, contribution activation, runtime dependencies, lifecycle
-  controls and updates remain; host preparation alone does not enable plugins.
+  The skills-only baseline is shipped: package/catalog schemas, offline authoring
+  validation and CI, and a commit-pinned PR Review reference release. Settings
+  browses the official/custom Git catalogs, installs validated immutable snapshots
+  on either host, enables managed skills per project, applies manual version
+  changes/rollback and removes packages. Sources, caches and installation records
+  are user-scoped database data, and runs pin their package skill content. Remaining
+  work covers tool/runtime contributions, dependencies/configuration, automatic
+  update policies, file-based suggestions and agent-facing plugin management.
 - Use one package format with typed contributions rather than mutually exclusive
   plugin types. A package can combine skills, MCP servers/tools and language
   support, declarative panels/editor annotations and eventual editor hooks; validate compatibility,
@@ -480,63 +480,34 @@ capability.
   matching and suggestion policy across modes, guard stale discovery results,
   and persist user preferences/dismissals in the database. A cached catalog is
   only a discovery hint; installation still verifies the pinned package release.
-- Let users configure additional catalogs from any public Git repository by
-  supplying its repository URL, ref and `marketplace.json` path (defaulting to
-  the repository's default branch and root file). Accept recognized forge file
-  URLs as a convenience and normalize them into the same repository/ref/path
-  records; do not require a forge-specific API or release service. Build in the
-  first-party GitHub catalog as the default source;
-  use the same catalog schema, discovery and lifecycle contracts for every source.
-  Install packages for the user, with user defaults and project-specific
-  enablement/configuration; do not duplicate installations per project. Persist sources in the
-  user's database settings. Catalog refs may track updates, while installed
-  package releases remain pinned to commits and artifact digests. Support
-  inspecting, refreshing, disabling and removing sources; removing a source
-  stops discovery without uninstalling its packages. Also support installing
-  directly from a plugin repository URL. Support packages from pinned Git
-  repository commits and subdirectories without requiring release archives;
-  verify archive digests when archives are provided. Authenticate private
-  catalogs and packages through configured Git/forge credential adapters,
-  including GitHub; keep credentials out
-  of manifests and agent context. Optional GitHub topic discovery can follow the
-  catalog/direct-install baseline.
-- Provide shared UI controls and agent tools to search/browse catalogs, inspect
-  plugins, create and validate packages, install, configure, enable/disable, update,
-  remove and roll back plugins, and manage marketplace sources. Use the same
-  validation, ownership, revision checks and mutation-approval policy in both.
-  Adding a catalog or installing a package does not automatically enable it;
-  plugin instructions and handlers remain subject to granted tool capabilities.
-- Persist marketplace sources, installed versions, enablement and user/project
-  configuration in the database for continuity across devices; execution hosts
-  may cache verified artifacts. Include source and publisher in plugin identity
-  so a custom catalog cannot silently replace an official plugin with the same
-  name. Pin releases to commits and artifact digests, retain the previous working
-  version for rollback, and keep installed plugins usable during catalog outages.
-- Manage Git-backed installs through persistent repository caches and separate
-  commit-pinned package snapshots on the project's execution host: the paired
-  host bridge for local projects and the server/container bridge for remote
-  projects. Opening an unsupported Terraform file can suggest the catalog
-  package; choosing Install asks that project's bridge to clone/fetch and prepare
-  it on its host, then the editor uses its language services through that bridge.
-  Installation does not require a container checkout before a local host checkout.
-  Fetch catalogs/packages into staging, validate
-  the selected manifest, dependencies and artifacts, then atomically publish the
-  installed version in the database; never update files used by an active run
-  in place. Store container caches on a persistent volume outside user workspaces;
-  native hosts use their own persistent application-data caches. Keep the logical
-  user installation/version/configuration in the database and track readiness
-  separately per execution host. Reuse a host installation across projects;
-  switching hosts prepares the same pinned version there rather than assuming
-  executables are present. Keep caches rebuildable from database install records, isolate
-  private repository access by credential ownership, and retain snapshots needed
-  by active runs/jobs and rollback. Treat runtime dependencies as separately
-  managed requirements rather than assuming a Git checkout installs executables.
-  The Install flow must report missing prerequisites or prepare supported pinned
-  runtime artifacts with approval as needed before reporting native features ready.
-  Local projects require a paired bridge with folder access to use plugins;
-  browser-only local projects show that setup requirement and retain core editing.
-  Phones and other clients viewing a remote project use the server host's
-  installation without installing packages on the client device.
+- Extend the configured public Git catalog sources with recognized forge file URL
+  normalization, source disabling and private Git/forge credential adapters.
+  Keep one repository/ref/catalog-path record and the same catalog contract for
+  every source; credentials stay out of manifests and agent context. Add user
+  defaults and project-specific configuration alongside existing per-project
+  enablement. When release archives are supported, verify their digests. Optional
+  GitHub topic discovery can follow the catalog/direct-install baseline.
+- Add agent-facing tools to search/browse catalogs, inspect plugins, create and
+  validate packages, install, configure, enable/disable, update, remove and roll
+  back plugins, and manage marketplace sources. Extend the existing Settings
+  controls to new contribution types, sharing validation, ownership, revision
+  checks and mutation-approval policy. Plugin instructions and handlers remain
+  subject to granted tool capabilities.
+- Add user/project configuration to the existing database-backed marketplace,
+  installation and enablement records. Preserve source/publisher identity,
+  immutable release commits and content digests, explicit activation and cached
+  discovery during outages as additional contribution types arrive.
+- Extend host preparation to pinned runtime dependencies and language services.
+  Opening an unsupported Terraform file can suggest its catalog package;
+  installation prepares it on the selected project's bridge and the editor uses
+  its services through that bridge. Report missing prerequisites or prepare
+  supported pinned runtime artifacts with approval before reporting native
+  features ready. Installation does not require a container checkout before a
+  local host checkout. Keep dependencies separate from package Git snapshots,
+  prepare them in staging, preserve snapshots needed by active jobs/rollback,
+  and rebuild host caches from logical database records. Local projects still
+  require a paired bridge with folder access; phones viewing remote projects
+  consume the server host's services without installing client packages.
 - Provide user-controlled update policies (manual, notify, or automatic compatible
   releases), with version/channel constraints and explicit opt-in to tracking a
   development branch. Resolve every candidate to an immutable commit; validate

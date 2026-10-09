@@ -221,6 +221,8 @@ pub struct ExecutionEnvironment {
 /// A prepared run before its user message is persisted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunPlan {
+    #[serde(default)]
+    pub plugin_skills: Vec<crate::ProjectSkill>,
     /// Included only on shared-secret-authenticated native bridge responses.
     #[serde(default)]
     pub transport: ServerTransport,

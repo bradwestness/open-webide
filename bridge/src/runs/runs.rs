@@ -558,6 +558,7 @@ async fn run_body<B: RunBackend + 'static, P: LlmProvider + 'static>(
                 execution,
                 anchor: anchor_id,
                 environment: plan.environment.clone(),
+                plugin_skills: Arc::new(plan.plugin_skills.clone()),
                 primary: openwebide_core::ModelRuntime {
                     connection: plan.connection.clone(),
                     transport: plan.transport.clone(),
@@ -838,6 +839,7 @@ type BridgeScheduledExecutor<B> = openwebide_agent::scheduled::ScheduledTools<
     BridgeScheduledPersistence<B>,
 >;
 struct BridgeSkillPersistence<B> {
+    pinned: Arc<Vec<openwebide_core::ProjectSkill>>,
     backend: Arc<B>,
     user: i64,
     session: i64,
@@ -847,9 +849,12 @@ impl<B: RunBackend> openwebide_agent::skills::SkillStore for BridgeSkillPersiste
         &self,
         command: &openwebide_core::SkillCommand,
     ) -> Result<openwebide_core::ProjectSkills, String> {
-        self.backend
-            .skill_command(self.user, self.session, command)
-            .await
+        openwebide_agent::skills::pinned_command(
+            command,
+            &self.pinned,
+            self.backend.skill_command(self.user, self.session, command),
+        )
+        .await
     }
 }
 type BridgeBaseTaskExecutor<B> =
@@ -857,6 +862,7 @@ type BridgeBaseTaskExecutor<B> =
 type BridgeTaskGate<B> =
     openwebide_agent::policy::PolicyGate<BridgeGate, super::backend_client::ApprovalAdapter<B>>;
 struct BridgeTaskFactory<B> {
+    plugin_skills: Arc<Vec<openwebide_core::ProjectSkill>>,
     run: Arc<Run>,
     backend: Arc<B>,
     dir: Option<PathBuf>,
@@ -868,6 +874,7 @@ struct BridgeTaskFactory<B> {
 impl<B> Clone for BridgeTaskFactory<B> {
     fn clone(&self) -> Self {
         Self {
+            plugin_skills: self.plugin_skills.clone(),
             run: self.run.clone(),
             backend: self.backend.clone(),
             dir: self.dir.clone(),
@@ -946,6 +953,7 @@ impl<B: RunBackend + 'static> BridgeTaskFactory<B> {
                 },
             ),
             BridgeSkillPersistence {
+                pinned: self.plugin_skills.clone(),
                 backend: self.backend.clone(),
                 user: self.run.owner,
                 session: self.run.session_id,

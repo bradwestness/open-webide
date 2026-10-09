@@ -1,4 +1,5 @@
 //! Host-only plugin preparation policy, shared by every bridge transport.
+pub mod marketplace;
 use std::{collections::BTreeMap, future::Future, pin::Pin, sync::LazyLock};
 
 use regex::Regex;
@@ -528,6 +529,42 @@ pub mod testing {
             path: "plugins/pr-review".into(),
         }
     }
+    pub fn package() -> PluginPackage {
+        let prepared = receipt();
+        let skills = import_plugin_skills(&review_files(), &prepared.manifest).unwrap();
+        PluginPackage { prepared, skills }
+    }
+    pub fn catalog() -> marketplace::CachedMarketplace {
+        let receipt = receipt();
+        marketplace::CachedMarketplace {
+            source: marketplace::MarketplaceSource {
+                repository: receipt.source.repository.clone(),
+                reference: String::new(),
+                path: "marketplace.json".into(),
+            },
+            commit: "c".repeat(40),
+            fetched_at: 1,
+            catalog: marketplace::MarketplaceCatalog {
+                schema: None,
+                schema_version: 1,
+                name: "Test marketplace".into(),
+                plugins: vec![marketplace::CatalogPlugin {
+                    publisher: receipt.manifest.publisher,
+                    name: receipt.manifest.name,
+                    display_name: receipt.manifest.display_name,
+                    description: receipt.manifest.description,
+                    categories: vec!["skills".into()],
+                    releases: vec![marketplace::CatalogRelease {
+                        version: receipt.manifest.version,
+                        source: marketplace::CatalogReleaseSource {
+                            commit: receipt.source.commit,
+                            path: receipt.source.path,
+                        },
+                    }],
+                }],
+            },
+        }
+    }
     pub fn receipt() -> PreparedPlugin {
         let files = review_files();
         PreparedPlugin {
@@ -726,4 +763,130 @@ mod tests {
             Err(PluginError::Conflict(_))
         ));
     }
+}
+
+/// Validated skill instructions/resources; executable package files stay on the host.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginPackage {
+    pub prepared: PreparedPlugin,
+    pub skills: Vec<crate::SkillDraft>,
+}
+impl PluginPackage {
+    pub fn validate(&self) -> Result<(), PluginError> {
+        self.prepared.validate()?;
+        if self.skills.len() != self.prepared.manifest.contributions.skills.len()
+            || serde_json::to_vec(self)
+                .map_err(|error| invalid(error.to_string()))?
+                .len()
+                > MAX_PACKAGE_BYTES
+        {
+            return Err(invalid(
+                "Plugin skill payload exceeds its contribution/content limits.",
+            ));
+        }
+        for (draft, contribution) in self
+            .skills
+            .iter()
+            .zip(&self.prepared.manifest.contributions.skills)
+        {
+            draft.validate().map_err(invalid)?;
+            let name = contribution
+                .path
+                .trim_end_matches("/SKILL.md")
+                .rsplit('/')
+                .next()
+                .unwrap_or_default();
+            if draft.name != name {
+                return Err(invalid("Plugin skills do not match their manifest."));
+            }
+        }
+        Ok(())
+    }
+}
+pub fn import_plugin_skills(
+    files: &[PackageFile],
+    manifest: &PluginManifest,
+) -> Result<Vec<crate::SkillDraft>, PluginError> {
+    manifest
+        .contributions
+        .skills
+        .iter()
+        .map(|skill| {
+            let directory = skill
+                .path
+                .strip_suffix("SKILL.md")
+                .ok_or_else(|| invalid("Invalid skill path."))?;
+            let imported = files
+                .iter()
+                .filter_map(|file| {
+                    file.path.strip_prefix(directory).map(|name| ImportFile {
+                        name: name.into(),
+                        bytes: file.content.clone(),
+                    })
+                })
+                .collect();
+            import_files(imported).map_err(invalid)
+        })
+        .collect()
+}
+pub async fn load_plugin_package(
+    host: &impl PluginHost,
+    expected: &PreparedPlugin,
+) -> Result<PluginPackage, PluginError> {
+    expected.validate()?;
+    let prepared = prepare_plugin(host, &expected.source).await?;
+    if prepared.source != expected.source
+        || prepared.manifest != expected.manifest
+        || prepared.digest != expected.digest
+    {
+        return Err(PluginError::Conflict(
+            "The prepared package does not match the installed version.".into(),
+        ));
+    }
+    let files = host.files(&prepared.source).await?;
+    if package_digest(&files) != prepared.digest {
+        return Err(PluginError::Conflict(
+            "The package changed while loading its skills.".into(),
+        ));
+    }
+    let package = PluginPackage {
+        skills: import_plugin_skills(&files, &prepared.manifest)?,
+        prepared,
+    };
+    package.validate()?;
+    Ok(package)
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectPlugin {
+    pub id: i64,
+    pub revision: i64,
+    pub prepared: PreparedPlugin,
+    pub enabled: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProjectPluginCommand {
+    Enable {
+        package: Box<PluginPackage>,
+        installation_revision: i64,
+        revision: Option<i64>,
+    },
+    Disable {
+        id: i64,
+        revision: i64,
+    },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemovePlugin {
+    pub source: PluginSource,
+    pub revision: i64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSkillOrigin {
+    pub publisher: String,
+    pub name: String,
+    pub version: String,
+    pub commit: String,
 }

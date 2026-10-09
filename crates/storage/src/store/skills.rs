@@ -13,12 +13,26 @@ impl<D: Db> Store<D> {
             .await?
             .as_deref()
             != Some("false");
-        let rows = self.db.execute("SELECT id, revision, updated_at, draft FROM project_skills WHERE user_id = ? AND project_id = ? ORDER BY name, id", &[DbValue::Int(user.get()), DbValue::Int(project)]).await?;
+        let rows = self.db.execute("SELECT s.id,s.revision,s.updated_at,s.draft,p.prepared FROM project_skills s LEFT JOIN project_plugin_skills m ON m.skill_id=s.id LEFT JOIN project_plugins p ON p.id=m.plugin_id WHERE s.user_id = ? AND s.project_id = ? ORDER BY s.name,s.id", &[DbValue::Int(user.get()), DbValue::Int(project)]).await?;
         let entries = rows
             .rows
             .iter()
             .map(|row| {
                 Ok(ProjectSkill {
+                    plugin: row
+                        .get_text_opt(4)
+                        .map(|json| {
+                            let prepared: openwebide_core::plugins::PreparedPlugin =
+                                serde_json::from_str(json)
+                                    .map_err(|error| StorageError::Db(error.to_string()))?;
+                            Ok::<_, StorageError>(openwebide_core::plugins::PluginSkillOrigin {
+                                publisher: prepared.manifest.publisher,
+                                name: prepared.manifest.name,
+                                version: prepared.manifest.version,
+                                commit: prepared.source.commit,
+                            })
+                        })
+                        .transpose()?,
                     id: row.get_int(0)?,
                     revision: row.get_int(1)?,
                     updated_at: row.get_int(2)?,
@@ -61,6 +75,10 @@ impl<D: Db> Store<D> {
                     return Err(StorageError::InvalidRequest("Project skills are disabled or this operation is unavailable to agents".into()));
                 }
                 let scope = [DbValue::Int(user.get()), DbValue::Int(project)];
+                if let SkillCommand::Update {id,..} | SkillCommand::Delete {id,..} = command
+                    && current.entries.iter().any(|entry|entry.id==*id && entry.plugin.is_some()) {
+                    return Err(StorageError::InvalidRequest("Manage package skills through Settings → Plugins.".into()));
+                }
                 match command {
                     SkillCommand::Create { draft } | SkillCommand::Update { draft, .. } => {
                         if current.entries.iter().any(|entry| entry.draft.name == draft.name && !matches!(command, SkillCommand::Update { id, .. } if *id == entry.id)) {

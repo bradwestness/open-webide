@@ -109,6 +109,28 @@ async fn local_pairing_and_remote_backend_install_the_same_package_without_works
     );
     let local: PreparedPlugin = serde_json::from_str(&local.body).unwrap();
     assert_eq!(local, remote);
+    let remote_package = post(
+        port,
+        "/plugins/package",
+        &serde_json::json!({"prepared":remote,"user":42}).to_string(),
+        &[("Content-Type", "application/json")],
+    )
+    .await;
+    assert_eq!(remote_package.status, 200, "{}", remote_package.body);
+    let body = serde_json::json!({"prepared":local,"user":999}).to_string();
+    let raw = format!(
+        "POST /plugins/package HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: http://localhost:3000\r\nAuthorization: Bearer paired-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let local_package = HttpResponse::parse(&http(port, &raw).await);
+    assert_eq!(local_package.status, 200, "{}", local_package.body);
+    let remote_package: openwebide_core::plugins::PluginPackage =
+        serde_json::from_str(&remote_package.body).unwrap();
+    let local_package: openwebide_core::plugins::PluginPackage =
+        serde_json::from_str(&local_package.body).unwrap();
+    assert_eq!(local_package, remote_package);
+    assert!(!local_package.skills[0].resources.is_empty());
+
     // Browser-supplied user IDs cannot select another cache namespace.
     assert!(!cache.path().join(content_digest(b"user:999")).exists());
     assert_eq!(std::fs::read_dir(workspace.path()).unwrap().count(), 0);

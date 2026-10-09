@@ -119,6 +119,7 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_value(&kind).unwrap(), json);
             let plan = RunPlan {
+                plugin_skills: Vec::new(),
                 transport: Default::default(),
                 environment: RunEnvironment::default(),
                 user_content: "go".into(),

@@ -155,6 +155,7 @@ async fn skills_stale_load_and_mutation_responses_cannot_cross_projects_accounts
         send.send(Ok(ProjectSkills {
             enabled: true,
             entries: vec![ProjectSkill {
+                plugin: None,
                 id: 1,
                 revision: 1,
                 updated_at: 0,
@@ -191,6 +192,7 @@ async fn skills_stale_load_and_mutation_responses_cannot_cross_projects_accounts
             send.send(Ok(ProjectSkills {
                 enabled: true,
                 entries: vec![ProjectSkill {
+                    plugin: None,
                     id: 1,
                     revision: 1,
                     updated_at: 0,
@@ -474,5 +476,47 @@ async fn skills_import_cannot_restore_an_old_project_draft_after_navigation() {
             "old-import"
         );
         assert!(!mounted.state.skills.busy.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn plugin_skills_show_provenance_and_offer_export_without_direct_edits() {
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = fixture(mode, false);
+        settle().await;
+        let package = openwebide_core::plugins::testing::package();
+        mounted.state.skills.data.set(Some(ProjectSkills {
+            enabled: true,
+            entries: vec![ProjectSkill {
+                id: 1,
+                revision: 1,
+                updated_at: 0,
+                plugin: Some(openwebide_core::plugins::PluginSkillOrigin {
+                    publisher: package.prepared.manifest.publisher,
+                    name: package.prepared.manifest.name,
+                    version: package.prepared.manifest.version,
+                    commit: package.prepared.source.commit,
+                }),
+                draft: package.skills[0].clone(),
+            }],
+        }));
+        settle().await;
+        mounted.click(".memory-entry .ui-disclosure-toggle");
+        settle().await;
+        let text = mounted.root.text_content().unwrap();
+        assert!(text.contains("From openwebide/pr-review 0.1.0"));
+        let entry = mounted.element(".memory-entry");
+        let buttons = entry.query_selector_all("button").unwrap();
+        let labels = (0..buttons.length())
+            .map(|index| buttons.item(index).unwrap().text_content().unwrap())
+            .collect::<Vec<_>>();
+        assert!(labels.iter().any(|label| label == "Export ZIP"));
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label == "Edit" || label == "Delete")
+        );
+        mounted.click_text("Export ZIP");
+        assert!(mounted.state.skills.error.get_untracked().is_none());
     }
 }

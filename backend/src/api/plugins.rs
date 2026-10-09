@@ -60,3 +60,143 @@ pub(crate) async fn prepare(
     }
     Ok(json_response(200, &prepared))
 }
+
+use openwebide_core::plugins::{PluginPackage, ProjectPluginCommand, RemovePlugin, marketplace::*};
+pub(crate) async fn marketplaces(state: &AppState, user: AuthedUser) -> Result<JsonResp, ApiError> {
+    Ok(json_response(
+        200,
+        &state.store.plugin_marketplaces(user.id).await?,
+    ))
+}
+pub(crate) async fn save_marketplaces(
+    req: Request,
+    state: &AppState,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let request: SaveMarketplaces = parse_json(read_body(req, 64 * 1024).await?)?;
+    Ok(json_response(
+        200,
+        &state
+            .store
+            .save_plugin_marketplaces(user.id, &request)
+            .await?,
+    ))
+}
+pub(crate) async fn refresh_marketplaces(
+    state: &AppState,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let current = state.store.plugin_marketplaces(user.id).await?;
+    let mut catalogs = Vec::new();
+    let mut failures = Vec::new();
+    for source in &current.sources {
+        let result = async {
+            let (status,body)=crate::bridge::send(&state.store,"/plugins/catalog",json!({"marketplace":source,"user":user.id.get()}).to_string()).await.map_err(|_|"Plugin execution host is unavailable.".to_string())?;
+            if status!=200 { return Err("Could not refresh this marketplace on the server host. Check its repository, reference and catalog path.".to_string()); }
+            let catalog:CachedMarketplace=serde_json::from_slice(&body).map_err(|error|error.to_string())?;
+            catalog.validate().map_err(|error|error.to_string())?;
+            if catalog.source!=*source {return Err("Catalog host returned a different source.".into());}
+            Ok(catalog)
+        }.await;
+        match result {
+            Ok(catalog) => catalogs.push(catalog),
+            Err(message) => failures.push(MarketplaceFailure {
+                source: source.clone(),
+                message,
+            }),
+        }
+    }
+    let settings = state
+        .store
+        .cache_plugin_marketplaces(user.id, current.revision, catalogs)
+        .await?;
+    Ok(json_response(
+        200,
+        &MarketplaceRefresh { settings, failures },
+    ))
+}
+fn project_id(path: &str, suffix: &str) -> Result<i64, ApiError> {
+    path_id(
+        path.strip_suffix(suffix)
+            .ok_or_else(|| ApiError::bad_request("Expected project plugin path"))?,
+        "/api/projects",
+    )
+}
+pub(crate) async fn project_list(
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    Ok(json_response(
+        200,
+        &state
+            .store
+            .project_plugins(user.id, project_id(path, "/plugins")?)
+            .await?,
+    ))
+}
+pub(crate) async fn project_command(
+    req: Request,
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let command: ProjectPluginCommand =
+        parse_json(read_body(req, openwebide_core::plugins::MAX_PACKAGE_BYTES).await?)?;
+    Ok(json_response(
+        200,
+        &state
+            .store
+            .project_plugin_command(user.id, project_id(path, "/plugins")?, &command, now())
+            .await?,
+    ))
+}
+pub(crate) async fn remove(
+    req: Request,
+    state: &AppState,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let request: RemovePlugin = parse_json(read_body(req, 16 * 1024).await?)?;
+    Ok(json_response(
+        200,
+        &state.store.remove_plugin(user.id, &request).await?,
+    ))
+}
+pub(crate) async fn package(
+    req: Request,
+    state: &AppState,
+    path: &str,
+    user: AuthedUser,
+) -> Result<JsonResp, ApiError> {
+    let project = project_id(path, "/plugins/package")?;
+    super::files::remote_project_path(state, user.id, project, "").await?;
+    let expected: PreparedPlugin = parse_json(read_body(req, 256 * 1024).await?)?;
+    expected
+        .validate()
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let (status, body) = crate::bridge::send(
+        &state.store,
+        "/plugins/package",
+        json!({"prepared":expected,"user":user.id.get()}).to_string(),
+    )
+    .await?;
+    if status != 200 {
+        return Err(ApiError::bad_gateway(
+            "Could not load the installed plugin on this host.",
+        ));
+    }
+    let package: PluginPackage =
+        serde_json::from_slice(&body).map_err(|error| ApiError::internal(error.to_string()))?;
+    package
+        .validate()
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    if package.prepared.source != expected.source
+        || package.prepared.manifest != expected.manifest
+        || package.prepared.digest != expected.digest
+    {
+        return Err(ApiError::bad_gateway(
+            "Host returned a different plugin version.",
+        ));
+    }
+    Ok(json_response(200, &package))
+}

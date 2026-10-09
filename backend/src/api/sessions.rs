@@ -488,6 +488,7 @@ pub(super) async fn build_run_plan(
         runtime.settings.context_limit,
     );
     let mut plan = openwebide_agent::session::plan(&runtime, input);
+    plan.plugin_skills = openwebide_agent::skills::package_snapshot(&skills);
     if session.project_id.is_none()
         && state
             .store
@@ -601,6 +602,7 @@ pub(crate) async fn send_session_message(
             session_id,
             user_message,
             request,
+            plan.plugin_skills,
             provider,
             base,
             plan.environment,

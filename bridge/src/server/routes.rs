@@ -87,7 +87,10 @@ pub(super) async fn route(
         || path == "/host/admin"
         || path == "/host/probe"
         || path == "/host/input"
-        || path == "/plugins/prepare"
+        || matches!(
+            path.as_str(),
+            "/plugins/prepare" | "/plugins/package" | "/plugins/catalog"
+        )
         || path.starts_with("/git/")
         || path == "/models/discover";
     let mut principal = None;
@@ -127,15 +130,17 @@ pub(super) async fn route(
 
     match (method.as_str(), path.as_str()) {
         ("OPTIONS", _) => Ok(preflight_response(req.headers(), allowed_origin)),
-        ("POST", "/plugins/prepare") => {
+        ("POST", "/plugins/prepare" | "/plugins/package" | "/plugins/catalog") => {
             let result = async {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct Payload {
-                    source: openwebide_core::plugins::PluginSource,
+                    source: Option<openwebide_core::plugins::PluginSource>,
+                    prepared: Option<openwebide_core::plugins::PreparedPlugin>,
+                    marketplace: Option<openwebide_core::plugins::marketplace::MarketplaceSource>,
                     user: Option<i64>,
                 }
-                let payload: Payload = read_json(req.into_body(), 16 * 1024).await?;
+                let payload: Payload = read_json(req.into_body(), 256 * 1024).await?;
                 let owner = match principal {
                     Some(crate::auth::Principal::User { user_id }) => format!("user:{user_id}"),
                     Some(crate::auth::Principal::Paired) => "paired".into(),
@@ -146,33 +151,80 @@ pub(super) async fn route(
                         )?
                     ),
                 };
-                let prepared = tokio::time::timeout(
-                    std::time::Duration::from_secs(180),
-                    config.plugins.prepare(
-                        &owner,
-                        crate::scheduled::host(&config).id,
-                        &payload.source,
-                    ),
-                )
-                .await
-                .map_err(|_| BridgeError::Execution("Plugin preparation timed out.".into()))?
-                .map_err(|error| match error {
-                    openwebide_core::plugins::PluginError::Invalid(message) => {
-                        BridgeError::Validation(message)
-                    }
-                    openwebide_core::plugins::PluginError::Conflict(message) => {
-                        BridgeError::Validation(message)
-                    }
-                    openwebide_core::plugins::PluginError::Host(message) => {
-                        BridgeError::Execution(message)
-                    }
-                })?;
-                serde_json::to_string(&prepared)
+                let operation = async {
+                    use openwebide_core::plugins::PluginError;
+                    let result = match path.as_str() {
+                        "/plugins/prepare" => serde_json::to_value(
+                            config
+                                .plugins
+                                .prepare(
+                                    &owner,
+                                    crate::scheduled::host(&config).id,
+                                    &payload.source.ok_or_else(|| {
+                                        PluginError::Invalid("Plugin source is required.".into())
+                                    })?,
+                                )
+                                .await?,
+                        ),
+                        "/plugins/package" => serde_json::to_value(
+                            config
+                                .plugins
+                                .package(
+                                    &owner,
+                                    crate::scheduled::host(&config).id,
+                                    &payload.prepared.ok_or_else(|| {
+                                        PluginError::Invalid(
+                                            "Installed plugin receipt is required.".into(),
+                                        )
+                                    })?,
+                                )
+                                .await?,
+                        ),
+                        _ => {
+                            let now = i64::try_from(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs(),
+                            )
+                            .unwrap_or(i64::MAX);
+                            serde_json::to_value(
+                                config
+                                    .plugins
+                                    .catalog(
+                                        &owner,
+                                        &payload.marketplace.ok_or_else(|| {
+                                            PluginError::Invalid(
+                                                "Marketplace source is required.".into(),
+                                            )
+                                        })?,
+                                        now,
+                                    )
+                                    .await?,
+                            )
+                        }
+                    };
+                    result.map_err(|error| PluginError::Host(error.to_string()))
+                };
+                let value = tokio::time::timeout(std::time::Duration::from_secs(180), operation)
+                    .await
+                    .map_err(|_| BridgeError::Execution("Plugin host request timed out.".into()))?
+                    .map_err(|error| match error {
+                        openwebide_core::plugins::PluginError::Invalid(message)
+                        | openwebide_core::plugins::PluginError::Conflict(message) => {
+                            BridgeError::Validation(message)
+                        }
+                        openwebide_core::plugins::PluginError::Host(message) => {
+                            BridgeError::Execution(message)
+                        }
+                    })?;
+                serde_json::to_string(&value)
                     .map_err(|error| BridgeError::Execution(error.to_string()))
             }
             .await;
             Ok(execution_response(result, allowed_origin))
         }
+
         ("POST", "/host/probe" | "/host/input") => {
             if origin.is_some() || config.pairing_token.is_some() {
                 return Ok(execution_response(

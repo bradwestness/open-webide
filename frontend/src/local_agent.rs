@@ -354,6 +354,36 @@ impl BrowserBridgeClient {
         response.json().await.map_err(|error| error.to_string())
     }
 
+    pub async fn plugin_package(
+        &self,
+        expected: &openwebide_core::plugins::PreparedPlugin,
+    ) -> Result<openwebide_core::plugins::PluginPackage, String> {
+        if !self.cwd_verified() {
+            return Err("Reconnect this project's execution host first.".into());
+        }
+        let token = self.credentials.credential().await?;
+        let guard = crate::api::CommandFetchGuard(
+            web_sys::AbortController::new().map_err(|error| format!("{error:?}"))?,
+        );
+        let response = gloo_net::http::Request::post(&format!("{}/plugins/package", self.http_url))
+            .abort_signal(Some(&guard.0.signal()))
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {token}"))
+            .body(serde_json::json!({"prepared":expected}).to_string())
+            .map_err(|error| error.to_string())?
+            .send()
+            .await
+            .map_err(|error| format!("Plugin host unavailable: {error}"))?;
+        if !response.ok() {
+            return Err(format!(
+                "Plugin host HTTP {}: {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            ));
+        }
+        response.json().await.map_err(|error| error.to_string())
+    }
+
     fn git_cwd(&self) -> &str {
         if self.cwd.is_empty() { "." } else { &self.cwd }
     }
@@ -903,7 +933,8 @@ pub async fn run_local_agent(
         &skills,
         runtime.settings.context_limit,
     );
-    let plan = openwebide_agent::session::plan(&runtime, input);
+    let mut plan = openwebide_agent::session::plan(&runtime, input);
+    plan.plugin_skills = openwebide_agent::skills::package_snapshot(&skills);
     if !current() {
         return Err("Project access changed".into());
     }
@@ -1020,6 +1051,7 @@ pub async fn run_local_agent(
             crate::project_host::ProjectExecution::Remote { .. } => None,
         });
         let factory = BrowserTaskFactory {
+            plugin_skills: Arc::new(plan.plugin_skills),
             api: SendWrapper::new(api),
             vfs,
             bridge,
@@ -1259,6 +1291,7 @@ type BrowserMemoryExecutor = openwebide_agent::memory::MemoryTools<
 type BrowserScheduledExecutor =
     openwebide_agent::scheduled::ScheduledTools<BrowserMemoryExecutor, BrowserScheduledPersistence>;
 struct BrowserSkillPersistence {
+    pinned: Arc<Vec<openwebide_core::ProjectSkill>>,
     api: SendWrapper<Api>,
     session: i64,
 }
@@ -1268,19 +1301,24 @@ impl openwebide_agent::skills::SkillStore for BrowserSkillPersistence {
         command: &openwebide_core::SkillCommand,
     ) -> Result<openwebide_core::ProjectSkills, String> {
         SendWrapper::new(async move {
-            self.api
-                .with_value(Clone::clone)
-                .skill_command(self.session, command, true)
-                .await
+            let backend = self.api.with_value(Clone::clone);
+            openwebide_agent::skills::pinned_command(
+                command,
+                &self.pinned,
+                backend.skill_command(self.session, command, true),
+            )
+            .await
         })
         .await
     }
 }
+
 type BrowserBaseTaskExecutor =
     openwebide_agent::skills::SkillTools<BrowserScheduledExecutor, BrowserSkillPersistence>;
 type BrowserTaskGate = openwebide_agent::policy::PolicyGate<LocalPermissionGate, ApprovalAdapter>;
 #[derive(Clone)]
 struct BrowserTaskFactory {
+    plugin_skills: Arc<Vec<openwebide_core::ProjectSkill>>,
     api: SendWrapper<Api>,
     vfs: BrowserFsaVfs,
     bridge: Option<BrowserBridgeClient>,
@@ -1329,6 +1367,7 @@ impl BrowserTaskFactory {
                 },
             ),
             BrowserSkillPersistence {
+                pinned: self.plugin_skills.clone(),
                 api: self.api.clone(),
                 session: self.session,
             },

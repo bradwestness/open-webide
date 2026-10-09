@@ -1,22 +1,42 @@
-# Plugin host installation
+# Plugins and marketplaces
 
-Settings → Plugins installs a skills-only package on the open project's execution
-host. Installation currently prepares the package and records its pinned version;
-it does not activate skills or add tools to agent runs. Use the existing project
-skill import flow to use the reference skill today.
+Settings → Plugins browses the official marketplace and any custom public Git
+marketplaces configured for your account. Search the cached catalog, choose a
+release, inspect its publisher and pinned source, and install it on the open
+project's execution host. Packages currently contribute agent skills.
 
-Enter a public Git repository URL (HTTP, HTTPS, SSH or Git protocol), a full
-lowercase commit ID, and the directory containing `plugin.json`. Use `.` for a
-package at the repository root. For the reference package:
+Installation does not enable a package. **Enable for project** loads the verified
+instructions/resources into the database as managed project skills. They appear
+in Skills and use the existing `skill_list` and `skill_read` agent tools. Their
+package provenance is visible; edit, disable or remove them through Plugins.
+Personal skills remain independent, and a duplicate skill name aborts activation
+without overwriting it. The project's global Skills switch still applies.
+
+The official source is `https://github.com/openwebide/plugins.git`, using its
+default branch and root `marketplace.json`. Additional sources accept a public
+Git repository URL, optional branch/tag/commit reference, and catalog file path.
+Releases declare only their immutable commit and package directory; every package
+inherits its marketplace's repository. Refreshing catalogs updates discovery,
+while installed versions remain pinned. A failed refresh preserves cached
+releases and reports the failed source. Removing a source stops discovery without
+uninstalling its packages. Sources and caches are user-scoped database settings.
+
+Select another catalog release to update or roll back an installation, then
+**Apply installed version** to change this project's active skills. Other projects
+retain their enabled versions. **Disable for project** keeps the package installed
+and its managed skills saved but inactive. **Uninstall** asks for confirmation,
+then removes the logical installation and its managed skills from all your
+projects. It retains host snapshots for active runs. Runs pin enabled package
+instructions and resources at startup, so changes apply to subsequent runs.
+
+For packages outside a catalog, expand **Install a pinned package manually** and
+enter a public Git repository URL (HTTP, HTTPS, SSH or Git protocol), a full
+lowercase commit ID, and the directory containing `plugin.json`; use `.` for the
+repository root. The reference PR Review 0.1.0 package uses:
 
 - Repository: `https://github.com/openwebide/plugins.git`
-- Commit: `e79185c2b25f713503b70e23ee7e91e66c5af208` (PR Review 0.1.0)
+- Commit: `e79185c2b25f713503b70e23ee7e91e66c5af208`
 - Package directory: `plugins/pr-review`
-
-Marketplace releases declare only their commit and package directory; the
-repository comes from the configured marketplace source. Each marketplace owns
-the packages in its own Git repository. The current manual install form takes
-the resolved repository explicitly; catalog browsing remains planned.
 
 Local projects need their paired native bridge and folder access. Remote projects
 use the server bridge, including when opened from a phone. The browser does not
@@ -52,6 +72,6 @@ leave the previous record and snapshot intact. Account, project, session or host
 changes prevent stale browser results from recording an installation. An already
 submitted server transaction may finish for its authenticated account.
 
-Marketplace browsing, automatic updates, removal,
-rollback controls, dependency preparation and contribution activation remain on
-the roadmap. Language, MCP, UI and editor contributions are not accepted yet.
+Automatic updates, runtime dependency preparation and agent-facing plugin
+management remain on the roadmap. Language, MCP, UI and editor contributions are
+not accepted yet.

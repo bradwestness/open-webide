@@ -38,6 +38,8 @@ const fn enabled() -> bool {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectSkill {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<crate::plugins::PluginSkillOrigin>,
     pub id: i64,
     pub revision: i64,
     pub updated_at: i64,
@@ -219,6 +221,7 @@ mod tests {
             enabled: true,
             entries: (1..=100)
                 .map(|id| ProjectSkill {
+                    plugin: None,
                     id,
                     revision: 1,
                     updated_at: 0,

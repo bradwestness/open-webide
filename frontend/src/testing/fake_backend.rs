@@ -56,6 +56,15 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub marketplaces: RefCell<openwebide_core::plugins::marketplace::MarketplaceSettings>,
+    pub marketplace_results:
+        RefCell<VecDeque<Deferred<openwebide_core::plugins::marketplace::MarketplaceRefresh>>>,
+    pub plugin_packages: RefCell<VecDeque<Deferred<openwebide_core::plugins::PluginPackage>>>,
+    pub plugin_commands: RefCell<Vec<(i64, openwebide_core::plugins::ProjectPluginCommand)>>,
+    pub project_plugin_entries:
+        RefCell<BTreeMap<i64, Vec<openwebide_core::plugins::ProjectPlugin>>>,
+    pub project_plugin_results:
+        RefCell<VecDeque<Deferred<Vec<openwebide_core::plugins::ProjectPlugin>>>>,
     pub plugins: RefCell<Vec<openwebide_core::plugins::PluginInstallation>>,
     pub plugin_loads:
         RefCell<VecDeque<Deferred<Vec<openwebide_core::plugins::PluginInstallation>>>>,
@@ -227,6 +236,109 @@ impl FakeBackend {
 }
 
 impl Backend for FakeBackend {
+    fn plugin_marketplaces(
+        &self,
+    ) -> LocalBoxFuture<
+        '_,
+        Result<openwebide_core::plugins::marketplace::MarketplaceSettings, String>,
+    > {
+        Box::pin(async { Ok(self.marketplaces.borrow().clone()) })
+    }
+    fn save_plugin_marketplaces<'a>(
+        &'a self,
+        request: &'a openwebide_core::plugins::marketplace::SaveMarketplaces,
+    ) -> LocalBoxFuture<
+        'a,
+        Result<openwebide_core::plugins::marketplace::MarketplaceSettings, String>,
+    > {
+        Box::pin(async move {
+            let next = openwebide_core::plugins::marketplace::save_sources(
+                self.marketplaces.borrow().clone(),
+                request,
+            )
+            .map_err(|e| e.to_string())?;
+            *self.marketplaces.borrow_mut() = next.clone();
+            Ok(next)
+        })
+    }
+    fn refresh_plugin_marketplaces(
+        &self,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::plugins::marketplace::MarketplaceRefresh, String>>
+    {
+        Box::pin(async {
+            let pending = self.marketplace_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|e| e.to_string())?;
+            }
+            Ok(openwebide_core::plugins::marketplace::MarketplaceRefresh {
+                settings: self.marketplaces.borrow().clone(),
+                failures: Vec::new(),
+            })
+        })
+    }
+    fn project_plugins(
+        &self,
+        project: i64,
+    ) -> LocalBoxFuture<'_, Result<Vec<openwebide_core::plugins::ProjectPlugin>, String>> {
+        Box::pin(async move {
+            Ok(self
+                .project_plugin_entries
+                .borrow()
+                .get(&project)
+                .cloned()
+                .unwrap_or_default())
+        })
+    }
+    fn plugin_package<'a>(
+        &'a self,
+        _project: i64,
+        _expected: &'a openwebide_core::plugins::PreparedPlugin,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::PluginPackage, String>> {
+        Box::pin(async {
+            let pending = self
+                .plugin_packages
+                .borrow_mut()
+                .pop_front()
+                .ok_or("No package fixture prepared")?;
+            pending.await.map_err(|e| e.to_string())?
+        })
+    }
+    fn project_plugin_command<'a>(
+        &'a self,
+        project: i64,
+        command: &'a openwebide_core::plugins::ProjectPluginCommand,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::plugins::ProjectPlugin>, String>> {
+        Box::pin(async move {
+            self.plugin_commands
+                .borrow_mut()
+                .push((project, command.clone()));
+            let pending = self
+                .project_plugin_results
+                .borrow_mut()
+                .pop_front()
+                .ok_or("No activation fixture prepared")?;
+            let entries = pending.await.map_err(|e| e.to_string())??;
+            self.project_plugin_entries
+                .borrow_mut()
+                .insert(project, entries.clone());
+            Ok(entries)
+        })
+    }
+    fn remove_plugin<'a>(
+        &'a self,
+        request: &'a openwebide_core::plugins::RemovePlugin,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::plugins::PluginInstallation>, String>> {
+        Box::pin(async move {
+            let mut entries = self.plugins.borrow_mut();
+            let index = entries
+                .iter()
+                .position(|e| e.prepared.source == request.source && e.revision == request.revision)
+                .ok_or("Installation changed")?;
+            entries.remove(index);
+            Ok(entries.clone())
+        })
+    }
+
     fn plugin_installations(
         &self,
     ) -> LocalBoxFuture<'_, Result<Vec<openwebide_core::plugins::PluginInstallation>, String>> {
@@ -2330,6 +2442,7 @@ impl Backend for FakeBackend {
                     }
                     let id = data.entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
                     data.entries.push(ProjectSkill {
+                        plugin: None,
                         id,
                         revision: 1,
                         updated_at: 0,
