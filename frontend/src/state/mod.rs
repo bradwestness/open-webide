@@ -24,3 +24,6 @@ pub mod skills;
 
 #[cfg(target_arch = "wasm32")]
 pub mod questions;
+
+#[cfg(target_arch = "wasm32")]
+pub mod monitors;

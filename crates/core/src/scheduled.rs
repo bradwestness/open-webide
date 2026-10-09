@@ -101,6 +101,11 @@ impl TaskDraft {
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskCommand {
     List,
+    Monitor {
+        #[serde(default)]
+        session_id: i64,
+        command: MonitorCommand,
+    },
     Create {
         draft: TaskDraft,
     },
@@ -119,6 +124,66 @@ pub enum TaskCommand {
         revision: i64,
     },
 }
+/// Ephemeral follow-up checks belong to one conversation, not the saved-task list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MonitorCommand {
+    Start {
+        prompt: String,
+        delay_seconds: i64,
+        #[serde(default = "monitor_interval")]
+        interval_seconds: i64,
+        #[serde(default = "monitor_checks")]
+        max_checks: i64,
+    },
+    List {},
+    Cancel {
+        id: i64,
+        revision: i64,
+    },
+}
+const fn monitor_interval() -> i64 {
+    600
+}
+const fn monitor_checks() -> i64 {
+    1
+}
+impl MonitorCommand {
+    pub fn draft(&self, session: i64, now: i64) -> Result<Option<TaskDraft>, String> {
+        let Self::Start {
+            prompt,
+            delay_seconds,
+            interval_seconds,
+            max_checks,
+        } = self
+        else {
+            return Ok(None);
+        };
+        if !(5..86400).contains(delay_seconds)
+            || !(5..=86400).contains(interval_seconds)
+            || !(1..=24).contains(max_checks)
+            || delay_seconds.saturating_add(interval_seconds.saturating_mul(max_checks - 1))
+                >= 86400
+        {
+            return Err("Monitor checks must fit before the 24-hour expiry, with delays of 5–86399 seconds, intervals of 5–86400 seconds and 1–24 checks.".into());
+        }
+        let draft = TaskDraft {
+            session_target: SessionTarget::Existing,
+            auto_title: false,
+            title: "Monitor".into(),
+            prompt: prompt.clone(),
+            session_id: session,
+            model: None,
+            schedule: Schedule::Once {
+                at: now.saturating_add(*delay_seconds),
+            },
+            enabled: true,
+        };
+        draft.validate(now)?;
+        Ok(Some(draft))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionHost {
     pub id: String,
@@ -171,6 +236,16 @@ pub struct DispatchResult {
     pub status: String,
     pub detail: String,
 }
+impl DispatchResult {
+    /// Match the persisted result limit without splitting a Unicode character.
+    pub fn bounded_detail(detail: &str) -> String {
+        let mut end = detail.len().min(1024);
+        while !detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        detail[..end].to_owned()
+    }
+}
 pub fn calendar_cron(expression: &str) -> Option<(String, Vec<u8>)> {
     let fields = expression.split_whitespace().collect::<Vec<_>>();
     if fields.len() != 5 || fields[2] != "*" || fields[3] != "*" {
@@ -213,6 +288,15 @@ pub fn weekly_cron(time: &str, weekdays: &[u8]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn host_result_detail_obeys_the_byte_limit_for_unicode() {
+        let detail = format!("{}{}", "a".repeat(1023), "😀".repeat(100));
+        assert_eq!(DispatchResult::bounded_detail(&detail), "a".repeat(1023));
+        assert_eq!(
+            DispatchResult::bounded_detail("Build failed"),
+            "Build failed"
+        );
+    }
     #[test]
     fn task_model_defaults_remain_compatible_and_reject_invalid_overrides() {
         let mut draft: TaskDraft = serde_json::from_value(serde_json::json!({"title":"Task","prompt":"Work","session_id":1,"schedule":{"kind":"once","at":60},"enabled":true})).unwrap();

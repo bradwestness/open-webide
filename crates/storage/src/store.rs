@@ -16,6 +16,8 @@ mod rewind;
 mod rows;
 mod skills;
 pub use push::PushDelivery;
+#[cfg(test)]
+mod monitor_tests;
 mod scheduled;
 mod sessions;
 mod tasks;

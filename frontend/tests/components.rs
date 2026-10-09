@@ -106,5 +106,7 @@ mod chat_details;
 #[path = "components/host_admin.rs"]
 mod host_admin;
 
+#[path = "components/monitors.rs"]
+mod monitors;
 #[path = "components/questions.rs"]
 mod questions;

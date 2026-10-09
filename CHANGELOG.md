@@ -18,6 +18,7 @@ for what's still ahead.
   or superseded row work without exposing partial indexes or stale structure.
 
 - Run session goals as durable host workers in remote, paired-local, and projectless chats, including after the browser closes. Evaluate turn evidence, continue unmet goals, stop on completion, and pause blockers, errors or stalled work. Preserve approvals, foreground priority and revision-safe recovery without replaying consumed prompts.
+- Add the `monitor` agent tool for ephemeral host-owned follow-up checks, including bounded repeats, conversation status/cancellation and local-host authorization. Keep monitors out of saved tasks, survive browser closure, recover undelivered claims without replaying injected checks, and retain failure/expiry results in chat.
 
 - Yield while checking syntax source limits before worker serialization and
   parsing, preserving exact byte/newline limits and rejecting canceled or

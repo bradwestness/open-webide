@@ -207,6 +207,7 @@ mod tests {
     #[test]
     fn every_builtin_tool_is_classified() {
         const GATED: &[&str] = &[
+            "monitor",
             "schedule_create",
             "schedule_update",
             "schedule_delete",

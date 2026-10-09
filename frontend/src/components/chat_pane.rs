@@ -1066,6 +1066,7 @@ pub fn ChatPane(
 
             <Show when=move || chat.compacting.get()><p class="form-hint" role="status">"Compacting conversation…" <button class="btn stop" on:click=move |_| on_stop.run(())>"Stop"</button></p></Show>
             <super::goal::GoalNotice />
+            <super::monitors::ConversationMonitors />
             <super::todo_plan::TodoPlanPanel />
             <Show when=move || chat.prompt_edit.get().is_some()>
                 <div class="tui-prompt-edit"><span>"Editing an earlier prompt. Send starts a new branch."</span>

@@ -27,6 +27,8 @@ pub mod local_fs;
 pub mod markdown;
 #[cfg(target_arch = "wasm32")]
 pub mod model_setup;
+#[cfg(target_arch = "wasm32")]
+pub mod monitors;
 pub mod notifications;
 pub mod pending;
 #[cfg(target_arch = "wasm32")]

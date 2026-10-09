@@ -111,3 +111,7 @@ pub mod memories;
 pub mod skills;
 
 pub mod questions;
+
+mod monitors;
+
+pub use monitors::ConversationMonitors;

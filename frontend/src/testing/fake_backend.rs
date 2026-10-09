@@ -66,6 +66,9 @@ pub struct FakeBackend {
     pub host_inputs: RefCell<Vec<(i64, i64, String)>>,
     pub assistance_requests: RefCell<Vec<openwebide_core::AssistanceRequest>>,
     pub assistance_results: RefCell<VecDeque<Deferred<Option<String>>>>,
+    pub monitors: RefCell<BTreeMap<i64, Vec<openwebide_core::scheduled::ScheduledTask>>>,
+    pub monitor_results:
+        RefCell<VecDeque<Deferred<Vec<openwebide_core::scheduled::ScheduledTask>>>>,
     pub scheduled: RefCell<Vec<openwebide_core::scheduled::ScheduledTask>>,
     pub scheduled_load_results:
         RefCell<VecDeque<Deferred<Vec<openwebide_core::scheduled::ScheduledTask>>>>,
@@ -2023,6 +2026,9 @@ impl Backend for FakeBackend {
             {
                 let mut entries = self.scheduled.borrow_mut();
                 match command {
+                    TaskCommand::Monitor { .. } => {
+                        return Err("Monitor test adapter not configured".into());
+                    }
                     TaskCommand::List => {}
                     TaskCommand::Create { draft } => {
                         draft.validate(openwebide_core::now_seconds(js_sys::Date::now()))?;
@@ -2229,6 +2235,41 @@ impl Backend for FakeBackend {
                 }
             }
             Ok(data.clone())
+        })
+    }
+    fn scheduled_session_command<'a>(
+        &'a self,
+        session: i64,
+        command: &'a openwebide_core::scheduled::TaskCommand,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::scheduled::ScheduledTask>, String>> {
+        Box::pin(async move {
+            use openwebide_core::scheduled::{MonitorCommand, TaskCommand};
+            self.scheduled_commands
+                .borrow_mut()
+                .push((None, command.clone()));
+            let pending = self.monitor_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .unwrap_or_else(|_| Err("response dropped".into()));
+            }
+            let TaskCommand::Monitor { command, .. } = command else {
+                return Err("Expected a monitor command".into());
+            };
+            let mut entries = self.monitors.borrow_mut();
+            let tasks = entries.entry(session).or_default();
+            match command {
+                MonitorCommand::List {} => {}
+                MonitorCommand::Cancel { id, revision } => {
+                    let pos = tasks
+                        .iter()
+                        .position(|task| task.id == *id && task.revision == *revision)
+                        .ok_or("Monitor changed")?;
+                    tasks.remove(pos);
+                }
+                MonitorCommand::Start { .. } => return Err("Seed monitors to test creation".into()),
+            }
+            Ok(tasks.clone())
         })
     }
     fn project_memories(
