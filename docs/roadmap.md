@@ -114,9 +114,11 @@ tracks the remaining work rather than every optimization already shipped.
   plain sources now also resumes within that job's byte budget, preserving exact
   UTF-8 replacement boundaries and unchanged table reuse. Whole-row capacity
   allocation and final publication still need bounded
-  work. The final bracket pass
-  skips opaque
-  regions and languages without brackets while preserving scope boundaries.
+  work. The final bracket pass now retains its stack and region/scope cursors
+  across bounded batches, hiding incomplete structures until publication. It
+  skips opaque regions and languages without brackets while preserving scope
+  boundaries. Metadata collection, validation/sorting and final paint assembly
+  remain unbounded.
 - [ ] **Source ownership and storage:** finish remaining external parser snapshots,
   changed-revision source comparisons, transport serialization, diff shaping and
   native-text materialization. Worker delta reconstruction now copies validated
