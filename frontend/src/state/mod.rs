@@ -20,6 +20,7 @@ pub mod editor_recovery;
 pub mod editor_motion;
 
 pub mod memories;
+pub mod plugins;
 pub mod skills;
 
 #[cfg(target_arch = "wasm32")]

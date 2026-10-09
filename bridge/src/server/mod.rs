@@ -25,6 +25,7 @@ pub(crate) use ws::WriterCmd;
 pub struct ServerConfig {
     pub workspace_root: PathBuf,
     pub execution: Arc<dyn crate::exec::ToolExecution>,
+    pub plugins: crate::plugins::NativePluginInstaller,
     pub allowed_origins: Vec<String>,
     pub allowed_hosts: Vec<String>,
     pub limits: Limits,
@@ -43,6 +44,7 @@ impl ServerConfig {
         Self {
             workspace_root,
             execution: Arc::new(crate::exec::HostExecution),
+            plugins: crate::plugins::NativePluginInstaller::new(crate::plugins::default_root()),
             allowed_origins: default_origins(),
             allowed_hosts: default_hosts(),
             limits: Limits::default(),

@@ -324,6 +324,35 @@ impl BrowserBridgeClient {
     pub fn cwd(&self) -> &str {
         &self.cwd
     }
+    pub async fn prepare_plugin(
+        &self,
+        source: &openwebide_core::plugins::PluginSource,
+    ) -> Result<openwebide_core::plugins::PreparedPlugin, String> {
+        if !self.cwd_verified() {
+            return Err("Reconnect this project's execution host first.".into());
+        }
+        let token = self.credentials.credential().await?;
+        let guard = crate::api::CommandFetchGuard(
+            web_sys::AbortController::new().map_err(|error| format!("{error:?}"))?,
+        );
+        let response = gloo_net::http::Request::post(&format!("{}/plugins/prepare", self.http_url))
+            .abort_signal(Some(&guard.0.signal()))
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {token}"))
+            .body(serde_json::json!({"source":source}).to_string())
+            .map_err(|error| error.to_string())?
+            .send()
+            .await
+            .map_err(|error| format!("Plugin host unavailable: {error}"))?;
+        if !response.ok() {
+            return Err(format!(
+                "Plugin host HTTP {}: {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            ));
+        }
+        response.json().await.map_err(|error| error.to_string())
+    }
 
     fn git_cwd(&self) -> &str {
         if self.cwd.is_empty() { "." } else { &self.cwd }

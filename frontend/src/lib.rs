@@ -40,6 +40,8 @@ pub mod project_host;
 #[cfg(target_arch = "wasm32")]
 pub mod project_memory;
 #[cfg(target_arch = "wasm32")]
+pub mod project_plugins;
+#[cfg(target_arch = "wasm32")]
 pub mod project_runs;
 pub mod project_setup;
 #[cfg(target_arch = "wasm32")]

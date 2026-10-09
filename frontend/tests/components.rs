@@ -118,3 +118,6 @@ mod git_changes;
 
 #[path = "components/review_regressions.rs"]
 mod review_regressions;
+
+#[path = "components/plugins.rs"]
+mod plugins;

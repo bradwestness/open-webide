@@ -91,6 +91,19 @@ impl TestState {
             settings,
             expect_context::<AuthState>(),
         ));
+        let plugins = openwebide_frontend::state::plugins::PluginsState::default();
+        provide_context(plugins);
+        provide_context(
+            openwebide_frontend::project_plugins::ProjectPluginActions::new(
+                api,
+                plugins,
+                expect_context::<openwebide_frontend::project_host::ProjectHost>(),
+                auth,
+                projects,
+                chat,
+                settings,
+            ),
+        );
         let monitors = openwebide_frontend::state::monitors::MonitorsState::new();
         provide_context(monitors);
         let monitor_actions =

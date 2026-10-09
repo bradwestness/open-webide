@@ -20,6 +20,8 @@ mod file_tree;
 pub mod host_admin;
 pub(crate) mod modal;
 mod panel_resizer;
+mod plugins;
+pub use plugins::Plugins;
 mod prompt_dialog;
 pub mod scheduled;
 mod session_list;

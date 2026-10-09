@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/openwebide/plugins/main/schemas/plugin.schema.json",
+  "schemaVersion": 1,
+  "publisher": "openwebide",
+  "name": "pr-review",
+  "version": "0.1.0",
+  "displayName": "PR Review",
+  "description": "Review working-tree changes, branches and pull requests using existing agent tools.",
+  "license": "MIT",
+  "readme": "README.md",
+  "compatibility": {
+    "pluginApi": 1
+  },
+  "contributions": {
+    "skills": [
+      {
+        "path": "skills/review-changes/SKILL.md"
+      }
+    ]
+  }
+}

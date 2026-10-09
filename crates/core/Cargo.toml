@@ -23,6 +23,7 @@ unicode-bidi = "0.3.18"
 unicode-width = "0.2.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 url = "2"
 serde_yaml_ng = "0.10"
 zip = { version = "6", default-features = false, features = ["deflate-flate2"] }

@@ -5,6 +5,7 @@ pub mod questions;
 pub use assistance::{AssistanceKind, AssistanceRequest, BackgroundCompletion};
 pub mod goal;
 pub mod memory;
+pub mod plugins;
 pub mod skills;
 pub use skills::{ProjectSkill, ProjectSkills, SkillCommand, SkillDraft, SkillResource};
 pub mod scheduled;

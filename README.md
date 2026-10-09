@@ -191,7 +191,8 @@ is accepted only from `localhost:8080` or `127.0.0.1:8080`.
 | `crates/` | Shared domain, agent, provider, authentication, and storage code |
 
 Further reference: [architecture](docs/architecture.md),
-[execution bridge](docs/execution-bridge.md), and [API examples](docs/api-examples.md).
+[execution bridge](docs/execution-bridge.md), [plugin host installation](docs/plugins.md),
+and [API examples](docs/api-examples.md).
 
 ## License
 

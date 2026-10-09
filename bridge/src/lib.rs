@@ -4,6 +4,7 @@ mod error;
 pub mod exec;
 pub mod host_admin;
 pub mod paths;
+pub mod plugins;
 pub mod runs;
 pub mod scheduled;
 pub mod secret;

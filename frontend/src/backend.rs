@@ -531,6 +531,24 @@ pub trait Backend {
     ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectSkills, String>> {
         Box::pin(async { Err("Project skills unavailable".into()) })
     }
+    fn plugin_installations(
+        &self,
+    ) -> LocalBoxFuture<'_, Result<Vec<openwebide_core::plugins::PluginInstallation>, String>> {
+        Box::pin(async { Err("Plugin installation is unavailable".into()) })
+    }
+    fn prepare_plugin<'a>(
+        &'a self,
+        _project: i64,
+        _source: &'a openwebide_core::plugins::PluginSource,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::PreparedPlugin, String>> {
+        Box::pin(async { Err("Plugin installation is unavailable".into()) })
+    }
+    fn record_plugin<'a>(
+        &'a self,
+        _request: &'a openwebide_core::plugins::RecordPlugin,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::plugins::PluginInstallation>, String>> {
+        Box::pin(async { Err("Plugin installation is unavailable".into()) })
+    }
     fn session_skills(
         &self,
         _session: i64,
@@ -1395,6 +1413,24 @@ impl Backend for BackendApi {
         project: i64,
     ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectSkills, String>> {
         Box::pin(BackendApi::skills(self, project, false))
+    }
+    fn plugin_installations(
+        &self,
+    ) -> LocalBoxFuture<'_, Result<Vec<openwebide_core::plugins::PluginInstallation>, String>> {
+        Box::pin(BackendApi::plugin_installations(self))
+    }
+    fn prepare_plugin<'a>(
+        &'a self,
+        project: i64,
+        source: &'a openwebide_core::plugins::PluginSource,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::PreparedPlugin, String>> {
+        Box::pin(BackendApi::prepare_plugin(self, project, source))
+    }
+    fn record_plugin<'a>(
+        &'a self,
+        request: &'a openwebide_core::plugins::RecordPlugin,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::plugins::PluginInstallation>, String>> {
+        Box::pin(BackendApi::record_plugin(self, request))
     }
     fn session_skills(
         &self,

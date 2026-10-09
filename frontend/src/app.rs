@@ -174,6 +174,17 @@ pub fn App() -> impl IntoView {
 
     let project_git = crate::project_git::ProjectGit::new(api, projects_state, settings, auth);
     provide_context(project_git);
+    let plugins = crate::state::plugins::PluginsState::default();
+    provide_context(plugins);
+    provide_context(crate::project_plugins::ProjectPluginActions::new(
+        api,
+        plugins,
+        expect_context::<crate::project_host::ProjectHost>(),
+        auth,
+        projects_state,
+        chat_state,
+        settings,
+    ));
     let monitors = crate::state::monitors::MonitorsState::new();
     provide_context(monitors);
     provide_context(crate::monitors::MonitorActions::new(

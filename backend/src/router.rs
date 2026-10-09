@@ -63,6 +63,9 @@ enum Route {
     GetSessionSkills,
     SessionSkillCommand,
     ListProjects,
+    ListPlugins,
+    RecordPlugin,
+    PreparePlugin,
     GetEditorRecovery,
     SaveEditorRecovery,
     CreateProject,
@@ -217,6 +220,11 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("GET", ["sessions", id, "skills"]) if numeric_id(id) => Some(Route::GetSessionSkills),
         ("POST", ["sessions", id, "skills"]) if numeric_id(id) => Some(Route::SessionSkillCommand),
         ("GET", ["projects"]) => Some(Route::ListProjects),
+        ("GET", ["plugins"]) => Some(Route::ListPlugins),
+        ("POST", ["plugins"]) => Some(Route::RecordPlugin),
+        ("POST", ["projects", id, "plugins", "prepare"]) if numeric_id(id) => {
+            Some(Route::PreparePlugin)
+        }
         ("POST", ["projects"]) => Some(Route::CreateProject),
         ("PUT", ["projects", _]) => Some(Route::RenameProject),
         ("DELETE", ["projects", _]) => Some(Route::DeleteProject),
@@ -453,6 +461,11 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::GetProjectSkills), Some(user)) => {
             api::skills::get(&state, &path, user, false).await
+        }
+        (Some(Route::ListPlugins), Some(user)) => api::plugins::list(&state, user).await,
+        (Some(Route::RecordPlugin), Some(user)) => api::plugins::record(req, &state, user).await,
+        (Some(Route::PreparePlugin), Some(user)) => {
+            api::plugins::prepare(req, &state, &path, user).await
         }
         (Some(Route::ProjectSkillCommand), Some(user)) => {
             api::skills::command(req, &state, &path, user, false).await
@@ -932,6 +945,9 @@ mod tests {
                 );
             }
             for route in [
+                Route::ListPlugins,
+                Route::RecordPlugin,
+                Route::PreparePlugin,
                 Route::GetProjectSkills,
                 Route::ProjectSkillCommand,
                 Route::GetSessionSkills,
@@ -1077,6 +1093,9 @@ mod tests {
             ("POST", "projects/5/files/create", Route::FilesPost),
             ("POST", "projects/5/files/copy", Route::FilesPost),
             ("DELETE", "projects/5/files/delete", Route::FilesDelete),
+            ("GET", "plugins", Route::ListPlugins),
+            ("POST", "plugins", Route::RecordPlugin),
+            ("POST", "projects/5/plugins/prepare", Route::PreparePlugin),
             ("GET", "git/status", Route::GitGet),
             ("GET", "git/path-status", Route::GitGet),
             ("GET", "projects/5/git/path-status", Route::GitGet),

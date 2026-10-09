@@ -56,6 +56,12 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub plugins: RefCell<Vec<openwebide_core::plugins::PluginInstallation>>,
+    pub plugin_loads:
+        RefCell<VecDeque<Deferred<Vec<openwebide_core::plugins::PluginInstallation>>>>,
+    pub plugin_preparations: RefCell<VecDeque<Deferred<openwebide_core::plugins::PreparedPlugin>>>,
+    pub plugin_requests: RefCell<Vec<(i64, openwebide_core::plugins::PluginSource)>>,
+    pub plugin_records: RefCell<Vec<openwebide_core::plugins::RecordPlugin>>,
     pub questions: RefCell<Vec<openwebide_core::questions::AgentQuestion>>,
     pub question_commands: RefCell<Vec<(i64, openwebide_core::questions::QuestionCommand)>>,
     pub question_loads: RefCell<VecDeque<Deferred<openwebide_core::questions::QuestionResult>>>,
@@ -221,6 +227,50 @@ impl FakeBackend {
 }
 
 impl Backend for FakeBackend {
+    fn plugin_installations(
+        &self,
+    ) -> LocalBoxFuture<'_, Result<Vec<openwebide_core::plugins::PluginInstallation>, String>> {
+        Box::pin(async {
+            let pending = self.plugin_loads.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|error| error.to_string())?;
+            }
+            Ok(self.plugins.borrow().clone())
+        })
+    }
+    fn prepare_plugin<'a>(
+        &'a self,
+        project: i64,
+        source: &'a openwebide_core::plugins::PluginSource,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::PreparedPlugin, String>> {
+        Box::pin(async move {
+            self.plugin_requests
+                .borrow_mut()
+                .push((project, source.clone()));
+            let pending = self.plugin_preparations.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|error| error.to_string())?;
+            }
+            Err("No plugin fixture prepared".into())
+        })
+    }
+    fn record_plugin<'a>(
+        &'a self,
+        request: &'a openwebide_core::plugins::RecordPlugin,
+    ) -> LocalBoxFuture<'a, Result<Vec<openwebide_core::plugins::PluginInstallation>, String>> {
+        Box::pin(async move {
+            self.plugin_records.borrow_mut().push(request.clone());
+            let entries = openwebide_core::plugins::record_installation(
+                self.plugins.borrow().clone(),
+                request,
+                1,
+            )
+            .map_err(|error| error.to_string())?;
+            *self.plugins.borrow_mut() = entries.clone();
+            Ok(entries)
+        })
+    }
+
     fn host_connection(
         &self,
     ) -> LocalBoxFuture<'_, Result<openwebide_core::host_admin::HostConnection, String>> {

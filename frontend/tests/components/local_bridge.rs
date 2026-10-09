@@ -62,6 +62,7 @@ export function fakeBridgeHttp() {
         const body = JSON.parse((await request.text()) || '{}');
         const path = new URL(request.url).pathname;
         mock.calls.push({ path, body, authorization: request.headers.get('Authorization') });
+        if (path === '/plugins/prepare') return mock.invalid ? new Response(JSON.stringify({error:'preparation failed'}), {status:400}) : new Response(mock.plugin);
         if (path === '/scheduler/host') return new Response(JSON.stringify({id:'paired-host', name:'Test host', last_seen:0}));
         if (path === '/host/info' && !mock.hanging) return new Response(JSON.stringify({host_name:'bridge-host', os:'linux', scope:'bridge host', cpu:'Test CPU', logical_cores:8, ram_total_bytes:32000000000, ram_available_bytes:16000000000, disks:[], temperatures:[], gpus:[], fans:[], notes:[]}));
         if (path === '/environment' && !mock.hanging) return new Response(JSON.stringify({os: 'linux', shell: 'sh'}));
@@ -82,6 +83,7 @@ export function fakeBridgeHttp() {
     };
     return mock;
 }
+export function setBridgePlugin(mock, plugin) { mock.plugin = plugin; }
 export function setBridgeDiff(mock, diff) { mock.diff = diff; }
 export function restoreBridgeHttp(mock) { mock.restore(); }
 export function bridgeCalls(mock) { return JSON.stringify(mock.calls); }
@@ -100,6 +102,8 @@ export function probeDeleted(folder, name) {
 extern "C" {
     #[wasm_bindgen(js_name = fakeBridgeHttp)]
     pub(crate) fn fake_bridge_http() -> JsValue;
+    #[wasm_bindgen(js_name = setBridgePlugin)]
+    fn set_bridge_plugin(mock: &JsValue, plugin: &str);
     #[wasm_bindgen(js_name = setBridgeDiff)]
     fn set_bridge_diff(mock: &JsValue, diff: &str);
     #[wasm_bindgen(js_name = restoreBridgeHttp)]
@@ -2145,4 +2149,45 @@ async fn browser_child_task_uses_inherited_files_manual_approval_and_durable_nes
     );
     drop(mounted);
     contractCleanup(&fixture).await;
+}
+
+#[wasm_bindgen_test]
+async fn local_plugin_transport_uses_paired_credentials_and_propagates_host_failures() {
+    let previous = openwebide_frontend::idb::get_bridge_pairing_token()
+        .await
+        .unwrap();
+    openwebide_frontend::idb::set_bridge_pairing_token("plugin-test-token")
+        .await
+        .unwrap();
+    let http = HttpGuard(fake_bridge_http());
+    let prepared = openwebide_core::plugins::testing::receipt();
+    set_bridge_plugin(&http.0, &serde_json::to_string(&prepared).unwrap());
+    let mounted = mount_test(|_| view! {<div/>});
+    let client = BrowserBridgeClient::for_project(
+        "http://bridge.test:3001".into(),
+        "repos/x".into(),
+        BridgeCredentials::new(mounted.state.api),
+    );
+    assert_eq!(
+        client.prepare_plugin(&prepared.source).await.unwrap(),
+        prepared
+    );
+    let calls: Vec<serde_json::Value> = serde_json::from_str(&bridge_calls(&http.0)).unwrap();
+    assert_eq!(calls[0]["path"], "/plugins/prepare");
+    assert_eq!(calls[0]["authorization"], "Bearer plugin-test-token");
+    assert_eq!(
+        calls[0]["body"]["source"],
+        serde_json::to_value(&prepared.source).unwrap()
+    );
+    bridge_invalid(&http.0);
+    assert!(
+        client
+            .prepare_plugin(&prepared.source)
+            .await
+            .unwrap_err()
+            .contains("HTTP 400")
+    );
+    openwebide_frontend::idb::set_bridge_pairing_token(previous.as_deref().unwrap_or(""))
+        .await
+        .unwrap();
 }

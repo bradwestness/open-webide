@@ -172,33 +172,95 @@ Research references: [VS Code editing](https://code.visualstudio.com/docs/editin
 [Monaco support/architecture](https://github.com/microsoft/monaco-editor),
 and [EditorConfig](https://editorconfig.org/).
 
-### Code intelligence: in-browser WASM linters & LSP
+### Code intelligence: host language services, LSP & caching
 
-Run lightweight WebAssembly linters directly in the browser for instant diagnostics, with no
-language runtimes on the host, and optionally bridge to host language servers.
+Treat the homelab server and paired native bridges as persistent development
+hosts. Language services belong to a project on its execution host, rather than
+to an editor tab; browsers, phones and agent runs are clients of those services.
+Remote projects use the server bridge; local projects use a paired bridge with
+access to the selected folder. Language plugins and their runtimes install and
+execute on those hosts, never on browser clients.
 
 Build on the Full code editor component and its document/selection/extension APIs.
 Bring real-time code intelligence (syntax errors, lint squiggles, tooltips,
 autocomplete) into the editor while keeping the core diagnostics engine
 100% shared between Remote and Local mode:
 
-- Universal in-browser WASM linters running in a Web Worker against the
-  active editor buffer: `ruff-wasm` (Python), `oxc-wasm`/`biome-wasm`
-  (JS/TS), `syn`/`rustc_lexer` (Rust), `serde_json`/`toml` (configs) — all
+- Host lint/analysis providers, including lightweight WASM providers where useful,
   producing a shared `Diagnostic` struct for the editor's squiggle overlay.
-- Progressive-enhancement host LSP multiplexed over the Phase 11 bridge
+  Browser code renders results and implements core editing; it does not execute
+  plugin analyzers. Preserve core editing when no suitable host is available.
+- Host LSP multiplexed over the Phase 11 bridge
   (`rust-analyzer`, `pyright`, `vtsls`) for cross-file go-to-definition,
   hover, autocomplete, document symbols/outline, references, rename, code actions
   and document/selection formatting when a host toolchain is available.
-- One diagnostics UI regardless of whether a diagnostic came from the
-  in-browser linter or a remote host LSP.
+- One diagnostics UI regardless of whether a diagnostic came from a host linter
+  or language server, with matching local/remote feature and failure contracts.
+- Manage language-server lifetimes independently of client connections. Keep
+  useful servers and project indexes warm across tab closure, device changes and
+  brief disconnects, with bounded idle time, memory, process counts and eviction.
+  Start services on demand; do not keep every installed language or project
+  running indefinitely. Reconnect clients to current project services, recover
+  from host/server restarts, and allow plugin updates at controlled service
+  boundaries without changing providers beneath in-flight requests.
+- Expose diagnostics, symbols, definitions and references through one shared
+  language-service facade to editor features and agent tools. Reuse the same
+  project configuration, toolchain and pinned plugin versions across clients;
+  project/account access and normal approval rules still apply to agent actions.
+- Begin caching with server-owned indexing and supported persistent caches,
+  rather than duplicating language-server internals. Measure cold/warm latency,
+  cache hits and resource cost before adding OpenWebIDE result caches. Preserve
+  host artifacts outside user workspaces in persistent host storage; cache
+  contents are disposable derived data, not the source of installation settings
+  or user preferences, which remain in the database.
+- Add bounded, cancellable prefetching for likely files: open tabs, recent edits
+  and dependencies identified by providers. Prefer interactive requests over
+  speculative work, avoid eagerly opening every project file, and limit indexing
+  and prefetch concurrency/resource use. Initially target reusable diagnostics
+  and document symbols; only cache context-sensitive features such as completion
+  when their complete request identity and invalidation contract are known.
+- Reuse validated results across clients for identical project/document state.
+  Key results by user/project/host, document content or revision, project and
+  dependency state, effective configuration, and plugin/server version. Isolate
+  unsaved buffers by client/session identity unless explicitly shared. Invalidate
+  after edits, external file changes, branch/dependency/configuration changes or
+  provider updates; never publish stale results after ownership or document
+  changes. Expensive cross-file analysis should identify the project generation
+  it analyzed, not just the active file revision.
+- Verify the same service/cache contracts against both host adapters: cold/warm
+  use, device reconnect, concurrent clients with different unsaved buffers,
+  external edits and branch switches, cancellation, eviction, provider updates,
+  host outages and restart recovery. Benchmark interactive latency and bounded
+  resource use on a small homelab before claiming prefetching improves performance.
+
+Expose language features through the shared contribution contracts described in
+[Plugins & Git marketplaces](#plugins--git-marketplaces), so existing
+languages can become bundled plugins and community packages can add languages.
+Defer the language-plugin migration until the ongoing Full code editor work is
+complete; preserve the shared document/selection/extension APIs as its foundation.
 
 ### Editor Git annotations
 
-- GitLens-style editor annotations showing line authorship, commit details and
-  history, with navigation to the relevant commit or diff in the [Git pane](git.md).
-- Use shared Git orchestration and the existing bridge adapters in both modes;
-  guard asynchronous results against file, project and account changes.
+- Deliver GitLens-style line authorship, commit details and history as a bundled
+  first-party plugin and reference implementation of
+  [editor contributions](#plugins--git-marketplaces), after the shared editor APIs
+  and relevant plugin contracts are available. Navigate to the relevant commit
+  or diff through existing [Git pane](git.md) actions.
+- Use typed, declarative editor annotations for inline/gutter labels and hover
+  details, rendered by core components; document/selection hooks request refreshed
+  data from host handlers. Keep the contribution API reusable by other plugins
+  rather than hardcoding blame-specific UI or allowing browser plugin code.
+- Reuse shared Git orchestration and existing bridge adapters for blame/history
+  in both modes. Associate annotations with repository state and document
+  revisions, handle unsaved line shifts and uncommitted lines explicitly, and
+  discard stale results after file, project, account or host changes. Bound and
+  cache host queries, cancel obsolete work, and clear unavailable annotations
+  without blocking editing when a host or repository is unavailable.
+- Verify annotation placement and navigation in both modes, including unsaved
+  edits, branch switches, reconnects and plugin disable/update. Use this package
+  to validate independent editor-contribution enablement, theme/accessibility
+  behavior and shared action routing; do not mark shipped before the plugin path
+  and both host adapters are verified.
 
 ### Test discovery, running and debugging
 
@@ -294,25 +356,146 @@ terminal pane are done and in the changelog, but:
 
 ## Later
 
-### Agent-managed plugins & GitHub marketplaces
+### Plugins & Git marketplaces
 
-Extend agent capabilities through versioned plugin packages that users and the
-agent can manage, without requiring changes to the app for each new capability.
+Extend agent and editor capabilities through versioned plugin packages that users
+and the agent can manage, without requiring changes to the app for each new
+capability.
 
 - Start with tools and skills: a manifest declares identity, version, harness
   compatibility, dependencies, configuration and required capabilities, alongside
   tool schemas/handlers and skill instructions/resources. Build on the MCP client
   and [database-backed project skills](agent-skills.md); keep discovery and context
   loading bounded through the deferred-tool-loading work above. Add context/run hooks later when
-  needed; UI extensions are separate future work.
-- Maintain an official marketplace as a separate catalog repository in the
-  OpenWebIDE GitHub organization. Use a JSON index pointing to plugin repositories
+  needed; declarative UI contributions are a later stage of this same system.
+  The initial authoring work in `openwebide/plugins` provides skills-only package
+  and commit-pinned Git catalog schemas, offline validation/CI and a PR review
+  reference skill compatible with manual project-skill import. Settings now supports
+  explicit repository/commit/directory installation on either execution host, with
+  validated immutable snapshots and user-scoped database records. Marketplace
+  discovery/releases, contribution activation, runtime dependencies, lifecycle
+  controls and updates remain; host preparation alone does not enable plugins.
+- Use one package format with typed contributions rather than mutually exclusive
+  plugin types. A package can combine skills, MCP servers/tools and language
+  support, declarative panels/editor annotations and eventual editor hooks; validate compatibility,
+  configuration and permissions for each
+  contribution. Marketplace categories describe what a package offers without
+  selecting separate installation or lifecycle implementations. Install packages
+  and execute plugin code strictly on bridge hosts, never on browser clients or
+  phones. Clients consume plugin metadata, instructions and service results
+  through the shared facade/bridge; they do not maintain plugin clones, execute
+  plugin WASM modules or install plugin runtimes.
+- Let plugins contribute top-level panels through a versioned declarative UI
+  schema inspired by Block Kit. Declare stable panel IDs, titles, built-in icons
+  and host view/action handlers in the package manifest. Host handlers return
+  bounded UI documents composed of supported text, layout, status, form, button,
+  list/table and code/diff components; the core Rust/Leptos renderer uses existing
+  shared components, theme tokens, accessibility and responsive panel layouts.
+  Plugins provide data and action IDs, not arbitrary browser HTML/CSS/JavaScript,
+  WASM UI code or client-side expressions. Keep UI schema compatibility distinct
+  from package manifest compatibility and validate documents before rendering.
+- Route panel interactions through the same shared plugin facade and host bridge
+  as other contributions. Send validated inputs with the owning user/project,
+  panel-instance and view revision; dispatch only declared actions, apply normal
+  capability/approval rules, and return or stream replacement view revisions.
+  Prevent duplicate side effects and stale replies after navigation, account or
+  project switches, disablement and updates. Define loading/error/disconnected
+  states, subscription cleanup and bounded update rates; retain core navigation
+  when a plugin fails. Namespaced dynamic panels use the shared panel registry;
+  user layout/visibility and durable plugin configuration/state stay in the
+  database. Verify the same panel/action contracts through local and remote host
+  adapters, including mobile clients. Use a GitHub pull-request panel as a
+  first-party reference, with inspectable actions and approval before publishing.
+- Add editor hooks later as typed contributions in the same package format,
+  after the shared editor transaction/save APIs are stable. Start with bounded
+  host notifications such as document opened/changed/saved/closed; debounce
+  high-frequency events and send only declared, authorized document context.
+  Distinguish asynchronous notifications from request/response hooks such as
+  before-save transformations. Run handlers on the owning bridge host, never
+  browser clients; foreground hooks need explicit timeouts, deterministic ordering
+  and unavailable-host/error/cancellation behavior. Hook-proposed edits pass
+  through shared editor transactions and existing review/approval policy, with
+  document revision checks, undo support and protections against recursive
+  save/edit events. Reuse language-service formatting/code-action contracts where
+  applicable rather than creating competing edit paths. Allow hooks to be
+  disabled independently; bound background work and preserve normal editing/save
+  on optional hook failure. Verify both host adapters, plugin updates/disablement,
+  concurrent edits, disconnects and stale account/project/session results.
+- Pair editor hooks with a versioned declarative annotation contribution API for
+  source ranges/lines, inline and gutter content, hover details and declared
+  navigation actions. The host supplies bounded data tied to document revisions;
+  core editor components own rendering, theme tokens, placement, accessibility
+  and conflicts between providers. Treat annotations as a presentation contract,
+  separate from hook delivery and document edits. Use the bundled
+  [Git annotations plugin](#editor-git-annotations) as the first reference package.
+- After the ongoing Full code editor work is complete, support language
+  contributions for file recognition, syntax highlighting/folding, comment and
+  indentation rules, snippets, formatting, host diagnostics and LSP
+  configuration. Build on Code intelligence above; language packages may provide
+  only a subset of these features and may also include agent skills or tools.
+  Use a shared language-service facade for document synchronization, feature
+  routing, diagnostics, conflicts and failure handling, with thin host adapters
+  for running plugin syntax analysis and servers beside local or remote project
+  files. The core editor renders shared results and applies declarative editing
+  rules without executing plugin code in the browser. Preserve editing with a
+  core plain-text fallback when the host is unavailable. Guard results by document
+  revision and account/project/session ownership; define competing-provider
+  selection, missing-runtime behavior, server recovery and formatter precedence.
+- Move all existing language support behind those same contribution contracts,
+  shipped as bundled packages enabled by default to preserve today's experience.
+  Distinguish bundled artifacts, installed versions and enablement; record
+  installation/configuration in the database and activate language services on
+  matching files rather than starting every installed server. Bundled packages
+  use the same validation, configuration, conflict and lifecycle rules as
+  community packages. Compiled-in grammars can initially register through the
+  contract, but externally supplied syntax grammars require a versioned loading
+  and runtime contract before claiming full language extensibility.
+- Publish first-party reference packages through the official marketplace using
+  the community package format and permission rules: a GitHub integration with
+  authentication, MCP tools and review/issue skills; a skills-only review package;
+  and browser testing with host dependencies and artifacts. Add Terraform after
+  language contributions are available to demonstrate file recognition, syntax,
+  formatting and an existing LSP server. Keep upstream runtime/server versions
+  pinned and distinguish OpenWebIDE-maintained packaging from upstream ownership.
+  Include the bundled Git annotations package as the reference for editor hooks,
+  declarative annotations and navigation through existing Git actions.
+- Maintain the official marketplace and first-party reference packages in
+  [openwebide/plugins](https://github.com/openwebide/plugins). Use a root
+  `marketplace.json` index pointing to package directories in that repository or
+  external plugin repositories
   and versioned releases, with pull requests for listings and automated manifest
   validation. Ship it as the default source using the same format and capabilities
   as custom catalogs.
-- Let users configure additional GitHub catalog repositories, including private
-  ones, and install directly from a plugin repository URL. Authenticate private
-  catalogs and packages using configured GitHub credentials; keep credentials out
+- Make language packages discoverable when an unsupported file opens. Publish
+  searchable language metadata (file extensions, exact filenames and optional
+  content signatures, plus the features supplied) in the official catalog in the
+  OpenWebIDE GitHub organization and use the same metadata for custom catalogs.
+  Fetch/cache the index and match locally; do not send file contents or project
+  paths to catalog hosts. Show a dismissible suggestion with the package's source,
+  publisher and supported features, and offer inspection/install without
+  automatically installing, enabling or running it. Respect dismissed suggestions,
+  avoid repeated prompts, and keep editing usable during catalog outages. Share
+  matching and suggestion policy across modes, guard stale discovery results,
+  and persist user preferences/dismissals in the database. A cached catalog is
+  only a discovery hint; installation still verifies the pinned package release.
+- Let users configure additional catalogs from any public Git repository by
+  supplying its repository URL, ref and `marketplace.json` path (defaulting to
+  the repository's default branch and root file). Accept recognized forge file
+  URLs as a convenience and normalize them into the same repository/ref/path
+  records; do not require a forge-specific API or release service. Build in the
+  first-party GitHub catalog as the default source;
+  use the same catalog schema, discovery and lifecycle contracts for every source.
+  Install packages for the user, with user defaults and project-specific
+  enablement/configuration; do not duplicate installations per project. Persist sources in the
+  user's database settings. Catalog refs may track updates, while installed
+  package releases remain pinned to commits and artifact digests. Support
+  inspecting, refreshing, disabling and removing sources; removing a source
+  stops discovery without uninstalling its packages. Also support installing
+  directly from a plugin repository URL. Support packages from pinned Git
+  repository commits and subdirectories without requiring release archives;
+  verify archive digests when archives are provided. Authenticate private
+  catalogs and packages through configured Git/forge credential adapters,
+  including GitHub; keep credentials out
   of manifests and agent context. Optional GitHub topic discovery can follow the
   catalog/direct-install baseline.
 - Provide shared UI controls and agent tools to search/browse catalogs, inspect
@@ -327,6 +510,39 @@ agent can manage, without requiring changes to the app for each new capability.
   so a custom catalog cannot silently replace an official plugin with the same
   name. Pin releases to commits and artifact digests, retain the previous working
   version for rollback, and keep installed plugins usable during catalog outages.
+- Manage Git-backed installs through persistent repository caches and separate
+  commit-pinned package snapshots on the project's execution host: the paired
+  host bridge for local projects and the server/container bridge for remote
+  projects. Opening an unsupported Terraform file can suggest the catalog
+  package; choosing Install asks that project's bridge to clone/fetch and prepare
+  it on its host, then the editor uses its language services through that bridge.
+  Installation does not require a container checkout before a local host checkout.
+  Fetch catalogs/packages into staging, validate
+  the selected manifest, dependencies and artifacts, then atomically publish the
+  installed version in the database; never update files used by an active run
+  in place. Store container caches on a persistent volume outside user workspaces;
+  native hosts use their own persistent application-data caches. Keep the logical
+  user installation/version/configuration in the database and track readiness
+  separately per execution host. Reuse a host installation across projects;
+  switching hosts prepares the same pinned version there rather than assuming
+  executables are present. Keep caches rebuildable from database install records, isolate
+  private repository access by credential ownership, and retain snapshots needed
+  by active runs/jobs and rollback. Treat runtime dependencies as separately
+  managed requirements rather than assuming a Git checkout installs executables.
+  The Install flow must report missing prerequisites or prepare supported pinned
+  runtime artifacts with approval as needed before reporting native features ready.
+  Local projects require a paired bridge with folder access to use plugins;
+  browser-only local projects show that setup requirement and retain core editing.
+  Phones and other clients viewing a remote project use the server host's
+  installation without installing packages on the client device.
+- Provide user-controlled update policies (manual, notify, or automatic compatible
+  releases), with version/channel constraints and explicit opt-in to tracking a
+  development branch. Resolve every candidate to an immutable commit; validate
+  and prepare it before activation. Updates apply to later runs/language-service
+  sessions, leave the working version intact on failure, and require renewed
+  approval for expanded permissions or changed credential access. Catalog refresh
+  and package activation are separate operations; neither branch movement nor a
+  new catalog entry silently changes a pinned active version.
 - Pin each run to its plugin versions and configuration; updates apply to later
   runs. Validate compatibility and dependencies before activation, report failures
   clearly, and prevent plugins from granting themselves capabilities or changing
@@ -337,7 +553,7 @@ agent can manage, without requiring changes to the app for each new capability.
   restart recovery, deduplicated delivery and plugin disable/remove/update while
   jobs are pending through the shared facade in both project modes.
 - Put discovery, package validation, lifecycle, permissions, dependency resolution
-  and context contribution behind one shared plugin facade. Keep GitHub transport,
+  and context contribution behind one shared plugin facade. Keep Git/forge transport,
   database access and runtime execution in thin adapters for local and remote
   projects. Verify matching contracts for private repositories, failed installs
   and updates, rollback, disabled plugins, catalog outages, concurrent changes and

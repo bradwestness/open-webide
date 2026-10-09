@@ -21,6 +21,7 @@ spin-sdk = { workspace = true }
 rusqlite = { workspace = true }
 
 [dev-dependencies]
+openwebide-core = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 futures = { workspace = true }
 

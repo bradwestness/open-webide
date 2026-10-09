@@ -9,6 +9,13 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Install skills-only plugin packages from a repository URL, full Git commit ID
+  and package directory in Settings → Plugins. Local projects use their paired
+  host bridge and remote projects use the server bridge. Both share package
+  validation, immutable host snapshots and user-scoped database installation
+  records; failed preparation preserves previous versions. Plugin contribution
+  activation and marketplace discovery remain planned.
+
 - Reveal omitted wrapped caret endpoints from exact retained glyph geometry in
   both workspace modes. Align source paint with the current scroll position
   before caret measurements, preserving consecutive Home/End jumps. Sparse gaps

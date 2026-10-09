@@ -132,6 +132,7 @@ pub(crate) mod memories;
 pub(crate) mod model_operations;
 pub(crate) mod model_setup;
 mod paths;
+pub(crate) mod plugins;
 pub(super) mod projects;
 pub(super) mod prompts;
 pub(super) mod push;

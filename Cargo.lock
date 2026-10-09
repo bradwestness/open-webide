@@ -2418,6 +2418,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2 0.11.0",
  "tar",
  "tree-sitter",
  "tree-sitter-bash",

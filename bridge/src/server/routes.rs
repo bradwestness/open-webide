@@ -87,8 +87,10 @@ pub(super) async fn route(
         || path == "/host/admin"
         || path == "/host/probe"
         || path == "/host/input"
+        || path == "/plugins/prepare"
         || path.starts_with("/git/")
         || path == "/models/discover";
+    let mut principal = None;
     if is_api_req && method != "OPTIONS" {
         let auth_header = req
             .headers()
@@ -110,7 +112,8 @@ pub(super) async fn route(
                         .as_secs(),
                 )
                 .unwrap_or(i64::MAX);
-                authorized = crate::auth::authenticate(token, &config, now).is_ok();
+                principal = crate::auth::authenticate(token, &config, now).ok();
+                authorized = principal.is_some();
             }
         }
 
@@ -124,6 +127,52 @@ pub(super) async fn route(
 
     match (method.as_str(), path.as_str()) {
         ("OPTIONS", _) => Ok(preflight_response(req.headers(), allowed_origin)),
+        ("POST", "/plugins/prepare") => {
+            let result = async {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Payload {
+                    source: openwebide_core::plugins::PluginSource,
+                    user: Option<i64>,
+                }
+                let payload: Payload = read_json(req.into_body(), 16 * 1024).await?;
+                let owner = match principal {
+                    Some(crate::auth::Principal::User { user_id }) => format!("user:{user_id}"),
+                    Some(crate::auth::Principal::Paired) => "paired".into(),
+                    None => format!(
+                        "user:{}",
+                        payload.user.filter(|id| *id > 0).ok_or_else(
+                            || BridgeError::Validation("An authenticated user is required.".into())
+                        )?
+                    ),
+                };
+                let prepared = tokio::time::timeout(
+                    std::time::Duration::from_secs(180),
+                    config.plugins.prepare(
+                        &owner,
+                        crate::scheduled::host(&config).id,
+                        &payload.source,
+                    ),
+                )
+                .await
+                .map_err(|_| BridgeError::Execution("Plugin preparation timed out.".into()))?
+                .map_err(|error| match error {
+                    openwebide_core::plugins::PluginError::Invalid(message) => {
+                        BridgeError::Validation(message)
+                    }
+                    openwebide_core::plugins::PluginError::Conflict(message) => {
+                        BridgeError::Validation(message)
+                    }
+                    openwebide_core::plugins::PluginError::Host(message) => {
+                        BridgeError::Execution(message)
+                    }
+                })?;
+                serde_json::to_string(&prepared)
+                    .map_err(|error| BridgeError::Execution(error.to_string()))
+            }
+            .await;
+            Ok(execution_response(result, allowed_origin))
+        }
         ("POST", "/host/probe" | "/host/input") => {
             if origin.is_some() || config.pairing_token.is_some() {
                 return Ok(execution_response(

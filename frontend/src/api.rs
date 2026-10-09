@@ -1133,6 +1133,25 @@ impl BackendApi {
         ))
         .await
     }
+    pub async fn plugin_installations(
+        &self,
+    ) -> Result<Vec<openwebide_core::plugins::PluginInstallation>, String> {
+        self.get("/plugins").await
+    }
+    pub async fn prepare_plugin(
+        &self,
+        project: i64,
+        source: &openwebide_core::plugins::PluginSource,
+    ) -> Result<openwebide_core::plugins::PreparedPlugin, String> {
+        self.post(&format!("/projects/{project}/plugins/prepare"), source)
+            .await
+    }
+    pub async fn record_plugin(
+        &self,
+        request: &openwebide_core::plugins::RecordPlugin,
+    ) -> Result<Vec<openwebide_core::plugins::PluginInstallation>, String> {
+        self.post("/plugins", request).await
+    }
     pub async fn skill_command(
         &self,
         id: i64,

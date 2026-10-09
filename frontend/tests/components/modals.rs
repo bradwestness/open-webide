@@ -1005,7 +1005,7 @@ async fn settings_tabs_autosave_choices_and_support_keyboard_navigation_in_every
             false,
         );
         settle().await;
-        assert_eq!(active().id(), "settings-tab-host");
+        assert_eq!(active().id(), "settings-tab-plugins");
         mounted.click("#settings-tab-bridge");
         settle().await;
         let input: web_sys::HtmlInputElement = mounted
@@ -1073,6 +1073,14 @@ async fn settings_tabs_autosave_choices_and_support_keyboard_navigation_in_every
             false,
         );
         settle().await;
+        assert_eq!(active().id(), "settings-tab-plugins");
+        key(
+            &mounted.element("#settings-tab-plugins"),
+            "ArrowRight",
+            false,
+            false,
+        );
+        settle().await;
         assert_eq!(active().id(), "settings-tab-general");
         key(
             &mounted.element("#settings-tab-general"),
@@ -1081,8 +1089,13 @@ async fn settings_tabs_autosave_choices_and_support_keyboard_navigation_in_every
             false,
         );
         settle().await;
-        assert_eq!(active().id(), "settings-tab-host");
-        key(&mounted.element("#settings-tab-host"), "Home", false, false);
+        assert_eq!(active().id(), "settings-tab-plugins");
+        key(
+            &mounted.element("#settings-tab-plugins"),
+            "Home",
+            false,
+            false,
+        );
         settle().await;
         assert_eq!(active().id(), "settings-tab-general");
     }
