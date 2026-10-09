@@ -18,6 +18,7 @@ pub struct ParagraphProbe {
 #[derive(Clone, Debug)]
 pub struct ParagraphMeasurements {
     runs: Arc<[usize]>,
+    index: VisualLineIndex,
     records: Vec<ParagraphMeasurement>,
 }
 impl ParagraphMeasurements {
@@ -36,7 +37,7 @@ struct ParagraphMeasurement {
     bytes: Range<usize>,
     width: f64,
     height: f64,
-    scroll_width: f64,
+    scroll_width: Option<f64>,
     rectangles: Arc<[GlyphRectangle]>,
 }
 const MAX_RETAINED_RECTANGLES: usize = 128 * 1024;
@@ -51,6 +52,7 @@ pub struct ParagraphMeasurementPlan<'a> {
     continuation: Option<(usize, usize)>,
     expected: Vec<GlyphRectangle>,
     anchors: Vec<GlyphRectangle>,
+    anchor_glyphs: Vec<usize>,
     dimensions: Option<(f64, f64)>,
     scroll_width: f64,
     finished: bool,
@@ -95,6 +97,24 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         {
             return None;
         }
+        // Original paint boundaries survive shifted styled tokens. Sampling
+        // them also avoids tying measured geometry to unrelated coordinate-index
+        // checkpoints. Over-budget run tables retain the existing sparse policy.
+        let mut anchor_glyphs = if runs.len() <= super::MAX_ROW_GEOMETRY_ANCHORS - 2 {
+            let mut glyphs = Vec::with_capacity(runs.len() + 2);
+            glyphs.push(0);
+            for &byte in runs.iter().filter(|byte| **byte < body.len()) {
+                let glyph = index.index_at_byte(body, byte)?;
+                if index.at(body, glyph)?.0 == byte {
+                    glyphs.push(glyph);
+                }
+            }
+            glyphs.push(index.len() - 2);
+            glyphs
+        } else {
+            index.anchor_glyphs_in(0..index.len() - 1).collect()
+        };
+        anchor_glyphs.dedup();
         let probe = Self::probe_at(body, &index, &runs, 0, 0.0)?;
         let continuation = Self::continuation(body, &index, &runs, &probe)?;
         Some(Self {
@@ -104,6 +124,7 @@ impl<'a> ParagraphMeasurementPlan<'a> {
             continuation,
             expected: Vec::new(),
             anchors: Vec::new(),
+            anchor_glyphs,
             dimensions: None,
             scroll_width: 0.0,
             finished: false,
@@ -160,63 +181,143 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         }
         reused
     }
-    /// Replay unchanged probes only after an exact measured reconnection. No
-    /// translation is admitted: source/run offsets, glyph targets, dimensions,
-    /// origin and every incoming overlap rectangle must match the retained probe.
+    /// Replay only probes whose source, paint boundaries and incoming measured
+    /// overlap agree. A shifted suffix maps exact source/glyph coordinates; its
+    /// final extent is always measured again rather than translating an integer
+    /// scroll width. Synchronous callers use the same bounded replay policy.
     pub fn reuse_suffix(
         &mut self,
         old_body: &str,
         old: &ParagraphMeasurements,
         style_start: usize,
     ) -> usize {
-        if old_body.len() != self.body.len() || self.expected.is_empty() {
+        self.reuse_suffix_batch(old_body, old, style_start, usize::MAX)
+    }
+    pub fn reuse_suffix_batch(
+        &mut self,
+        old_body: &str,
+        old: &ParagraphMeasurements,
+        style_start: usize,
+        max_records: usize,
+    ) -> usize {
+        if self.expected.is_empty() {
             return 0;
         }
+        let old_byte = |byte| {
+            old_body
+                .len()
+                .checked_sub(self.body.len().checked_sub(byte)?)
+        };
         let mut reused = 0;
-        while let Some(probe) = self.probe().cloned() {
+        while reused < max_records {
+            let Some(probe) = self.probe().cloned() else {
+                break;
+            };
             if probe.bytes.start < style_start {
                 break;
             }
-            let Some(record) = old
-                .records
-                .binary_search_by_key(&probe.bytes.start, |record| record.bytes.start)
-                .ok()
-                .map(|index| &old.records[index])
-                .filter(|record| record.bytes == probe.bytes)
+            let Some(bytes) = old_byte(probe.bytes.start)
+                .zip(old_byte(probe.bytes.end))
+                .map(|(start, end)| start..end)
             else {
                 break;
             };
-            if self.dimensions != Some((record.width, record.height))
-                || old_body.get(probe.bytes.clone()) != self.body.get(probe.bytes.clone())
-                || record
-                    .rectangles
-                    .iter()
-                    .find(|rect| rect.glyph == probe.glyph_start)
-                    .is_none_or(|rect| rect.left.to_bits() != probe.origin.to_bits())
-                || self.expected.iter().any(|expected| {
+            let Some(record) = old
+                .records
+                .binary_search_by_key(&bytes.start, |record| record.bytes.start)
+                .ok()
+                .map(|index| &old.records[index])
+                .filter(|record| record.bytes == bytes)
+            else {
+                break;
+            };
+            let Some(old_start) = old
+                .index
+                .index_at_byte(old_body, bytes.start)
+                .and_then(|glyph| {
                     record
                         .rectangles
-                        .binary_search_by_key(&expected.glyph, |rect| rect.glyph)
+                        .binary_search_by_key(&glyph, |rect| rect.glyph)
                         .ok()
-                        .is_none_or(|index| record.rectangles[index] != *expected)
                 })
+                .map(|at| record.rectangles[at].left)
+            else {
+                break;
+            };
+            let delta = probe.origin - old_start;
+            let shifted = old_body.len() != self.body.len()
+                || old.index.len() != self.index.len()
+                || delta != 0.0;
+            if !delta.is_finite()
+                || self.dimensions != Some((record.width, record.height))
+                || old_body.get(bytes.clone()) != self.body.get(probe.bytes.clone())
+                || (shifted && (self.has_tabs || probe.bytes.end == self.body.len()))
             {
                 break;
             }
-            let run_slice = |runs: &[usize]| {
-                let start = runs.partition_point(|byte| *byte <= probe.bytes.start);
-                let end = runs.partition_point(|byte| *byte <= probe.bytes.end);
-                start..end
+            let run_slice = |runs: &[usize], bytes: &Range<usize>| {
+                runs.partition_point(|byte| *byte <= bytes.start)
+                    ..runs.partition_point(|byte| *byte <= bytes.end)
             };
-            if old.runs[run_slice(&old.runs)] != self.runs[run_slice(&self.runs)]
-                || !self.record_measurement(
-                    record.width,
-                    record.height,
-                    record.scroll_width,
-                    &record.rectangles,
-                    Some(&record.rectangles),
-                )
+            let old_runs = &old.runs[run_slice(&old.runs, &bytes)];
+            let new_runs = &self.runs[run_slice(&self.runs, &probe.bytes)];
+            if old_runs.len() != new_runs.len()
+                || old_runs
+                    .iter()
+                    .zip(new_runs)
+                    .any(|(old, new)| old_byte(*new) != Some(*old))
             {
+                break;
+            }
+            let Some(targets) = self.targets() else {
+                break;
+            };
+            let translated = targets
+                .iter()
+                .map(|&glyph| {
+                    let byte = old_byte(self.index.at(self.body, glyph)?.0)?;
+                    let old_glyph = old.index.index_at_byte(old_body, byte)?;
+                    if old.index.at(old_body, old_glyph)?.0 != byte {
+                        return None;
+                    }
+                    let at = record
+                        .rectangles
+                        .binary_search_by_key(&old_glyph, |rect| rect.glyph)
+                        .ok()?;
+                    Some(GlyphRectangle {
+                        glyph,
+                        left: record.rectangles[at].left + delta,
+                        ..record.rectangles[at]
+                    })
+                })
+                .collect::<Option<Vec<_>>>();
+            let Some(translated) = translated else {
+                break;
+            };
+            if self.expected.iter().any(|expected| {
+                translated
+                    .binary_search_by_key(&expected.glyph, |rect| rect.glyph)
+                    .ok()
+                    .is_none_or(|at| translated[at] != *expected)
+            }) {
+                break;
+            }
+            let rectangles: Arc<[GlyphRectangle]> =
+                if translated.as_slice() == record.rectangles.as_ref() {
+                    record.rectangles.clone()
+                } else {
+                    translated.into()
+                };
+            // Intermediate replay publishes no extent. The terminal fresh probe
+            // proves the complete width, including fractional shifts/rounding.
+            let extent = if shifted { None } else { record.scroll_width };
+            if !self.record_measurement(
+                record.width,
+                record.height,
+                extent,
+                &rectangles,
+                Some(&rectangles),
+            ) {
                 break;
             }
             reused += 1;
@@ -345,10 +446,13 @@ impl<'a> ParagraphMeasurementPlan<'a> {
             Some((byte, _)) => self.index.index_at_byte(self.body, byte)?,
             None => self.index.len() - 1,
         };
-        let mut targets = self
-            .index
-            .anchor_glyphs_in(self.probe.glyph_start..commit_end)
-            .collect::<Vec<_>>();
+        let first = self
+            .anchor_glyphs
+            .partition_point(|glyph| *glyph < self.probe.glyph_start);
+        let last = self
+            .anchor_glyphs
+            .partition_point(|glyph| *glyph < commit_end);
+        let mut targets = self.anchor_glyphs[first..last].to_vec();
         targets.extend(self.expected.iter().map(|rect| rect.glyph));
         if let Some((start, end)) = self.continuation {
             targets.extend(
@@ -368,18 +472,20 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         scroll_width: f64,
         rectangles: &[GlyphRectangle],
     ) -> bool {
-        self.record_measurement(width, height, scroll_width, rectangles, None)
+        self.record_measurement(width, height, Some(scroll_width), rectangles, None)
     }
 
     fn record_measurement(
         &mut self,
         width: f64,
         height: f64,
-        scroll_width: f64,
+        extent: Option<f64>,
         rectangles: &[GlyphRectangle],
         retained: Option<&Arc<[GlyphRectangle]>>,
     ) -> bool {
+        let scroll_width = extent.unwrap_or(width.ceil());
         if self.finished
+            || (self.continuation.is_none() && extent.is_none())
             || !width.is_finite()
             || !height.is_finite()
             || !scroll_width.is_finite()
@@ -456,10 +562,13 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         let commit_end = next
             .as_ref()
             .map_or(self.index.len() - 1, |(_, _, _, glyph)| *glyph);
-        for glyph in self
-            .index
-            .anchor_glyphs_in(self.probe.glyph_start..commit_end)
-        {
+        let first = self
+            .anchor_glyphs
+            .partition_point(|glyph| *glyph < self.probe.glyph_start);
+        let last = self
+            .anchor_glyphs
+            .partition_point(|glyph| *glyph < commit_end);
+        for &glyph in &self.anchor_glyphs[first..last] {
             let Some(rect) = lookup(glyph) else {
                 return false;
             };
@@ -473,7 +582,7 @@ impl<'a> ParagraphMeasurementPlan<'a> {
                 bytes: self.probe.bytes.clone(),
                 width,
                 height,
-                scroll_width,
+                scroll_width: extent,
                 rectangles: retained.map_or_else(|| rectangles.into(), Arc::clone),
             });
         } else {
@@ -512,6 +621,7 @@ impl<'a> ParagraphMeasurementPlan<'a> {
             HorizontalGeometry::new(self.index.len() - 1, width, height, self.anchors)?,
             ParagraphMeasurements {
                 runs: self.runs,
+                index: self.index,
                 records: self.records,
             },
         ))
@@ -716,8 +826,11 @@ mod tests {
                 rect.left += fractional_shift;
             }
             assert!(plan.record(244.0, 15.0, width, &moved));
-            assert_eq!(plan.reuse_suffix(&old, &retained, 1), 0);
-            assert!(plan.probe().is_some());
+            assert!(plan.reuse_suffix(&old, &retained, 1) > 2);
+            assert!(
+                plan.probe().is_some(),
+                "translated extents require a fresh terminal probe"
+            );
         }
         let mut plan = make();
         assert!(plan.record(244.0, 15.0, width, &rects));
@@ -728,6 +841,149 @@ mod tests {
                 .unwrap();
         assert!(plan.record(244.0, 15.0, width, &rects));
         assert_eq!(plan.reuse_suffix(&old, &retained, 0), 0);
+    }
+
+    fn styled_runs(prefix: &str, literal: &str, ending: &str) -> Vec<usize> {
+        let mut runs = Vec::new();
+        if !prefix.is_empty() {
+            runs.push(prefix.len());
+        }
+        runs.extend(
+            super::super::visual_text_run_ranges(literal).map(|run| prefix.len() + run.end),
+        );
+        if !ending.is_empty() {
+            runs.push(prefix.len() + literal.len() + ending.len());
+        }
+        runs
+    }
+    fn measure_styled(
+        source: &str,
+        runs: Vec<usize>,
+    ) -> (f64, HorizontalGeometry, ParagraphMeasurements) {
+        let mut plan = ParagraphMeasurementPlan::with_run_boundaries(
+            source,
+            VisualLineIndex::new(source).unwrap(),
+            runs,
+        )
+        .unwrap();
+        while let Some(probe) = plan.probe().cloned() {
+            let end = plan.index.index_at_byte(source, probe.bytes.end).unwrap();
+            let rectangles = rectangles(&plan);
+            assert!(plan.record(244.0, 15.0, (end as f64 * 7.0).max(244.0), &rectangles));
+        }
+        plan.finish_with_measurements().unwrap()
+    }
+    #[test]
+    fn shifted_styled_suffix_maps_bytes_and_clusters_in_bounded_batches() {
+        let literal = "word 文😀 e\u{301} ".repeat(8000);
+        let prefix = "const value = \"";
+        let ending = "\";";
+        let old = format!("{prefix}{literal}{ending}");
+        let (_, _, retained) = measure_styled(&old, styled_runs(prefix, &literal, ending));
+        for prefix in [
+            "zconst value = \"",
+            "😀const value = \"",
+            "e\u{301}const value = \"",
+            "const val = \"",
+        ] {
+            let source = format!("{prefix}{literal}{ending}");
+            let runs = styled_runs(prefix, &literal, ending);
+            let (width, complete, _) = measure_styled(&source, runs.clone());
+            let mut plan = ParagraphMeasurementPlan::with_run_boundaries(
+                &source,
+                VisualLineIndex::new(&source).unwrap(),
+                runs,
+            )
+            .unwrap();
+            assert_eq!(plan.reuse_suffix_batch(&old, &retained, prefix.len(), 1), 0);
+            let first = plan.probe().unwrap().clone();
+            let rects = rectangles(&plan);
+            let end = plan.index.index_at_byte(&source, first.bytes.end).unwrap();
+            assert!(plan.record(244.0, 15.0, (end as f64 * 7.0).max(244.0), &rects));
+            assert_eq!(plan.reuse_suffix_batch(&old, &retained, prefix.len(), 0), 0);
+            let mut reused = 0;
+            loop {
+                let next = plan.reuse_suffix_batch(&old, &retained, prefix.len(), 1);
+                assert!(next <= 1);
+                if next == 0 {
+                    break;
+                }
+                reused += next;
+            }
+            assert!(
+                reused > 5,
+                "{prefix:?}: shifted source must reuse exact interior probes"
+            );
+            let terminal = plan.probe().unwrap().clone();
+            assert_eq!(terminal.bytes.end, source.len());
+            let rects = rectangles(&plan);
+            assert!(plan.record(244.0, 15.0, width, &rects));
+            let (actual_width, actual, replayed) = plan.finish_with_measurements().unwrap();
+            assert_eq!(actual_width.to_bits(), width.to_bits());
+            assert_eq!(actual, complete);
+            assert!(replayed.records[1].scroll_width.is_none());
+            assert_eq!(replayed.records.last().unwrap().scroll_width, Some(width));
+        }
+    }
+    #[test]
+    fn shifted_replay_rejects_nonuniform_overlap_and_changed_source() {
+        let literal = "word 文😀 ".repeat(8000);
+        let old = format!("a{literal}");
+        let source = format!("😀a{literal}");
+        let (_, _, retained) = measure_styled(&old, styled_runs("a", &literal, ""));
+        let make = || {
+            ParagraphMeasurementPlan::with_run_boundaries(
+                &source,
+                VisualLineIndex::new(&source).unwrap(),
+                styled_runs("😀a", &literal, ""),
+            )
+            .unwrap()
+        };
+        let mut plan = make();
+        let mut rects = rectangles(&plan);
+        let glyph = plan
+            .index
+            .index_at_byte(&source, plan.continuation.unwrap().0)
+            .unwrap()
+            + 1;
+        rects
+            .iter_mut()
+            .find(|rect| rect.glyph == glyph)
+            .unwrap()
+            .width += 0.125;
+        assert!(plan.record(244.0, 15.0, 200_000.0, &rects));
+        assert_eq!(plan.reuse_suffix(&old, &retained, 5), 0);
+        let mut plan = make();
+        let rects = rectangles(&plan);
+        assert!(plan.record(244.0, 15.0, 200_000.0, &rects));
+        assert_eq!(plan.reuse_suffix(&old, &retained, source.len()), 0);
+        let mut different = old.clone();
+        let probe = plan.probe().unwrap();
+        let byte = different.len() - (source.len() - probe.bytes.start);
+        let end = byte + different[byte..].chars().next().unwrap().len_utf8();
+        different.replace_range(byte..end, "x");
+        assert_eq!(plan.reuse_suffix(&different, &retained, 5), 0);
+    }
+
+    #[test]
+    fn shifted_tabbed_suffix_requires_fresh_measurements() {
+        let literal = "word\t文😀 ".repeat(8000);
+        let old = format!("a{literal}");
+        let source = format!("za{literal}");
+        let (_, _, retained) = measure_styled(&old, styled_runs("a", &literal, ""));
+        let mut plan = ParagraphMeasurementPlan::with_run_boundaries(
+            &source,
+            VisualLineIndex::new(&source).unwrap(),
+            styled_runs("za", &literal, ""),
+        )
+        .unwrap();
+        let rects = rectangles(&plan);
+        assert!(plan.record(244.0, 15.0, 200_000.0, &rects));
+        assert_eq!(plan.reuse_suffix(&old, &retained, 2), 0);
+        assert!(
+            plan.probe().is_some(),
+            "tab-grid phase needs fresh DOM proof"
+        );
     }
 
     #[test]

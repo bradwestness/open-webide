@@ -2494,3 +2494,62 @@ Validation passed: 115 native frontend tests, strict WASM frontend lint, the ful
 Chrome suite (18 unit, 446 component and four adapter tests), the separate five-family
 font/feature/whitespace matrix and near-limit geometry matrix, format checks and
 the finalized release build. This checkpoint's CI remains required.
+
+
+### Shifted styled paragraph replay (2026-10-08)
+
+Unchanged styled suffix probes now map exact source bytes and grapheme positions
+across insertions/deletions. Original paint-run endpoints supply bounded anchors;
+replay checks source slices, normalized run boundaries and every incoming browser
+overlap rectangle before translating retained rectangles. Replay yields after a
+bounded batch. Translated interior probes publish no scroll extent: the terminal
+probe freshly measures actual browser rounding. Shifted tabs and failed proofs
+use fresh probes; plain/changed long-token boundaries remain implementation work.
+
+Pending plain preparation retains the last styled candidate without permitting
+stale geometry publication. Matching trusted font notifications preserve the
+measured font identity across source edits, while account/project/read/font and
+CSS changes still reject stale candidates. The browser regression exercises ASCII,
+emoji and combining-prefix insertion plus deletion in both modes, comparing every
+published anchor, endpoint caret and complete extent to the full browser renderer.
+
+[Repeated Linux samples](editor-performance/shifted-paragraph-linux-repeat.jsonl)
+use release module 1fe4ba3678588de8, based on 40cab32 plus this draft, the existing
+arm64 measurement image and 4-CPU/10-GiB container budget. The earlier pinned
+backend artifact was removed by build cleanup; these samples use a newly built
+40cab32/draft backend pinned at SHA-256
+`0f0129f66166019510c4c4ac8ea68e90852faad3b67a35c83528b9b51e462799`.
+The host also ran component checks, so resources were not exclusive. Each of the
+six samples retains actual String styling in the 1,048,567-byte Rust source through
+load, scrolling and beginning insertion, verifying byte-zero selection and the
+complete saved document. Local fixtures contain no native directory handle and
+do not establish folder permissions. Three samples per mode are descriptive,
+not a latency distribution or a general memory guarantee.
+
+| Mode | Cold paint median (range), ms | Scroll paint median (range), ms | Beginning input median (range), ms | Peak Chrome PSS range, KiB | Largest task range, ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Local | 4014.3 (3669.4–5001.1) | 20.8 (17.7–27.7) | 539.2 (505.5–540.2) | 751452–761699 | 102–104 |
+| Remote | 3892.5 (3726.9–4647.8) | 30.2 (17.0–31.6) | 520.1 (509.4–558.4) | 704946–740267 | 118–125 |
+
+The [untruncated Linux trace](editor-performance/shifted-paragraph-linux-trace.jsonl)
+records three actual sliced input layout probes per mode, versus 72 in the prior
+trace. Fresh input probes shape 11,385 and 4,631 UTF-16 units; the visible paint
+probe shapes 386. Cold preparation still shapes 72–80 probes. Both trace runs
+verify the complete saved source.
+
+The preceding checkpoint's beginning-input medians were 2644.3/2761.9 ms. These
+observations support substantial reduction in repaint work, but cold load,
+half-second input and process memory still fail the full responsiveness goal.
+Validation so far passes 492 all-feature core tests, 388 no-default-feature core
+tests, 115 native frontend tests, strict core/WASM lint and the release build.
+The actual production worker retains exact fresh/incremental source, structure
+and near-limit Rust/YAML String spans with 1,552 cooperative yields. The full
+ordinary Chrome suite passes 18 unit, 447 component and four adapter tests.
+Both separate complete-renderer font/feature/whitespace and near-limit geometry
+matrices pass. Trusted release input checks pass commit/cancel, undo/redo and
+complete LF/CRLF source preservation in both modes. These checks do not establish
+physical IME, installed PWA, touch, assistive-technology or native folder permission
+behavior. This checkpoint's CI remains required.
+
+All five jobs passed for both previous caret checkpoints: f1cf98b (37861220328)
+and 40cab32 (37862828415). They do not replace verification of this draft.

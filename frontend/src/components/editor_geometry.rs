@@ -173,6 +173,7 @@ fn sample_geometry(
     glyphs: &mut Glyphs<'_>,
     bounds: &web_sys::DomRect,
     horizontal: bool,
+    samples: Option<Vec<usize>>,
 ) -> Option<openwebide_core::editor::MeasuredRowGeometry> {
     if !horizontal && !glyphs.index.source_paint_eligible() {
         return None;
@@ -181,7 +182,7 @@ fn sample_geometry(
         GlyphRectangle, HorizontalGeometry, MAX_ROW_GEOMETRY_ANCHORS, MeasuredRowGeometry,
         WrappedGeometry,
     };
-    let mut indices = glyphs.index.anchor_glyphs().collect::<Vec<_>>();
+    let mut indices = samples.unwrap_or_else(|| glyphs.index.anchor_glyphs().collect::<Vec<_>>());
     indices.dedup();
     if indices.len() <= MAX_ROW_GEOMETRY_ANCHORS {
         let anchors = indices
@@ -276,7 +277,28 @@ pub(super) fn preparation_geometry(
         return None;
     }
     let mut glyphs = Glyphs::new(row, body, Some(index))?;
-    sample_geometry(&mut glyphs, bounds, !wrapped)
+    sample_geometry(&mut glyphs, bounds, !wrapped, None)
+}
+
+/// The complete renderer independently measures every anchor selected by the
+/// bounded paragraph policy, which can differ from coordinate-index checkpoints.
+#[cfg(feature = "test-support")]
+pub(super) fn paragraph_geometry(
+    row: &web_sys::Element,
+    body: &str,
+    index: VisualLineIndex,
+    bounds: &web_sys::DomRect,
+    samples: Vec<usize>,
+) -> Option<openwebide_core::editor::MeasuredRowGeometry> {
+    let text = row.text_content()?;
+    if !openwebide_core::editor::textarea_value_matches(
+        body,
+        text.strip_suffix('\n').unwrap_or(&text),
+    ) {
+        return None;
+    }
+    let mut glyphs = Glyphs::new(row, body, Some(index))?;
+    sample_geometry(&mut glyphs, bounds, true, Some(samples))
 }
 
 /// Retain the logical row's exact height while copying only its measured visual
@@ -336,7 +358,7 @@ fn window_paint_row(
             )
         }
     };
-    let sampled = sample_geometry(&mut glyphs, &bounds, horizontal);
+    let sampled = sample_geometry(&mut glyphs, &bounds, horizontal, None);
     if horizontal && first == last {
         let original_style = row.get_attribute("style").unwrap_or_default();
         row.set_attribute(

@@ -158,6 +158,18 @@ async fn measure_paragraph(
     let suffix = actions.and_then(|actions| actions.paragraph_suffix(scope, logical));
     let mut probes = 0_usize;
     while let Some(probe) = plan.probe().cloned() {
+        if !current() {
+            return Ok(None);
+        }
+        if let Some((actions, suffix)) = actions.zip(suffix.as_ref()) {
+            let reused = actions.resume_paragraph_suffix_batch(suffix, &mut plan);
+            #[cfg(feature = "test-support")]
+            SUFFIX_PROBES.set(SUFFIX_PROBES.get() + reused);
+            if reused > 0 {
+                crate::util::yield_task().await;
+                continue;
+            }
+        }
         let Some(targets) = plan.targets() else {
             return Ok(None);
         };
@@ -188,13 +200,6 @@ async fn measure_paragraph(
             &layout.rectangles,
         ) {
             return Ok(None);
-        }
-        if let Some((actions, suffix)) = actions.zip(suffix.as_ref()) {
-            let reused = actions.resume_paragraph_suffix(suffix, &mut plan);
-            #[cfg(feature = "test-support")]
-            SUFFIX_PROBES.set(SUFFIX_PROBES.get() + reused);
-            #[cfg(not(feature = "test-support"))]
-            let _ = reused;
         }
         paint.set_inner_html("");
         probes += 1;
@@ -633,8 +638,15 @@ pub(super) async fn check_paragraph_geometry(
     let index = scope.projection.visual_line_index(logical).ok_or(())?;
     let glyphs = index.len() - 1;
     let bounds = row.get_bounding_client_rect();
+    let anchors = bounded.anchors(0..glyphs).ok_or(())?;
     let Some(openwebide_core::editor::MeasuredRowGeometry::Horizontal(complete)) =
-        super::editor_geometry::preparation_geometry(&row, body, index.clone(), &bounds, false)
+        super::editor_geometry::paragraph_geometry(
+            &row,
+            body,
+            index.clone(),
+            &bounds,
+            anchors.iter().map(|anchor| anchor.glyph).collect(),
+        )
     else {
         return Ok(false);
     };
