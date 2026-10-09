@@ -3163,3 +3163,35 @@ The final optimized Chromium regression run passed all six paragraph contracts
 (30.42 s), covering final global overflow rounding, near-limit complete-row
 geometry, altered-overlap fallback, changed-prefix/stale-scope rejection,
 unchanged suffix reuse and the font/feature/whitespace matrix in both modes.
+
+### Cooperative parsed-region reconciliation (2026-10-09)
+
+The final structure job now retains parsed/lexical reconciliation before metadata
+validation and bracket linking. It builds and stably orders parsed coverage,
+merges recognized regions, filters lexical fallbacks by ordered lookup, groups
+and stably orders interpolation holes, emits their protected pieces and opaque
+boundaries, orders the combined list and merges overlaps across batches. Unclaimed
+hole-owner allocations are also released one owner per step. Ordered lookups remain
+logarithmic, and vector/hash capacity growth remains runtime allocation work.
+
+Synchronous callers drain this same Rust job; worker and browser fallback callers
+use its existing 256-unit slices. Partial reconciliation cannot publish a structure.
+The previous stable overlap/closed-marker semantics and source allocation remain
+unchanged. No analysis limit, parser budget or fallback deadline was raised.
+
+An independent copy of the previous synchronous algorithm checks reversed coverage,
+overlapping and equal-key interpolation holes, lexical precedence, unclaimed owners,
+closed markers and exact final bracket/opaque/selection tables at budgets 1, 7 and
+256 with LF/CRLF and Unicode. An unfinished job cannot publish and releases its
+source. All 562 parser-enabled core tests passed (4.20 s), and strict all-target
+core lint passed.
+
+Context extraction from retained parser subtrees, fallback metadata collection,
+initial/scratch allocation, fold/color/paint assembly and serialization remain
+separate unbounded work. This checkpoint alone does not prove complete large-file
+responsiveness, process-memory behavior or the physical-input release gates.
+Validation also passed 424 parser-free core tests (3.63 s), six optimized
+cooperative browser contracts (4.89 s) in both modes, the mixed heredoc/nested
+interpolation editing and paint contract (0.35 s) in both modes, and strict
+optimized WASM component-test lint. All five CI jobs passed for prior checkpoint
+`53b9092` in run `37918744325`; the complete release gates remain open.

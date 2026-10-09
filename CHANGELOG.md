@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reconcile parsed editing regions and lexical fallbacks across bounded batches,
+  preserving interpolation holes and stable region ordering while hiding
+  incomplete contexts in both workspace modes.
+
 - Avoid repeated global overflow layout during bounded paragraph preparation;
   preserve exact glyph geometry and freshly measure the final document extent
   in both workspace modes.

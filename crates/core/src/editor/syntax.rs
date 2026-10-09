@@ -16,7 +16,6 @@ mod transfer;
 use super::{FoldRange, MAX_STRUCTURE_BYTES, SyntaxProvider, normalize_folds, syntax_provider};
 use super::{Structure, SyntaxContextKind, structure::RegionKind};
 use crate::highlight::Language;
-use std::collections::HashMap;
 use std::ops::Range as ByteRange;
 use std::sync::Arc;
 pub use transfer::{MAX_ANALYSIS_MESSAGE_BYTES, SyntaxAnalysisData, SyntaxSource};
@@ -430,77 +429,16 @@ impl SyntaxDocument {
                     .ok()?;
             }
         }
-        let mut coverage: Vec<_> = contexts
-            .protected
-            .iter()
-            .map(|(range, _, _)| range.clone())
-            .collect();
-        coverage.sort_by_key(|range| (range.start, range.end));
-        let mut recognized: Vec<ByteRange<usize>> = Vec::new();
-        for range in coverage {
-            if let Some(previous) = recognized.last_mut()
-                && range.start < previous.end
-            {
-                previous.end = previous.end.max(range.end);
-            } else {
-                recognized.push(range);
-            }
-        }
-        baseline.retain(|(range, _, _)| {
-            let end = recognized.partition_point(|parsed| parsed.start <= range.start);
-            !end.checked_sub(1)
-                .and_then(|index| recognized.get(index))
-                .is_some_and(|parsed| range.end <= parsed.end || parsed.start == range.start)
-        });
-        let mut by_owner: HashMap<(usize, usize), Vec<ByteRange<usize>>> = HashMap::new();
-        for (owner, hole) in contexts.holes {
-            by_owner
-                .entry((owner.start, owner.end))
-                .or_default()
-                .push(hole);
-        }
-        for (range, closed, kind) in contexts.protected {
-            if kind == RegionKind::Text {
-                opaque_starts.push(range.start);
-            }
-            let mut start = range.start;
-            let mut owned = by_owner
-                .remove(&(range.start, range.end))
-                .unwrap_or_default();
-            owned.sort_by_key(|hole| hole.start);
-            for hole in owned {
-                if start < hole.start {
-                    baseline.push((start..hole.start, false, kind));
-                }
-                start = start.max(hole.end);
-                opaque_starts.push(start);
-            }
-            if start < range.end {
-                baseline.push((start..range.end, closed, kind));
-            }
-        }
-        baseline.sort_by_key(|(range, _, _)| (range.start, range.end));
-        let mut protected: Vec<(ByteRange<usize>, bool, RegionKind)> = Vec::new();
-        for (range, closed, kind) in baseline {
-            if let Some((previous, previous_closed, _)) = protected.last_mut()
-                && range.start < previous.end
-            {
-                if range.end > previous.end {
-                    previous.end = range.end;
-                    *previous_closed = closed;
-                }
-            } else {
-                protected.push((range, closed, kind));
-            }
-        }
-        Some(Structure::prepare_parsed(
+        let mut work = Structure::prepare_parsed(
             self.text.clone(),
             self.language,
-            protected,
+            baseline,
             scopes,
             opaque_starts,
             contexts.selections,
-        ))
+        );
+        work.reconcile(contexts.protected, contexts.holes);
+        Some(work)
     }
 
     fn clear(&mut self) {

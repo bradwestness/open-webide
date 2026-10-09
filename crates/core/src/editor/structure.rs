@@ -4,6 +4,8 @@ use std::ops::Range;
 use std::sync::Arc;
 #[cfg(feature = "editor-parser")]
 mod ordering;
+#[cfg(feature = "editor-parser")]
+mod reconciliation;
 pub(super) mod scanning;
 
 use crate::highlight::Language;
@@ -237,6 +239,7 @@ impl Structure {
         };
         StructurePreparation {
             structure: result,
+            reconciliation: None,
             metadata: MetadataPreparation::default(),
             linking: BracketLinking::default(),
         }
@@ -486,12 +489,27 @@ impl MetadataPreparation {
 #[cfg(feature = "editor-parser")]
 pub(super) struct StructurePreparation {
     structure: Structure,
+    reconciliation: Option<reconciliation::ContextReconciliation>,
     metadata: MetadataPreparation,
     linking: BracketLinking,
 }
 #[cfg(feature = "editor-parser")]
 impl StructurePreparation {
+    pub fn reconcile(
+        &mut self,
+        parsed: Vec<(Range<usize>, bool, RegionKind)>,
+        holes: Vec<(Range<usize>, Range<usize>)>,
+    ) {
+        self.reconciliation = Some(reconciliation::ContextReconciliation::new(parsed, holes));
+    }
+
     pub fn advance(&mut self, budget: usize) -> Option<bool> {
+        if let Some(reconciliation) = &mut self.reconciliation {
+            if reconciliation.advance(&mut self.structure, budget) {
+                self.reconciliation = None;
+            }
+            return Some(false);
+        }
         if !self.metadata.complete() {
             self.metadata.advance(&mut self.structure, budget)?;
             return Some(false);
@@ -500,7 +518,8 @@ impl StructurePreparation {
             .advance(&mut self.structure, budget, &mut || {})
     }
     pub fn finish(self) -> Option<Structure> {
-        (self.metadata.complete()
+        (self.reconciliation.is_none()
+            && self.metadata.complete()
             && !self.linking.failed
             && self.linking.position == self.structure.source.len())
         .then_some(self.structure)

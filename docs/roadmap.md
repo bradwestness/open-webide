@@ -99,7 +99,7 @@ tracks the remaining work rather than every optimization already shipped.
   construction still segments full rows.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
-  final context assembly and bounded metadata publication,
+  remaining context collection and paint publication,
   larger fenced-code workloads and changed-source plain row-table
   reconstruction/validation. Color classifiers and retained-part checks now
   share cursor-provided parents. Cooperative source-change comparison now
@@ -117,7 +117,7 @@ tracks the remaining work rather than every optimization already shipped.
   embedded-scope lookup. Unchanged embedded bodies retain relative fallback contexts;
   outer/new-body scanning now resumes across worker tasks, including long literal
   and comment bodies, YAML headers/scalars and speculative row replay. Final
-  context/selection-list assembly remains. Grammar-free SQL plain-row preparation
+  context/selection-list collection remains. Grammar-free SQL plain-row preparation
   now yields within long rows while scanning, validating retained text and copying
   plain tokens; the browser fallback uses the same bounded job. Comparing retained
   plain sources now also resumes within that job's byte budget, preserving exact
@@ -129,9 +129,10 @@ tracks the remaining work rather than every optimization already shipped.
   boundaries. Final structure metadata now validates, orders and deduplicates
   across bounded batches, preserving stable range order and rejecting invalid
   coordinates before bracket linking. Nearly ordered lists avoid scratch tables;
-  heavily disordered lists use a bounded stable merge fallback. Context collection,
-  earlier reconciliation/sorting, scratch allocation and final paint assembly
-  remain unbounded.
+  heavily disordered lists use a bounded stable merge fallback. Parsed/lexical
+  region reconciliation now sorts coverage, filters fallbacks, orders and splits
+  interpolation holes and merges regions across bounded batches. Context collection,
+  scratch allocation and final paint assembly remain unbounded.
 - [ ] **Source ownership and storage:** finish remaining external parser snapshots,
   changed-revision source comparisons, transport serialization, diff shaping and
   native-text materialization. Worker delta reconstruction now copies validated
