@@ -92,8 +92,10 @@ tracks the remaining work rather than every optimization already shipped.
   final context assembly and bounded metadata publication,
   larger fenced-code workloads and changed-source plain row-table
   reconstruction/validation. Cooperative source-change comparison now
-  shares the resumable UTF-8 comparison used by plain-row preparation; admission
-  and changed row/index assembly still need bounded work. Resolved worker parser
+  shares the resumable UTF-8 comparison used by plain-row preparation. Syntax
+  admission now counts newlines across bounded worker/browser tasks before
+  parsing or serialization; changed row/index assembly still needs bounded work.
+  Resolved worker parser
   replacements reuse their validated spans only
   for the exact retained base allocation. Intersecting plain fallback rows retain
   raw-byte boundary validation. Fallback range/opaque-point checks now use ordered

@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Yield while checking syntax source limits before worker serialization and
+  parsing, preserving exact byte/newline limits and rejecting canceled or
+  superseded sources without publishing stale analysis.
+
 - Yield during parser-free warm-source entry comparison and pass its validated
   replacement into plain-row reuse, preserving exact-base checks and avoiding
   a second comparison of the same source.

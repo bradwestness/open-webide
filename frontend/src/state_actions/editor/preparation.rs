@@ -435,7 +435,33 @@ impl EditorActions {
                     else {
                         break;
                     };
-                    if openwebide_core::editor::preparation_exceeds_limits(&scope.source) {
+                    let mut admission =
+                        openwebide_core::editor::SyntaxAdmission::new(scope.source.clone());
+                    while admission.status()
+                        == openwebide_core::editor::SyntaxAdmissionStatus::Pending
+                    {
+                        if pending.is_disposed()
+                            || ticket.get_value() != request_ticket
+                            || !self.syntax_scope_current(&scope)
+                        {
+                            break;
+                        }
+                        admission.advance(openwebide_core::highlight::LEXICAL_BATCH_BYTES);
+                        if admission.status()
+                            == openwebide_core::editor::SyntaxAdmissionStatus::Pending
+                        {
+                            crate::util::yield_task().await;
+                        }
+                    }
+                    if pending.is_disposed() {
+                        break;
+                    }
+                    if ticket.get_value() != request_ticket || !self.syntax_scope_current(&scope) {
+                        continue;
+                    }
+                    if admission.status()
+                        == openwebide_core::editor::SyntaxAdmissionStatus::TooLarge
+                    {
                         if ticket.get_value() == request_ticket && self.syntax_scope_current(&scope)
                         {
                             self.workspace

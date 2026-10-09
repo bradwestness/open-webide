@@ -2812,3 +2812,40 @@ cooperative Chromium contracts pass, including a larger SQL document with a
 Admission, row/index assembly, paint/transport comparisons, final publication,
 geometry, process memory and physical input/device gates remain open. These
 results do not establish full editor completion or Linux CI reliability.
+
+### Cooperative syntax admission (2026-10-09)
+
+The worker coordinator and shared preparation engine now use one source-owned
+admission scanner. Each advance inspects at most the supplied raw-byte budget;
+UTF-8 and CRLF boundaries need no copies. It retains newline counts across task
+yields and preserves the existing 2 MiB byte cap and rejection at 50,000 LF bytes.
+Borrowed synchronous admission drains the same scanner. Browser admission yields
+before request serialization and rechecks the request ticket, source/read scope
+and account generation before sending. Core admission hides old contexts/folds
+until the admitted source enters the existing shared comparison/parser facade.
+Cancellation or supersession discards its owned pending source.
+
+All 514 parser-enabled and 399 minimal core tests pass; strict parser-enabled
+core lint passes. Native regressions cover independent declared byte/newline
+boundaries, zero budgets, bounded cursor movement, Unicode, LF/CRLF, source
+ownership, cancellation and replacement. Later-phase parser/comparison fixtures
+explicitly complete admission first so their original progress assertions remain
+meaningful. A repeated-word Markdown source still hits the existing parser
+progress limit; fresh-analysis equivalence uses the admitted long paragraph
+fixture, without removing that larger Markdown gate.
+
+Strict release WASM frontend lint also passes. All five optimized cooperative
+Chromium contracts pass in 6.51 seconds in both modes, including source/read/account
+invalidation before transport and rejection without sending requests. The UI
+capacity boundary remains intact: files beyond the editor byte cap never receive
+a syntax key or worker request; admitted files with 50,000 LF bytes receive syntax
+TooLarge without transport. The core scanner independently verifies the larger
+syntax byte boundary. Changed
+row/index assembly, paint/transport comparisons, final publication, exact geometry,
+process memory and physical input/device gates remain open.
+
+The preceding parser-comparison and parser-free checkpoints both completed all
+five Linux/platform CI jobs successfully: runs `37892302443` and `37893661498`.
+Their partitioned UI jobs retain every contract and the existing readiness
+deadlines. This proves two complete checkpoint runs; near-limit performance,
+release/PWA repeats and physical device gates remain separate requirements.

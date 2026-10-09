@@ -8749,6 +8749,160 @@ async fn syntax_preparation_cannot_publish_after_scope_changes_in_both_modes() {
 }
 
 #[wasm_bindgen_test]
+async fn cooperative_worker_admission_yields_before_transport_and_rejects_stale_scopes_in_both_modes()
+ {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{SyntaxRequest, SyntaxSource},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for stale in ["source", "read", "account"] {
+            let paused = ResumeTasks(pause_initial_fallback_tasks());
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let initial = format!("/*{}*/\r\nfn original() {{}}", "文😀 ".repeat(60_000));
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("admission.rs".into()));
+                state.workspace.content.set(initial.into());
+                let actions = EditorActions::new(state.workspace);
+                actions.install_syntax_transport(installed);
+                view! { <span>{move || actions.syntax_is_pending().to_string()}</span> }
+            });
+            settle().await;
+            assert!(EditorActions::new(mounted.state.workspace).syntax_is_pending());
+            assert_eq!(
+                transport.calls.get(),
+                0,
+                "{mode:?}: admission must yield before serialization and transport"
+            );
+            assert!(
+                mounted
+                    .state
+                    .workspace
+                    .editor_preparation
+                    .get_untracked()
+                    .is_none()
+            );
+            match stale {
+                "read" => mounted
+                    .state
+                    .workspace
+                    .editor_read_revision
+                    .update(|revision| *revision = revision.wrapping_add(1)),
+                "account" => mounted
+                    .state
+                    .auth
+                    .generation
+                    .update(|generation| *generation = generation.wrapping_add(1)),
+                _ => {}
+            }
+            let expected = "fn replacement() {}\r\n";
+            mounted
+                .state
+                .workspace
+                .content
+                .set(expected.to_owned().into());
+            settle().await;
+            drop(paused);
+            wait_until("only current admission reaches transport", || {
+                !transport.pending.borrow().is_empty()
+            })
+            .await;
+            assert_eq!(
+                transport.calls.get(),
+                1,
+                "{mode:?} {stale}: stale admission must never send a request"
+            );
+            let request: SyntaxRequest =
+                serde_json::from_str(&transport.pending.borrow().front().unwrap().message).unwrap();
+            assert!(matches!(request.source, SyntaxSource::Full(ref source) if source == expected));
+            assert!(
+                mounted
+                    .state
+                    .workspace
+                    .editor_preparation
+                    .get_untracked()
+                    .is_none()
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn cooperative_worker_admission_rejects_limits_without_transport_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::SyntaxStatus};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for (source, editor_limit) in [
+            ("\r\n".repeat(50_000), false),
+            (
+                "x".repeat(openwebide_core::editor::MAX_STRUCTURE_BYTES + 1),
+                true,
+            ),
+        ] {
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("oversize.rs".into()));
+                state.workspace.content.set(source.into());
+                let actions = EditorActions::new(state.workspace);
+                actions.install_syntax_transport(installed);
+                view! { <span>{move || actions.syntax_is_pending().to_string()}</span> }
+            });
+            if editor_limit {
+                assert!(
+                    EditorActions::new(mounted.state.workspace)
+                        .limit()
+                        .is_some()
+                );
+                assert!(
+                    mounted
+                        .state
+                        .workspace
+                        .editor_preparation
+                        .get_untracked()
+                        .is_none()
+                );
+                assert_eq!(transport.calls.get(), 0);
+                continue;
+            }
+            wait_until("admission rejects oversized source", || {
+                mounted
+                    .state
+                    .workspace
+                    .editor_preparation
+                    .get_untracked()
+                    .is_some_and(|prepared| prepared.status == SyntaxStatus::TooLarge)
+            })
+            .await;
+            assert_eq!(transport.calls.get(), 0);
+            let prepared = mounted
+                .state
+                .workspace
+                .editor_preparation
+                .get_untracked()
+                .unwrap();
+            assert!(prepared.analysis.is_none());
+            assert!(std::sync::Arc::ptr_eq(
+                &prepared.scope.source,
+                &mounted.state.workspace.content.get_untracked().shared()
+            ));
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn cooperative_worker_plain_rows_publish_complete_sql_in_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::SyntaxWorker, highlight::TokenKind};
     use openwebide_frontend::state_actions::editor::EditorActions;
