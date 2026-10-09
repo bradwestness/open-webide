@@ -193,9 +193,7 @@ impl SyntaxDocument {
             if should_yield() {
                 return None;
             }
-            // Whole-row tokenization admits one oversized row, matching the
-            // existing synchronous contract; long-row subdivision remains open.
-            lexical.advance(1, crate::highlight::LEXICAL_BATCH_BYTES);
+            lexical.advance_bounded(1, crate::highlight::LEXICAL_BATCH_BYTES);
         }
         let (status, lexical) = self.lexical_pending.take().expect("completed lexical job");
         self.lexical = Some(Arc::new(
@@ -519,6 +517,45 @@ mod tests {
                 "unfinished rows publish no analysis"
             );
             assert!(document.lexical_pending.is_some());
+        }
+    }
+
+    #[test]
+    fn cancelling_inside_a_long_plain_row_discards_all_unpublished_work() {
+        use crate::highlight::Language;
+        for ending in ["\n", "\r\n"] {
+            let source = Arc::new(format!(
+                "{}{ending}tail",
+                "SELECT value 文😀 ".repeat(40_000)
+            ));
+            let mut document = SyntaxDocument::new(Language::Sql).unwrap();
+            for turn in 0..200 {
+                let mut checks = 0;
+                let result = document.prepare_cooperative(
+                    source.clone(),
+                    4,
+                    || true,
+                    || {
+                        checks += 1;
+                        checks >= 2
+                    },
+                );
+                assert!(result.is_none());
+                if document.lexical_pending.is_some() {
+                    break;
+                }
+                assert!(turn < 199);
+            }
+            assert!(document.lexical.is_none() && document.prepared.is_none());
+            let result = document
+                .prepare_cooperative(source, 4, || false, || false)
+                .unwrap();
+            assert_eq!(result.0, SyntaxStatus::Cancelled);
+            assert!(result.1.is_none());
+            assert!(document.lexical_pending.is_none());
+            let replacement = Arc::new("SELECT replacement;".to_owned());
+            let (_, analysis, _) = finish_plain_rows(&mut document, replacement.clone());
+            assert!(Arc::ptr_eq(analysis.source_snapshot(), &replacement));
         }
     }
 

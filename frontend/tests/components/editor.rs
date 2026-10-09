@@ -8350,8 +8350,15 @@ async fn cooperative_terminal_plain_paint_preserves_source_and_rejects_stale_sco
     use openwebide_frontend::state_actions::editor::EditorActions;
     // Stay inside interactive line limits while exceeding the parser's source cap.
     let row = format!("inside {}文😀\r\n", "words ".repeat(70));
-    let source = format!("/*\r\n{}*/\r\nlet done = 1;", row.repeat(6000));
+    let source = format!(
+        "/*{}\r\n{}*/\r\nlet done = 1;",
+        "large 文😀 ".repeat(30_000),
+        row.repeat(6000)
+    );
     assert!(source.len() > openwebide_core::editor::MAX_STRUCTURE_BYTES);
+    let first_row = source.split('\n').next().unwrap();
+    assert!(first_row.len() > openwebide_core::highlight::LEXICAL_BATCH_BYTES * 4);
+    assert!(first_row.len() < openwebide_core::editor::MAX_EDITOR_LINE_BYTES);
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         for terminal in [false, true] {
             let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -8747,7 +8754,11 @@ async fn cooperative_worker_plain_rows_publish_complete_sql_in_both_modes() {
     use openwebide_frontend::state_actions::editor::EditorActions;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         for ending in ["\n", "\r\n"] {
-            let source = format!("SELECT '文😀';{ending}").repeat(1_000);
+            let source = format!(
+                "{}{ending}{}",
+                "SELECT value 文😀 ".repeat(8_000),
+                format!("SELECT '文😀';{ending}").repeat(1_000)
+            );
             let transport = std::rc::Rc::new(DeferredSyntax::default());
             let installed = transport.clone();
             let initial = source.clone();

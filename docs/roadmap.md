@@ -99,8 +99,10 @@ tracks the remaining work rather than every optimization already shipped.
   outer/new-body scanning now resumes across worker tasks, including long literal
   and comment bodies, YAML headers/scalars and speculative row replay. Final
   context/selection-list assembly remains. Grammar-free SQL plain-row preparation
-  now yields between rows and retains exact unchanged-row tokens; oversized-row
-  tokenization and final publication still need bounded work. The final bracket pass
+  now yields within long rows while scanning, validating retained text and copying
+  plain tokens; the browser fallback uses the same bounded job. Whole-row capacity
+  allocation, changed-source comparison and final publication still need bounded
+  work. The final bracket pass
   skips opaque
   regions and languages without brackets while preserving scope boundaries.
 - [ ] **Source ownership and storage:** finish remaining external parser snapshots,
