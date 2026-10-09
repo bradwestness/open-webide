@@ -268,6 +268,7 @@ for what's still ahead.
 
 - Preserve open dropdown surfaces and cached branch choices during background
   option refreshes, while retaining the initial loading gate.
+- Show the app logo and a website link in About; open openwebide.com in a new browser tab.
 
 - Install source-owned native input windows before initial layout for eligible
   unwrapped files with large first rows. Keep complete source dimensions behind
