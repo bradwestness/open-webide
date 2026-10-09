@@ -3,6 +3,8 @@
 use std::ops::Range;
 use std::sync::Arc;
 #[cfg(feature = "editor-parser")]
+pub(super) mod fallback;
+#[cfg(feature = "editor-parser")]
 mod ordering;
 #[cfg(feature = "editor-parser")]
 mod reconciliation;
@@ -239,6 +241,7 @@ impl Structure {
         };
         StructurePreparation {
             structure: result,
+            fallback: None,
             reconciliation: None,
             metadata: MetadataPreparation::default(),
             linking: BracketLinking::default(),
@@ -489,12 +492,21 @@ impl MetadataPreparation {
 #[cfg(feature = "editor-parser")]
 pub(super) struct StructurePreparation {
     structure: Structure,
+    fallback: Option<fallback::FallbackCollection>,
     reconciliation: Option<reconciliation::ContextReconciliation>,
     metadata: MetadataPreparation,
     linking: BracketLinking,
 }
 #[cfg(feature = "editor-parser")]
 impl StructurePreparation {
+    pub fn collect_fallbacks(
+        &mut self,
+        outer: Arc<fallback::FallbackContexts>,
+        embedded: Vec<(usize, Arc<fallback::FallbackContexts>)>,
+    ) {
+        self.fallback = Some(fallback::FallbackCollection::new(outer, embedded));
+    }
+
     pub fn reconcile(
         &mut self,
         parsed: Vec<(Range<usize>, bool, RegionKind)>,
@@ -504,6 +516,12 @@ impl StructurePreparation {
     }
 
     pub fn advance(&mut self, budget: usize) -> Option<bool> {
+        if let Some(fallback) = &mut self.fallback {
+            if fallback.advance(&mut self.structure, budget) {
+                self.fallback = None;
+            }
+            return Some(false);
+        }
         if let Some(reconciliation) = &mut self.reconciliation {
             if reconciliation.advance(&mut self.structure, budget) {
                 self.reconciliation = None;
@@ -518,7 +536,8 @@ impl StructurePreparation {
             .advance(&mut self.structure, budget, &mut || {})
     }
     pub fn finish(self) -> Option<Structure> {
-        (self.reconciliation.is_none()
+        (self.fallback.is_none()
+            && self.reconciliation.is_none()
             && self.metadata.complete()
             && !self.linking.failed
             && self.linking.position == self.structure.source.len())

@@ -3195,3 +3195,35 @@ cooperative browser contracts (4.89 s) in both modes, the mixed heredoc/nested
 interpolation editing and paint contract (0.35 s) in both modes, and strict
 optimized WASM component-test lint. All five CI jobs passed for prior checkpoint
 `53b9092` in run `37918744325`; the complete release gates remain open.
+
+### Cooperative retained fallback collection (2026-10-09)
+
+The shared structure preparation job now retains the outer fallback metadata and
+up to 64 embedded metadata allocations. It copies and filters outer protected
+regions and opaque positions, then shifts embedded records into document coordinates
+one record per budget unit before parsed-region reconciliation. Ordered scope
+queries use the existing monotonic-end lookup, now shared with the collection job.
+Synchronous callers drain the same job; worker and browser fallback use its existing
+256-unit batches. Source metadata remains immutable and incomplete collection
+cannot publish contexts. No limits or timeouts changed.
+
+The independent collection oracle compares full-vector filtering/extension against
+budgets 1, 7 and 256, adjacent embedded scopes, LF/CRLF, Unicode and alternating closed
+markers. Each advance emits no more records than its budget. Cancellation releases
+both source and retained metadata allocations. All 564 parser-enabled core tests
+passed (4.23 s); strict core all-target lint passed. The large-literal scan test now
+recognizes post-parse structure progress while retaining its scan-byte, cancellation
+and complete-analysis assertions. Browser adapter verification passed all six optimized cooperative contracts
+(5.06 s) and the mixed heredoc/nested-interpolation editing and paint contract
+(0.34 s), each in both modes. All 424 parser-free core tests passed (3.87 s),
+and strict optimized WASM component-test lint passed.
+
+Parser context extraction, cache-missing fallback scans, vector/scratch allocation,
+fold/color/paint assembly, transport materialization and the full responsiveness,
+memory and physical PWA gates remain. This checkpoint does not clear them.
+
+All five CI jobs passed for checkpoint `2d3637c` in run `37920845353`, repeating
+the green native/WASI/WASM/platform/browser/Docker checks after `53b9092`. This
+remains checkpoint evidence; the goal's complete release and PWA gates are open.
+The roadmap now keeps shipped preparation details in its implemented baseline
+and performance evidence, and lists only unfinished work under implementation.

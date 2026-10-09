@@ -60,92 +60,38 @@ tracks the remaining work rather than every optimization already shipped.
 | Navigation and review | Find/Replace; line numbers; horizontal scrolling and linked split scrolling; Edit/Inline/Split diffs; supported previews and Markdown change gutters/word differences; pending-edit review and agent context. |
 | Tabs, appearance and recovery | Tab context actions; five Monaspace families; texture healing and ligature toggles enabled by default; retained caret/selection/scroll and database-backed editor recovery. Real folder-permission recovery still needs device verification. |
 | Selection and browser input | Multiple/rectangular selections and clipboard transactions; scoped native windows for eligible unwrapped views; automated Chromium composition and pointer checks. The recorded line-end caret bug is fixed and user-verified in the localhost PWA. |
-| Preparation and ownership | Rust/WASM worker and cooperative fallback; retained source/token/structure allocations; bounded eligible unwrapped paragraph probes, exact overlap validation, exact carets from retained anchors/current painted coverage and conservative complete-layout fallback. Current-file progress is shown during preparation. Matching trusted font notifications retain current in-flight work. |
+| Preparation and ownership | Rust/WASM worker and cooperative fallback; retained source/token/structure allocations; bounded worker delta reconstruction and final structure metadata, parsed/lexical region reconciliation and retained fallback collection; bounded eligible unwrapped paragraph probes, exact overlap validation, exact carets from retained anchors/current painted coverage and conservative complete-layout fallback. Current-file progress is shown during preparation. Matching trusted font notifications retain current in-flight work. |
 
 **Remaining implementation**:
 
 - [ ] **Cold startup and native input:** finish bounded initial input for wrapped,
-  nonuniform and unsupported long tabbed/bidirectional rows, and remove remaining
-  initial full-source shaping. Eligible unwrapped uniform files now use bounded
-  startup input regardless of the initial caret or long-row position. Long-row tab
-  admission and paragraph preparation reuse immutable coordinate metadata;
-  wrapped, nonuniform and unsupported
-  rows still require complete layout. Finish cold
-  wrapped input, touch pointer selection,
-  source-owned caret/selection and complete document extents. Preserve composition
-  mappings and complete-native fallback where a bounded view cannot be proved.
+  nonuniform and unsupported long tabbed/bidirectional rows; remove remaining
+  initial full-source shaping. Finish touch pointer selection, source-owned
+  caret/selection and complete document extents while preserving composition
+  mappings and complete-native fallback when bounded geometry cannot be proved.
 - [ ] **Tabbed, wrapped and bidirectional layout:** finish bounded preparation,
   bidirectional visual-run windows, fine long-row paint and incremental glyph
-  measurement. Current tabbed/wrapped/bidi paths still use complete preparation;
-  retained DOM nodes, canvas widths and approximate Rust advances do not establish
-  exact browser geometry.
+  measurement. Establish exact browser geometry against the complete renderer;
+  retained DOM, canvas widths and approximate Rust advances are insufficient.
 - [ ] **Incremental paragraph updates:** extend shifted suffix reuse to changed
-  long-token and plain-run boundaries, and avoid repeated prefix segmentation for
-  over-limit styled run tables. Unchanged styled suffixes now map exact source and
-  glyph positions in bounded replay batches, validate incoming browser overlap,
-  and freshly measure the final extent. Live intermediate probes also omit
-  redundant global overflow layout while retaining exact overlap validation.
-  Ordered coordinate queries share cluster
-  traversal while preserving every old/new source-byte check. Styled paragraph
-  anchor construction also shares traversal across ordered paint boundaries,
-  omitting boundaries inside clusters as before. Shifted tabs retain
-  fresh measurement. Validated retained
-  probes now share rectangle allocations directly and compare each prefix
-  run-boundary interval once. Probe target/commit lookup now visits only sparse
-  anchors within the measured glyph range. Initial run-table
-  construction and unsupported-boundary fallbacks still scan complete rows;
-  capped metadata attempts now stop once their run budget is exceeded and retain
-  that result within their bounded exact-source/style cache. Uncapped fallback
-  construction still segments full rows.
+  long-token and plain-run boundaries; avoid repeated prefix segmentation for
+  over-limit styled run tables. Bound initial run-table construction and the
+  uncapped/unsupported-boundary fallbacks that still segment complete rows.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
-  remaining context collection and paint publication,
-  larger fenced-code workloads and changed-source plain row-table
-  reconstruction/validation. Color classifiers and retained-part checks now
-  share cursor-provided parents. Cooperative source-change comparison now
-  shares the resumable UTF-8 comparison used by plain-row preparation. Syntax
-  admission now counts newlines across bounded worker/browser tasks before
-  parsing or serialization. Changed-row scanning now retains a source-owned
-  replacement job across byte/row budgets. Parser index publication now copies
-  retained prefixes and shifts suffixes in bounded row batches while preserving
-  the original index until completion; Vec growth/allocation remains. Synchronous
-  document indexes still shift/splice in place.
-  Resolved worker parser
-  replacements reuse their validated spans only
-  for the exact retained base allocation. Intersecting plain fallback rows retain
-  raw-byte boundary validation. Fallback range/opaque-point checks now use ordered
-  embedded-scope lookup. Unchanged embedded bodies retain relative fallback contexts;
-  outer/new-body scanning now resumes across worker tasks, including long literal
-  and comment bodies, YAML headers/scalars and speculative row replay. Final
-  context/selection-list collection remains. Grammar-free SQL plain-row preparation
-  now yields within long rows while scanning, validating retained text and copying
-  plain tokens; the browser fallback uses the same bounded job. Comparing retained
-  plain sources now also resumes within that job's byte budget, preserving exact
-  UTF-8 replacement boundaries and unchanged table reuse. Whole-row capacity
-  allocation and final publication still need bounded
-  work. The final bracket pass now retains its stack and region/scope cursors
-  across bounded batches, hiding incomplete structures until publication. It
-  skips opaque regions and languages without brackets while preserving scope
-  boundaries. Final structure metadata now validates, orders and deduplicates
-  across bounded batches, preserving stable range order and rejecting invalid
-  coordinates before bracket linking. Nearly ordered lists avoid scratch tables;
-  heavily disordered lists use a bounded stable merge fallback. Parsed/lexical
-  region reconciliation now sorts coverage, filters fallbacks, orders and splits
-  interpolation holes and merges regions across bounded batches. Context collection,
-  scratch allocation and final paint assembly remain unbounded.
-- [ ] **Source ownership and storage:** finish remaining external parser snapshots,
-  changed-revision source comparisons, transport serialization, diff shaping and
-  native-text materialization. Worker delta reconstruction now copies validated
-  prefix/replacement/suffix UTF-8 slices across bounded tasks; initial capacity
-  allocation and message decoding remain. Parser-free entry equality now uses the same
-  resumable comparison and passes validated replacements to plain-row reuse;
-  paint/transport comparisons still sit outside those jobs.
-  Folded/bounded projection tables still assemble
-  independently; retained row/coordinate tables copy on edits, changed guide values
-  copy retained columns, and storage shifts suffix bytes/coordinates. Long boundary
-  rows still scan for admission. Revisit measured storage candidates when the
-  viewport/worker access pattern supports the change, preserving exact coordinates,
-  immutable retained views and cancellation behavior.
+  parser context/selection-list extraction and final paint publication. Finish
+  larger fenced-code workloads and changed-source plain row-table reconstruction
+  and validation. Bound cache-missing fallback scans, whole-row capacity growth,
+  scratch allocation and remaining final publication work. Synchronous document
+  indexes still shift/splice in place; immutable retained tables must remain exact.
+- [ ] **Source ownership and storage:** finish external parser snapshots,
+  changed-revision paint/transport source comparisons, transport serialization,
+  message decoding, diff shaping and native-text materialization. Bound remaining
+  initial capacity allocation, folded/bounded projection assembly, retained
+  row/coordinate copies, changed indentation-guide copies and storage suffix
+  byte/coordinate shifts. Long boundary rows still scan for admission. Revisit
+  measured storage candidates with the actual viewport/worker access pattern,
+  preserving exact coordinates, immutable retained views and cancellation.
 
 **Remaining completion gates**:
 

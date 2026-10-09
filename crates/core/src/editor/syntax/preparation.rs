@@ -1737,6 +1737,11 @@ mod tests {
                     break result;
                 }
                 assert!(document.structure().is_none());
+                if document.structure_progress.is_some() {
+                    assert!(document.ready);
+                    assert!(document.pending.is_none());
+                    continue;
+                }
                 let work = document.pending.as_ref().unwrap();
                 let position = if embedded {
                     work.embedded

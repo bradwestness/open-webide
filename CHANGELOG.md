@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Collect retained lexical fallback regions across bounded batches before parsed
+  context reconciliation, sharing metadata until individual records are copied
+  and shifted into document coordinates in both workspace modes.
+
 - Reconcile parsed editing regions and lexical fallbacks across bounded batches,
   preserving interpolation holes and stable region ordering while hiding
   incomplete contexts in both workspace modes.

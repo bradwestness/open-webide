@@ -13,10 +13,12 @@ pub use service::{
     SyntaxWorker,
 };
 mod transfer;
+use super::structure::fallback::FallbackContexts;
+#[cfg(test)]
+use super::structure::fallback::{embedded_scope_after, overlaps};
 use super::{FoldRange, MAX_STRUCTURE_BYTES, SyntaxProvider, normalize_folds, syntax_provider};
 use super::{Structure, SyntaxContextKind, structure::RegionKind};
 use crate::highlight::Language;
-use std::ops::Range as ByteRange;
 use std::sync::Arc;
 pub use transfer::{MAX_ANALYSIS_MESSAGE_BYTES, SyntaxAnalysisData, SyntaxSource};
 use tree_sitter::{InputEdit, Node, Parser, Point, Range, Tree};
@@ -67,26 +69,6 @@ impl SyntaxAnalysis {
 
 mod admission;
 pub use admission::{SyntaxAdmission, SyntaxAdmissionStatus, preparation_exceeds_limits};
-
-/// Relative fallback metadata needs neither source snapshots nor unused bracket
-/// tables. Validated unchanged embedded bodies retain it across coordinate shifts.
-#[derive(Default)]
-struct FallbackContexts {
-    opaque_starts: Vec<usize>,
-    protected: Vec<(ByteRange<usize>, bool, RegionKind)>,
-}
-impl FallbackContexts {
-    fn scan(text: &str, language: Language) -> Self {
-        let lexical = Structure::scan(text, language).unwrap_or_default();
-        Self::from_lexical(lexical)
-    }
-    fn from_lexical(lexical: super::structure::LexicalStructure) -> Self {
-        Self {
-            opaque_starts: lexical.opaque_starts,
-            protected: lexical.protected,
-        }
-    }
-}
 
 struct EmbeddedSyntax {
     provider: SyntaxProvider,
@@ -372,8 +354,6 @@ impl SyntaxDocument {
             .outer_fallback
             .clone()
             .unwrap_or_else(|| Arc::new(FallbackContexts::scan(&self.text, self.language)));
-        let mut opaque_starts = fallback.opaque_starts.clone();
-        let mut baseline = fallback.protected.clone();
         let scopes: Vec<_> = self
             .embedded
             .iter()
@@ -384,12 +364,7 @@ impl SyntaxDocument {
                 )
             })
             .collect();
-        baseline.retain(|(range, _, _)| {
-            !embedded_scope_after(&scopes, range.start).is_some_and(|body| overlaps(range, body))
-        });
-        opaque_starts.retain(|position| {
-            !embedded_scope_after(&scopes, *position).is_some_and(|body| body.contains(position))
-        });
+        let mut embedded_fallbacks = Vec::with_capacity(self.embedded.len());
         for body in &self.embedded {
             let start = body.range.start_byte;
             let end = body.range.end_byte;
@@ -403,15 +378,7 @@ impl SyntaxDocument {
                     ))
                 })
                 .clone();
-            opaque_starts.extend(
-                fallback
-                    .opaque_starts
-                    .iter()
-                    .map(|position| position + start),
-            );
-            baseline.extend(fallback.protected.iter().map(|(range, closed, kind)| {
-                ((range.start + start)..(range.end + start), *closed, *kind)
-            }));
+            embedded_fallbacks.push((start, fallback));
         }
         let mut visited = 0;
         let mut contexts = contexts::SyntaxContexts::default();
@@ -432,11 +399,12 @@ impl SyntaxDocument {
         let mut work = Structure::prepare_parsed(
             self.text.clone(),
             self.language,
-            baseline,
+            Vec::new(),
             scopes,
-            opaque_starts,
+            Vec::new(),
             contexts.selections,
         );
+        work.collect_fallbacks(fallback, embedded_fallbacks);
         work.reconcile(contexts.protected, contexts.holes);
         Some(work)
     }
@@ -522,21 +490,6 @@ impl SyntaxDocument {
         }
         normalize_folds(ranges, lines.len())
     }
-}
-
-/// Injection selection validates source ordering and nonoverlap. Ends are thus
-/// monotonic even for adjacent/empty bodies. The first end beyond the query start
-/// is the only candidate needed for overlap or point containment.
-fn embedded_scope_after(
-    scopes: &[(ByteRange<usize>, Language)],
-    position: usize,
-) -> Option<&ByteRange<usize>> {
-    let index = scopes.partition_point(|(body, _)| body.end <= position);
-    scopes.get(index).map(|(body, _)| body)
-}
-
-fn overlaps(left: &ByteRange<usize>, right: &ByteRange<usize>) -> bool {
-    left.start < right.end && right.start < left.end
 }
 
 fn new_parser(provider: SyntaxProvider) -> Result<Parser, SyntaxStatus> {
