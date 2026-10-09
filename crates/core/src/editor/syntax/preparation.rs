@@ -96,6 +96,7 @@ impl SyntaxDocument {
             return Some(SyntaxStatus::Ready { incremental: true });
         }
         self.prepared = None;
+        self.structure_progress = None;
         self.lexical_pending = None;
         self.outer_fallback = None;
         if self.parser.is_none() {
@@ -244,7 +245,7 @@ impl SyntaxDocument {
             )
             .or_else(|| self.advance_update(should_continue, should_yield))?;
         let status = self.advance_lexical(status, should_continue, should_yield, change)?;
-        Some(self.finish_preparation(status, tab_width, should_continue))
+        self.finish_preparation_cooperative(status, tab_width, should_continue, should_yield)
     }
 
     fn prepare_rows_cooperative(
@@ -554,7 +555,16 @@ impl SyntaxWork {
             if !should_continue() {
                 return Err(SyntaxStatus::Cancelled);
             }
-            if should_yield() {
+            // Delegated phases check their own entry budget. Checking twice
+            // before either phase runs can starve short cooperative slices.
+            let delegated = self.tree.is_none()
+                || self.embedded.is_none()
+                || self
+                    .embedded
+                    .as_ref()
+                    .and_then(|work| work.current.as_ref())
+                    .is_some_and(|current| current.body.tree.is_none());
+            if !delegated && should_yield() {
                 return Ok(false);
             }
             if self.tree.is_none() {
@@ -664,7 +674,8 @@ impl SyntaxWork {
                 });
             }
             let current = embedded.current.as_mut().unwrap();
-            if current.body.tree.is_none() {
+            let parsing = current.body.tree.is_none();
+            if parsing {
                 let Some(tree) = parse_step(
                     &mut document.embedded_parsers[current.parser_index].1,
                     &self.source,
@@ -683,7 +694,9 @@ impl SyntaxWork {
                     document.embedded_parses += 1;
                 }
             }
-            if should_yield() {
+            // A completed parse may have used this slice's budget; an already
+            // parsed body was checked at the outer entry before fallback work.
+            if parsing && should_yield() {
                 return Ok(false);
             }
             let range = current.body.range;
@@ -964,6 +977,99 @@ mod tests {
             drop(source);
             if operation != "complete" {
                 assert!(weak.upgrade().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn final_bracket_publication_hides_partial_context_and_handles_cancellation_or_takeover() {
+        for ending in ["\n", "\r\n"] {
+            for operation in ["cancel", "replace", "sync", "complete"] {
+                let source = Arc::new(format!(
+                    "<script>{ending}{}</script>",
+                    format!("call(1);{ending}").repeat(4000)
+                ));
+                let weak = Arc::downgrade(&source);
+                let mut document = SyntaxDocument::new(Language::Html).unwrap();
+                let status = document.update_source(&source, || true, || source.clone(), None);
+                assert_eq!(status, SyntaxStatus::Ready { incremental: false });
+                let mut checks = 0;
+                assert!(
+                    document
+                        .finish_preparation_cooperative(status, 4, &mut || true, &mut || {
+                            checks += 1;
+                            checks >= 2
+                        })
+                        .is_none()
+                );
+                assert!(document.structure_progress.is_some());
+                assert!(document.prepared.is_none());
+                assert!(document.structure().is_none());
+                assert!(document.folds().is_empty());
+                assert_eq!(document.language_at(20), Language::Html);
+                let next = Arc::new("<p>Replacement</p>".to_owned());
+                let result = if operation == "sync" {
+                    document.prepare_shared(source.clone(), 4, || true)
+                } else if operation == "complete" {
+                    let mut turns = 0;
+                    loop {
+                        turns += 1;
+                        assert!(turns < 1000);
+                        let mut checks = 0;
+                        if let Some(result) = document.prepare_cooperative(
+                            source.clone(),
+                            4,
+                            || true,
+                            || {
+                                checks += 1;
+                                checks >= 2
+                            },
+                        ) {
+                            break result;
+                        }
+                        assert!(document.structure().is_none());
+                        assert!(document.folds().is_empty());
+                        assert!(document.prepared.is_none());
+                    }
+                } else {
+                    let target = if operation == "cancel" {
+                        source.clone()
+                    } else {
+                        next.clone()
+                    };
+                    document
+                        .prepare_cooperative(target, 4, || operation != "cancel", || false)
+                        .unwrap()
+                };
+                assert!(document.structure_progress.is_none());
+                if operation == "cancel" {
+                    assert_eq!(result.0, SyntaxStatus::Cancelled);
+                    assert!(result.1.is_none());
+                } else {
+                    let target = if operation == "replace" {
+                        &next
+                    } else {
+                        &source
+                    };
+                    assert!(matches!(result.0, SyntaxStatus::Ready { .. }));
+                    if operation != "replace" {
+                        assert_eq!(result.0, SyntaxStatus::Ready { incremental: false });
+                        assert_eq!(document.language_at(20), Language::JavaScript);
+                    }
+                    let analysis = result.1.unwrap();
+                    assert!(Arc::ptr_eq(analysis.source_snapshot(), target));
+                    let (_, expected) = SyntaxDocument::new(Language::Html)
+                        .unwrap()
+                        .prepare_shared(target.clone(), 4, || true);
+                    assert_eq!(
+                        serde_json::to_value(analysis.transfer_data()).unwrap(),
+                        serde_json::to_value(expected.unwrap().transfer_data()).unwrap()
+                    );
+                }
+                drop(source);
+                if operation == "cancel" || operation == "replace" {
+                    assert!(weak.upgrade().is_none());
+                }
             }
         }
     }
@@ -1803,7 +1909,7 @@ mod tests {
                 if let Some(result) = result {
                     break result;
                 }
-                assert!(!document.ready);
+                assert!(!document.ready || document.structure_progress.is_some());
                 assert!(document.structure().is_none());
                 if let Some(remaining) = document
                     .pending
@@ -1917,9 +2023,18 @@ mod tests {
                 if let Some(result) = result {
                     break result;
                 }
-                assert!(!document.ready, "partial syntax cannot be queried");
-                assert!(document.structure().is_none());
-                assert!(document.pending.is_some());
+                if document.structure_progress.is_some() {
+                    assert!(document.ready, "trees completed before bracket publication");
+                    assert!(document.pending.is_none());
+                } else {
+                    assert!(!document.ready);
+                    assert!(document.pending.is_some());
+                }
+                assert!(
+                    document.structure().is_none(),
+                    "partial syntax cannot be queried"
+                );
+                assert!(document.folds().is_empty());
             };
             assert!(batches > 1);
             assert_eq!(document.embedded_parses, 1_000);

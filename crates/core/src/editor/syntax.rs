@@ -118,6 +118,7 @@ pub struct SyntaxDocument {
     text: Arc<String>,
     source_lines: Vec<super::lines::Line>,
     prepared: Option<(usize, Arc<SyntaxAnalysis>)>,
+    structure_progress: Option<(SyntaxStatus, super::structure::StructurePreparation)>,
     lexical: Option<Arc<crate::highlight::LexicalSnapshot>>,
     lexical_pending: Option<(SyntaxStatus, crate::highlight::LexicalPreparation)>,
     publication: Option<(u32, Arc<SyntaxAnalysis>)>,
@@ -155,6 +156,7 @@ impl SyntaxDocument {
             text: Arc::new(String::new()),
             source_lines: provider.map_or_else(Vec::new, |_| super::lines::lines("")),
             prepared: None,
+            structure_progress: None,
             lexical: None,
             lexical_pending: None,
             publication: None,
@@ -238,20 +240,68 @@ impl SyntaxDocument {
         let status = self
             .advance_lexical(status, should_continue, &mut || false, None)
             .expect("synchronous lexical preparation does not yield");
+        self.finish_preparation_cooperative(status, tab_width, should_continue, &mut || false)
+            .expect("synchronous structure preparation does not yield")
+    }
+
+    fn finish_preparation_cooperative(
+        &mut self,
+        status: SyntaxStatus,
+        tab_width: usize,
+        should_continue: &mut impl FnMut() -> bool,
+        should_yield: &mut impl FnMut() -> bool,
+    ) -> Option<(SyntaxStatus, Option<Arc<SyntaxAnalysis>>)> {
         if !matches!(status, SyntaxStatus::Ready { .. }) {
-            return (status, None);
+            return Some((status, None));
         }
         if let Some((width, analysis)) = &self.prepared
             && *width == tab_width
         {
-            return (status, Some(analysis.clone()));
+            return Some((status, Some(analysis.clone())));
         }
+        if self.structure_progress.is_none() && self.prepared.is_none() && self.provider.is_some() {
+            self.structure_progress = self.structure_preparation().map(|work| (status, work));
+        }
+        let mut structure = None;
+        let mut status = status;
+        if self.structure_progress.is_some() {
+            loop {
+                if !should_continue() {
+                    self.clear();
+                    return Some((SyntaxStatus::Cancelled, None));
+                }
+                if should_yield() {
+                    return None;
+                }
+                match self.structure_progress.as_mut().unwrap().1.advance(256) {
+                    Some(false) => {}
+                    Some(true) => {
+                        let (original_status, work) = self.structure_progress.take().unwrap();
+                        status = original_status;
+                        structure = work.finish().map(Arc::new);
+                        break;
+                    }
+                    None => {
+                        status = self.structure_progress.take().unwrap().0;
+                        break;
+                    }
+                }
+            }
+        }
+        Some(self.assemble_preparation(status, tab_width, structure))
+    }
+
+    fn assemble_preparation(
+        &mut self,
+        status: SyntaxStatus,
+        tab_width: usize,
+        structure: Option<Arc<Structure>>,
+    ) -> (SyntaxStatus, Option<Arc<SyntaxAnalysis>>) {
         // update() clears preparation on every source change. Tab width only
         // affects indentation-derived folds; contexts and tokens stay source-bound.
         let (structure, highlights) = if let Some((_, previous)) = &self.prepared {
             (previous.structure.clone(), previous.highlights.clone())
         } else {
-            let structure = self.structure().map(Arc::new);
             let highlights = if self.provider.is_none() && self.language != Language::Plain {
                 Some(
                     self.lexical
@@ -285,6 +335,7 @@ impl SyntaxDocument {
     /// Insertions at the end of an embedded body still belong to that body.
     pub fn language_at(&self, position: usize) -> Language {
         if self.ready
+            && self.structure_progress.is_none()
             && self.admission.is_none()
             && self.row_preparation.is_none()
             && self.source_comparison.is_none()
@@ -301,6 +352,15 @@ impl SyntaxDocument {
 
     /// Immutable editing contexts from the current tree; failed/stale parses publish nothing.
     pub fn structure(&self) -> Option<Structure> {
+        if self.structure_progress.is_some() {
+            return None;
+        }
+        let mut work = self.structure_preparation()?;
+        while !work.advance(256)? {}
+        work.finish()
+    }
+
+    fn structure_preparation(&self) -> Option<super::structure::StructurePreparation> {
         if !self.ready
             || self.admission.is_some()
             || self.row_preparation.is_some()
@@ -433,7 +493,7 @@ impl SyntaxDocument {
                 protected.push((range, closed, kind));
             }
         }
-        Structure::parsed(
+        Structure::prepare_parsed(
             self.text.clone(),
             self.language,
             protected,
@@ -461,6 +521,7 @@ impl SyntaxDocument {
             .provider
             .map_or_else(Vec::new, |_| super::lines::lines(""));
         self.prepared = None;
+        self.structure_progress = None;
         self.lexical = None;
         self.lexical_pending = None;
         self.publication = None;
@@ -474,7 +535,8 @@ impl SyntaxDocument {
         self.folds_with_tab_width(4)
     }
     pub fn folds_with_tab_width(&self, tab_width: usize) -> Vec<FoldRange> {
-        if !self.ready
+        if self.structure_progress.is_some()
+            || !self.ready
             || self.admission.is_some()
             || self.row_preparation.is_some()
             || self.source_comparison.is_some()

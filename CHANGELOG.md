@@ -9,6 +9,12 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Prepare final bracket links across bounded worker batches, preserving embedded
+  language boundaries and hiding partial editing contexts until completion in
+  both workspace modes.
+- Prevent nested syntax-worker yield checks from starving short preparation
+  slices before parsing or embedded-body fallback can make progress.
+
 - Keep combined skill, question and scheduling tool discovery within an 8K context budget in both execution modes, with full skill content read on demand.
 - Reconstruct warm syntax-worker sources in bounded UTF-8 batches, retaining the
   validated base until completion and discarding cancelled partial sources in
