@@ -11,7 +11,8 @@ for what's still ahead.
 
 - Compare and copy syntax-worker reply sources across bounded UTF-8 batches,
   preserving exact full/delta publication and discarding cancelled partial replies
-  before they become a reusable analysis base.
+  before they become a reusable analysis base. Native and browser adapters use
+  the same Rust full/delta publication policy.
 
 - Collect retained lexical fallback regions across bounded batches before parsed
   context reconciliation, sharing metadata until individual records are copied

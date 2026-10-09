@@ -86,8 +86,9 @@ tracks the remaining work rather than every optimization already shipped.
   indexes still shift/splice in place; immutable retained tables must remain exact.
 - [ ] **Source ownership and storage:** finish external parser snapshots,
   remaining changed-revision paint/transport comparisons, metadata materialization
-  and transport serialization,
-  message decoding, diff shaping and native-text materialization. Bound remaining
+  and transport serialization, message decoding, diff shaping and native-text
+  materialization. Browser request source publication and oversized-message fallback
+  still run synchronously. Bound remaining
   initial capacity allocation, folded/bounded projection assembly, retained
   row/coordinate copies, changed indentation-guide copies and storage suffix
   byte/coordinate shifts. Long boundary rows still scan for admission. Revisit
