@@ -2634,6 +2634,21 @@ core/WASM lint and the existing both-mode initial-input admission/failure/owners
 contract pass. This change has no new performance samples and does not complete
 wrapped/nonuniform startup or the responsiveness/memory gate.
 
+Paragraph preparation now reuses the same immutable tab fact rather than scanning
+the row again. The 13 paragraph unit contracts and strict core/WASM lint pass.
+The ordinary release suite passes 18 unit, 458 component and four adapter tests,
+including tabbed horizontal paint, complete extents, native hits, failed proofs
+and stale ownership in both modes. An initial isolated debug run failed the cold-
+anchor audit; baseline debug/release and the candidate debug repeat passed, as did
+the complete candidate release suite. This is not evidence that the timing risk
+has been eliminated. The combined command's final documentation stage failed
+with missing shared-crate artifacts; a separate documentation check rebuilt its
+dependencies and passed (zero documentation examples). No new
+startup, input or memory performance samples accompany this change.
+Both dedicated release matrices also pass from the same retained artifact:
+font/features/whitespace geometry and near-limit complete-row geometry, each
+covering local and remote adapters.
+
 The accessible-input checkpoint also passes eight release-app cases: both modes,
 LF/CRLF and pending-worker/bounded-native input. Chromium exposes the file-specific
 input name and current keyboard description; trusted Ctrl+M, Tab and Shift+Tab

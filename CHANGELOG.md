@@ -12,7 +12,8 @@ for what's still ahead.
 - Use production tooltip styling in browser regressions, avoiding layout-induced
   dismissal and cascading menu/composer focus failures.
 
-- Reuse immutable long-row tab metadata during cold native-input admission,
+- Reuse immutable long-row tab metadata for native-input admission and paragraph
+  measurement,
   avoiding repeated source scans while preserving complete-layout fallbacks.
 
 - Name the editor input for its file and announce Ctrl+M Tab-navigation changes

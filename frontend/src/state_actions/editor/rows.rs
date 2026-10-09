@@ -283,13 +283,13 @@ impl EditorActions {
     ) -> Option<openwebide_core::editor::ParagraphMeasurementPlan<'_>> {
         use openwebide_core::editor::ParagraphMeasurementPlan;
         let body = paint.projection.line_body(row)?;
+        let index = paint.projection.visual_line_index(row)?;
         // A local tab overlap can agree while the complete paragraph's rounded
         // extent differs. Retain complete preparation until the adapter proves
         // the global tab grid as well as the local continuation.
-        if body.as_bytes().contains(&b'\t') {
+        if index.has_tabs() {
             return None;
         }
-        let index = paint.projection.visual_line_index(row)?;
         let row = paint_row(paint, row)?;
         if let Some(plain) = row.plain {
             return (plain == body)
@@ -310,14 +310,13 @@ impl EditorActions {
             return None;
         }
         let body = paint.projection.line_body(row)?;
-        if body.as_bytes().contains(&b'\t') {
+        let index = paint.projection.visual_line_index(row)?;
+        if index.has_tabs() {
             return None;
         }
         if let Some(runs) = self.cached_styled_paint_runs(paint, row) {
             return openwebide_core::editor::ParagraphMeasurementPlan::with_shared_run_boundaries(
-                body,
-                paint.projection.visual_line_index(row)?,
-                runs,
+                body, index, runs,
             );
         }
         Self::paragraph_measurements(paint, row)

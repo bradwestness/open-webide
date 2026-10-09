@@ -117,6 +117,7 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         anchor_glyphs.dedup();
         let probe = Self::probe_at(body, &index, &runs, 0, 0.0)?;
         let continuation = Self::continuation(body, &index, &runs, &probe)?;
+        let has_tabs = index.has_tabs();
         Some(Self {
             body,
             index,
@@ -128,7 +129,7 @@ impl<'a> ParagraphMeasurementPlan<'a> {
             dimensions: None,
             scroll_width: 0.0,
             finished: false,
-            has_tabs: body.as_bytes().contains(&b'\t'),
+            has_tabs,
             local_origin: 0.0,
             retried: false,
             runs,
