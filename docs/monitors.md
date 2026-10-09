@@ -26,9 +26,10 @@ Each check uses the session's current model, conversation, tools and approval
 rules. Pending approvals wait for the user; closing the app does not approve
 anything. Keep Spin, the model server and the execution bridge running.
 
-Expand **Monitors** in the conversation to see pending/running/blocked status,
+Click the monitor indicator in the conversation status line to open a compact
+flyout with pending/running/blocked status,
 the next check, host availability and the last result, or refresh and cancel
-future checks. **Stop** stops an already-running response. Completed, cancelled
+future checks. The indicator appears only while a monitor is active. **Stop** stops an already-running response. Completed, cancelled
 and expired monitors are cleaned up; conversation messages remain. Failures,
 expiry and interruption leave a note in chat and stop repeats.
 

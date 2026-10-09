@@ -6,7 +6,8 @@ phases 1 through 14, telemetry, hardening, streaming, `/test`, database-backed
 theme and prompt history, frontend performance & polish, app branding and the chat
 welcome, database-backed agent skills and skill import/export — moved to [CHANGELOG.md](../CHANGELOG.md).
 [Host administration](host-administration.md), structured agent questions and
-[Monitors](monitors.md) are implemented; their shipped behavior is in the changelog.
+[Monitors](monitors.md) are implemented, with an active-only status-line flyout;
+their shipped behavior is in the changelog.
 The [Git pane](git.md) includes commit history, staged-only commits and repository
 actions, with retained refresh results, primary-model drafting, resizable history
 inspection and shared Git-status icons in both project modes.

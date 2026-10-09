@@ -40,6 +40,8 @@ async fn conversation_monitors_have_status_and_cancel_without_saved_tasks_in_bot
             view! {<openwebide_frontend::components::ConversationMonitors/>}
         });
         settle().await;
+        mounted.click("button[aria-label=\"View monitors\"]");
+        settle().await;
         assert!(
             mounted
                 .root
@@ -48,11 +50,17 @@ async fn conversation_monitors_have_status_and_cancel_without_saved_tasks_in_bot
                 .contains("Monitor #7: Pending")
         );
         assert!(mounted.state.fake.scheduled.borrow().is_empty());
-        mounted.click(".conversation-monitors .ui-disclosure-toggle");
         mounted.click_text("Cancel future checks");
         settle().await;
         assert!(mounted.state.monitors.entries.get_untracked().is_empty());
         assert!(mounted.state.fake.monitors.borrow()[&1].is_empty());
+        assert!(
+            mounted
+                .root
+                .query_selector("button[aria-label=\"View monitors\"]")
+                .unwrap()
+                .is_none()
+        );
     }
 }
 #[wasm_bindgen_test]
@@ -86,5 +94,29 @@ async fn old_monitor_replies_cannot_update_a_new_conversation_or_account() {
             .run(MonitorCommand::List {});
         settle().await;
         assert!(!mounted.state.monitors.busy.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn monitor_indicator_is_hidden_without_active_monitors() {
+    for enabled in [false, true] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_session();
+            if !enabled {
+                let mut monitor = entry();
+                monitor.draft.enabled = false;
+                state.fake.monitors.borrow_mut().insert(1, vec![monitor]);
+            }
+            view! {<openwebide_frontend::components::ConversationMonitors/>}
+        });
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector("button[aria-label=\"View monitors\"]")
+                .unwrap()
+                .is_none()
+        );
     }
 }

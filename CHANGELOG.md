@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Show active conversation monitors in the status line with a compact flyout for status, host authorization and cancellation; hide the indicator when no monitor is active.
+
 - Enable installed plugins across existing and new projects by default, with persisted project opt-outs that survive updates. Store verified contributions atomically and preserve personal content on conflicts.
 - Migrate optional web, memory, scheduling and skill-authoring tools to host-installed first-party plugins using one contribution policy in local and remote runs; retain core workspace tools.
 - Notify about plugin updates by default with a status-bar count, per-plugin updates and Update All. Add Automatic/Off preferences, compatible update checks while the app is open, pinned active-run content and distinct menu action icons.

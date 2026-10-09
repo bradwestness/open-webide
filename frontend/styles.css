@@ -3465,9 +3465,9 @@ button.browser-item {
 .approval-mode-picker .approval-mode-yolo, .approval-mode-menu .approval-mode-yolo { color: var(--offline); }
 
 @container (max-width: 600px) {
-  .tui-statusline:has(.tui-goal-status) .tui-context-detail { display: none; }
-  .tui-statusline:has(.tui-goal-status) .tui-model-picker { min-width: 0; }
-  .tui-statusline:has(.tui-goal-status) .approval-mode-picker .ui-dropdown-label { max-width: 88px; overflow: hidden; text-overflow: ellipsis; }
+  .tui-statusline:has(.tui-goal-status, .tui-monitor-status) .tui-context-detail { display: none; }
+  .tui-statusline:has(.tui-goal-status, .tui-monitor-status) .tui-model-picker { min-width: 0; }
+  .tui-statusline:has(.tui-goal-status, .tui-monitor-status) .approval-mode-picker .ui-dropdown-label { max-width: 88px; overflow: hidden; text-overflow: ellipsis; }
 }
 
 /* Project memories share the Sessions sidebar and standard form controls. */
@@ -3715,3 +3715,11 @@ button.browser-item {
 .phone-layout .plugin-row-actions { grid-column: 2; justify-content: flex-end; }
 
 .plugin-update-count { color: var(--warn); }
+
+.tui-statusline .tui-monitor-status { flex: none; margin-left: auto; min-width: 0; }
+.tui-statusline .tui-monitor-status ~ .tui-goal-status { margin-left: 0; }
+.tui-monitor-status .tui-monitor-label { font: inherit; padding: 2px 4px; color: var(--accent); }
+.tui-monitor-menu { white-space: normal; overflow-y: auto; }
+.tui-monitors { padding: var(--space-3); overflow-wrap: anywhere; }
+.tui-monitors p { margin: var(--space-2) 0; }
+.tui-monitor-entry { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); }
