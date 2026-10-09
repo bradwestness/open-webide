@@ -109,7 +109,9 @@ try:
             raise AssertionError("App and bridge did not become ready through HTTPS")
         api("/auth/register", {"username": "https-check", "password": "disposable-https-test-password"})
         assert jar and all(cookie.secure for cookie in jar), "TLS proxy must produce Secure session cookies"
-        connection = api("/connections", {"name": "HTTPS fixture", "kind": "llamacpp", "base_url": "http://127.0.0.1:5005", "model": "proxy-test", "context_limit": 8192})
+        # This fixture verifies transport, including unbuffered SSE. Give the
+        # registered tools room so compaction cannot preempt the first delta.
+        connection = api("/connections", {"name": "HTTPS fixture", "kind": "llamacpp", "base_url": "http://127.0.0.1:5005", "model": "proxy-test", "context_limit": 32768})
         token = api("/bridge/token", {})["token"]
         for route, headers, status in [("/bridge/secret", {}, 403), ("/bridge/host/info", {}, 401), ("/bridge/health", {"Origin": "https://evil.invalid"}, 403)]:
             try:

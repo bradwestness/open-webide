@@ -15,6 +15,8 @@ for what's still ahead.
   in both workspace modes.
 - Isolate container inventory test runtimes from host-installed Docker and Podman
   so CI exercises both fixtures reliably.
+- Give the HTTPS transport fixture room for registered tool schemas so it reaches
+  its streaming checks without triggering unrelated context compaction.
 
 - Prepare final bracket links across bounded worker batches, preserving embedded
   language boundaries and hiding partial editing contexts until completion in
