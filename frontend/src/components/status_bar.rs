@@ -72,6 +72,11 @@ pub fn StatusBar(
             </Show>
 
             <span class="spacer" />
+            <span class="status-preparation" title=move || if preparing.get() { "Preparing syntax…" } else { "" }>
+                <Show when=move || preparing.get()>
+                    <super::ui::LoadingStatus label="Preparing syntax…" compact=true />
+                </Show>
+            </span>
             <button
                 class=move || if show_terminal.get() { "status-btn active" } else { "status-btn" }
                 disabled=move || !layout.available(crate::state::layout::Panel::Terminal)
@@ -80,11 +85,6 @@ pub fn StatusBar(
             >
                 <super::ui::Icon name=super::ui::IconName::Terminal />"Output"
             </button>
-            <span class="status-preparation" title=move || if preparing.get() { "Preparing syntax…" } else { "" }>
-                <Show when=move || preparing.get()>
-                    <super::ui::LoadingStatus label="Preparing syntax…" compact=true />
-                </Show>
-            </span>
         </footer>
     }
 }
