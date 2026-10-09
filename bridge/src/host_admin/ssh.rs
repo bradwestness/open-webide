@@ -807,9 +807,6 @@ mod tests {
         for runtime in ["podman", "docker"] {
             let dir = tempfile::tempdir().unwrap();
             let file = dir.path().join(runtime);
-            // Keep the alternate runtime installed on the host out of discovery.
-            // The collector only needs head besides the mocked runtime.
-            std::os::unix::fs::symlink("/usr/bin/head", dir.path().join("head")).unwrap();
             std::fs::write(&file, r#"#!/bin/sh
 if [ "$1" = ps ]; then printf 'plex\n'; exit 0; fi
 [ "$1" = inspect ] && [ "$2" = --format ] && [ "$4" = plex ] || exit 10
