@@ -72,23 +72,11 @@ impl EditorNativeContext {
 
 impl EditorActions {
     fn initial_native_layout_eligible(self, projection: &FoldProjection) -> bool {
-        if self.preferences().word_wrap || !projection.has_uniform_rows() {
-            return false;
-        }
-        // Short rows use the same measured source extents as long rows. The
-        // initial selection need not intersect a long row to install bounded input.
-        for (row, line) in projection.lines().iter().enumerate() {
-            if line.source.len() <= openwebide_core::editor::MAX_MEASURE_BYTES {
-                continue;
-            }
-            if projection
-                .visual_line_index(row)
-                .is_none_or(|index| !index.source_paint_eligible() || index.has_tabs())
-            {
-                return false;
-            }
-        }
-        true
+        // Native surrounding text needs exact source coordinates, not sliced paint.
+        // Uniform unwrapped row boxes prove vertical extent independently of tabs
+        // and bidirectional shaping. Horizontal geometry remains explicitly pending
+        // until the normal complete-layout or bounded-probe policy finishes.
+        !self.preferences().word_wrap && projection.has_uniform_rows()
     }
 
     /// Install source-owned surrounding text before initial unwrapped layout.

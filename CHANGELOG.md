@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Start uniform unwrapped files with bounded native input even when long rows
+  contain tabs or bidirectional text. Preserve source selection and pending scroll
+  ownership while exact layout prepares; restore complete native input on a current
+  measurement failure. Both workspace modes use the shared editor input policy.
+
 - Prepare eligible long wrapped paragraphs in bounded styled probes, clipping
   retained text runs and validating exact overlap glyphs before publishing complete
   geometry in both workspace modes. Cancel stale chunks without publishing partial

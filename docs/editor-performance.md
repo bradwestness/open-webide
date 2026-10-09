@@ -3351,3 +3351,39 @@ previous complete-row implementation; its source, extent and caret assertions
 remain in place. Browser contracts exercise both workspace modes.
 The independent DOM-clone markup oracle and strict optimized WASM component-test
 Clippy also pass. These checks verify the checkpoint, not the remaining full goal.
+
+## Cold native input for long tabbed and bidirectional rows
+
+The shared editor input facade now admits bounded surrounding text for every
+uniform unwrapped projection. Native input needs exact source coordinates and
+selection ownership; it does not require the paint slicing policy to admit the
+row. Fixed unwrapped row boxes prove vertical extent independently of tabs and
+bidirectional shaping. Horizontal extent remains pending until the existing
+bounded or complete-layout measurement finishes. This also removes the initial
+whole-document scan for long-row paint eligibility from input admission.
+
+The complete-layout fallback is unchanged. Current measurement failure restores
+complete native input, while composition retains its installed mapping through
+commit/cancel and stale source/account/project results cannot release another
+context. Wrapped/nonuniform initial native input and source-owned touch input
+remain unresolved. This checkpoint makes no near-limit production responsiveness
+or PSS improvement claim: unsupported paragraph shaping still runs in full.
+
+The browser startup contract audits every production textarea value assignment
+before readiness and requires at most 12,288 UTF-16 units; the ownership contract
+also checks the 12-KiB source-byte cap. It preserves restored selection/scroll
+and exact full extents. It adds long tabbed and mixed bidirectional Unicode rows
+to both workspace modes. Overflowing Chromium textareas omit right padding from
+their reported width: the first new oracle observed source width 580,337 px,
+native width 580,321 px and complete source-paint width 580,337 px. Width is
+therefore compared against the existing independent complete source-paint oracle;
+height remains checked against a complete native control. No tolerance is raised.
+
+Verification: the expanded optimized Chrome startup contract passes (2.47 s),
+scrolled cold native input/source edits and pointer mapping pass (1.30 s), and
+long tabbed horizontal fragments/native hits pass (1.34 s). The 32-case ownership
+matrix passes (0.12 s), including Unicode edits before measurement, tabbed
+composition commit and bidirectional composition cancel after measurement failure,
+plus stale account/file rejection. Strict optimized WASM component-test Clippy,
+formatting and whitespace checks pass. These are regression timings, not controlled
+production latency measurements or physical input-method verification.

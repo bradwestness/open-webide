@@ -12761,9 +12761,13 @@ async fn unwrapped_startup_uses_bounded_initial_input_in_both_modes() {
     let unit = "文😀 words ";
     for (mode, case) in [WorkspaceMode::Local, WorkspaceMode::Remote]
         .into_iter()
-        .flat_map(|mode| (0..4).map(move |case| (mode, case)))
+        .flat_map(|mode| (0..6).map(move |case| (mode, case)))
     {
-        let source = if case >= 2 {
+        let source = if case == 4 {
+            format!("header\r\n{}\r\ntail", "word\t文😀 ".repeat(6000))
+        } else if case == 5 {
+            format!("header\r\n{}\r\ntail", "אב words 文😀 ".repeat(6000))
+        } else if case >= 2 {
             "short\t文😀e\u{301} words\r\n".repeat(4000)
         } else {
             format!("header\r\n{}\r\ntail", unit.repeat(6000))
@@ -12855,7 +12859,7 @@ async fn unwrapped_startup_uses_bounded_initial_input_in_both_modes() {
             .editor_row_cache
             .get_untracked()
             .unwrap();
-        if case >= 2 {
+        if matches!(case, 2 | 3) {
             let full = fullNativeDimensions(&input, &source);
             // These short rows fit the viewport. The complete native surface
             // already includes its minimum viewport width and trailing padding.
@@ -12874,6 +12878,18 @@ async fn unwrapped_startup_uses_bounded_initial_input_in_both_modes() {
                 (scroll.scroll_height() - full[1]).abs() <= 2,
                 "{mode:?} short-row height"
             );
+        } else if case >= 4 {
+            // Unsupported long-row paint still uses complete layout; its exact
+            // extents must not be inferred from the bounded native value.
+            let full = fullNativeDimensions(&input, &source);
+            let paint_width = fullSourcePaintWidth(&input, &source);
+            assert!(
+                (scroll.scroll_width() - paint_width).abs() <= 2,
+                "{mode:?} long-row case {case}: source width {}, complete paint width {}",
+                scroll.scroll_width(),
+                paint_width
+            );
+            assert!((scroll.scroll_height() - full[1]).abs() <= 2);
         } else {
             assert!(
                 openwebide_frontend::components::bounded_paragraph_matches_complete(
@@ -12897,11 +12913,11 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
     use openwebide_frontend::state_actions::editor::EditorActions;
     use std::{cell::Cell, rc::Rc, sync::Arc};
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
-        for case in 0..14 {
+        for case in 0..16 {
             let source = match case {
                 1 | 10 => "short\n".to_string() + &"a".repeat(70_000),
-                2 => "a\t".repeat(35_000),
-                3 => "אב".repeat(35_000),
+                2 | 8 | 14 => "a\t".repeat(35_000),
+                3 | 9 | 15 => "אב".repeat(35_000),
                 11 => "short 文😀\r\n".repeat(4000),
                 12 => "short\t文😀e\u{301} words\n".repeat(4000),
                 13 => "short\n".to_owned() + &"אב".repeat(35_000),
@@ -12929,7 +12945,7 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
             let selected = Selection::caret(if case == 10 { 35_006 } else { 0 });
             actions.prepare_edit(selected).unwrap();
             actions.record_scroll(1, "startup.txt", 120.0, 450.0);
-            if (2..=4).contains(&case) || case == 13 {
+            if case == 4 {
                 assert!(
                     !actions.begin_initial_native_context(),
                     "unsupported cold layout: {mode:?}, {case}"
@@ -12964,7 +12980,7 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                     .unwrap(),
                 selected
             );
-            if case == 5 {
+            if matches!(case, 5 | 14 | 15) {
                 let value = "日😀".to_string() + context.projection().textarea_text();
                 actions
                     .projected_input(
@@ -13057,7 +13073,7 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                 assert!(actions.bound_native_context().is_none());
                 continue;
             }
-            if matches!(case, 0 | 1 | 10..=12) {
+            if matches!(case, 0..=3 | 10..=13) {
                 assert!(message.is_some());
                 assert!(!actions.native_geometry_pending());
                 assert!(actions.bound_native_context().is_none());
