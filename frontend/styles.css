@@ -3471,9 +3471,9 @@ button.browser-item {
 }
 
 /* Project memories share the Sessions sidebar and standard form controls. */
-.project-memories { border-top: 1px solid var(--border); padding-top: var(--space-3); }
-.project-memories .section-header h2 { margin: 0; }
-.project-memories .ui-check { align-items: center; color: var(--text-muted); font-size: var(--font-control); }
+.project-memories, .project-skills { border-top: 1px solid var(--border); padding-top: var(--space-3); }
+.project-memories .section-header h2, .project-skills .section-header h2 { margin: 0; }
+.project-memories .ui-check, .project-skills .ui-check { align-items: center; color: var(--text-muted); font-size: var(--font-control); }
 .memory-editor { display: grid; gap: var(--space-2); margin: var(--space-2) 0; }
 .memory-editor .form-input { width: 100%; min-width: 0; box-sizing: border-box; }
 .memory-entry { margin-top: var(--space-2); }

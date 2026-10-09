@@ -1266,8 +1266,26 @@ type SpinMemoryExecutor = openwebide_agent::memory::MemoryTools<
     >,
     SpinMemoryPersistence,
 >;
-type SpinTaskExecutor =
+type SpinScheduledExecutor =
     openwebide_agent::scheduled::ScheduledTools<SpinMemoryExecutor, SpinScheduledPersistence>;
+struct SpinSkillPersistence {
+    store: Arc<Store<AppDb>>,
+    user: openwebide_core::UserId,
+    session: i64,
+}
+impl openwebide_agent::skills::SkillStore for SpinSkillPersistence {
+    async fn execute(
+        &self,
+        command: &openwebide_core::SkillCommand,
+    ) -> Result<openwebide_core::ProjectSkills, String> {
+        self.store
+            .session_skill_command(self.user, self.session, command, now())
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+type SpinTaskExecutor =
+    openwebide_agent::skills::SkillTools<SpinScheduledExecutor, SpinSkillPersistence>;
 type SpinTaskGate =
     openwebide_agent::policy::PolicyGate<PermissionPoller, crate::api::approvals::ApprovalAdapter>;
 #[derive(Clone)]
@@ -1301,24 +1319,31 @@ impl SpinTaskFactory {
         .with_host(crate::bridge_client::SpinBridgeClient::for_host(
             self.store.clone(),
         ));
-        openwebide_agent::scheduled::ScheduledTools::new(
-            openwebide_agent::memory::MemoryTools::new(
-                openwebide_agent::todo::TodoTools::new(
-                    executor,
-                    TodoPersistence {
+        openwebide_agent::skills::SkillTools::new(
+            openwebide_agent::scheduled::ScheduledTools::new(
+                openwebide_agent::memory::MemoryTools::new(
+                    openwebide_agent::todo::TodoTools::new(
+                        executor,
+                        TodoPersistence {
+                            store: self.store.clone(),
+                            user: self.user,
+                            session: self.session,
+                            anchor: self.anchor,
+                        },
+                    ),
+                    SpinMemoryPersistence {
                         store: self.store.clone(),
                         user: self.user,
                         session: self.session,
-                        anchor: self.anchor,
                     },
                 ),
-                SpinMemoryPersistence {
+                SpinScheduledPersistence {
                     store: self.store.clone(),
                     user: self.user,
                     session: self.session,
                 },
             ),
-            SpinScheduledPersistence {
+            SpinSkillPersistence {
                 store: self.store.clone(),
                 user: self.user,
                 session: self.session,
@@ -1523,6 +1548,194 @@ mod memory_tests {
                 call.name = "list_dir".into();
                 call.arguments = "{}".into();
                 assert!(executor.execute(&call).await.ok);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod skill_tests {
+    use super::*;
+    use openwebide_agent::ToolExecutor;
+    use openwebide_core::{SkillCommand, SkillDraft, ToolCall, WorkspaceMode};
+    #[test]
+    fn skill_tools_share_crud_creator_progressive_loading_and_permission_contract_in_both_modes() {
+        futures::executor::block_on(async {
+            for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+                let store = Arc::new(Store::new(AppDb::open_in_memory().unwrap()));
+                store.migrate().await.unwrap();
+                let user = store
+                    .insert_user("owner", "hash", openwebide_core::UserRole::Admin, 0)
+                    .await
+                    .unwrap()
+                    .id;
+                let project = store
+                    .create_project(
+                        &openwebide_core::NewProject {
+                            name: "project".into(),
+                            mode,
+                            path: Some("test".into()),
+                        },
+                        user,
+                        0,
+                    )
+                    .await
+                    .unwrap()
+                    .id;
+                let session = store
+                    .create_session("first", None, None, Some(project), user, 0)
+                    .await
+                    .unwrap()
+                    .id;
+                let executor = openwebide_agent::skills::SkillTools::new(
+                    VfsToolExecutor::new(openwebide_core::MemoryVfs::new()),
+                    SpinSkillPersistence {
+                        store: store.clone(),
+                        user,
+                        session,
+                    },
+                );
+                let draft = SkillDraft {
+                    name: "build-check".into(),
+                    description: "Use when checking builds".into(),
+                    instructions: "PRIVATE INSTRUCTIONS".into(),
+                    enabled: true,
+                    resources: vec![openwebide_core::SkillResource {
+                        name: "references/check.md".into(),
+                        content: "PRIVATE RESOURCE".into(),
+                        binary: false,
+                    }],
+                    metadata: Default::default(),
+                };
+                let call = |name: &str, args: serde_json::Value| ToolCall {
+                    id: "skill".into(),
+                    name: name.into(),
+                    arguments: args.to_string(),
+                };
+                let create = call("skill_create", serde_json::json!({"draft":draft}));
+                assert!(openwebide_agent::requires_approval(&create));
+                assert!(
+                    executor
+                        .preview(&create)
+                        .await
+                        .unwrap()
+                        .note
+                        .unwrap()
+                        .contains("PRIVATE INSTRUCTIONS")
+                );
+                let result = executor.execute(&create).await;
+                assert!(result.ok, "{}", result.content);
+                let saved = store.project_skills(user, project).await.unwrap();
+                let id = saved.entries[0].id;
+                for read in [
+                    call("skill_list", serde_json::json!({})),
+                    call("skill_read", serde_json::json!({"id":id})),
+                    call(
+                        "skill_creator",
+                        serde_json::json!({"goal":"Improve build review","id":id}),
+                    ),
+                ] {
+                    assert!(!openwebide_agent::requires_approval(&read));
+                    let result = executor.execute(&read).await;
+                    assert!(result.ok, "{}", result.content);
+                    assert!(!result.content.contains("PRIVATE RESOURCE"));
+                    if read.name == "skill_list" {
+                        assert!(!result.content.contains("PRIVATE INSTRUCTIONS"));
+                    }
+                    if read.name == "skill_creator" {
+                        assert!(result.content.contains("held-out"));
+                        assert!(result.content.contains("Never invent"));
+                    }
+                }
+                let resource = executor
+                    .execute(&call(
+                        "skill_read",
+                        serde_json::json!({"id":id,"resource":"references/check.md"}),
+                    ))
+                    .await;
+                assert!(resource.ok);
+                assert!(resource.content.contains("PRIVATE RESOURCE"));
+                assert!(!resource.content.contains("PRIVATE INSTRUCTIONS"));
+                let mut tools = Vec::new();
+                let mut prompt = None;
+                openwebide_agent::skills::configure(&mut tools, &mut prompt, &saved, Some(4096));
+                assert_eq!(tools.len(), 6);
+                let prompt = prompt.unwrap();
+                assert!(prompt.contains("build-check"));
+                assert!(!prompt.contains("PRIVATE INSTRUCTIONS"));
+                let update = call(
+                    "skill_update",
+                    serde_json::json!({"id":id,"revision":1,"draft":draft}),
+                );
+                assert!(executor.execute(&update).await.ok);
+                assert!(!executor.execute(&update).await.ok);
+                assert!(
+                    !executor
+                        .execute(&call(
+                            "skill_delete",
+                            serde_json::json!({"id":id,"revision":1})
+                        ))
+                        .await
+                        .ok
+                );
+                assert!(
+                    !executor
+                        .execute(&call("skill_list", serde_json::json!({"action":"delete"})))
+                        .await
+                        .ok
+                );
+                store
+                    .skill_command(
+                        user,
+                        project,
+                        &SkillCommand::SetEnabled { enabled: false },
+                        false,
+                        2,
+                    )
+                    .await
+                    .unwrap();
+                for name in ["skill_list", "skill_read", "skill_creator", "skill_create"] {
+                    let args = match name {
+                        "skill_list" => serde_json::json!({}),
+                        "skill_read" => serde_json::json!({"id":id}),
+                        "skill_creator" => serde_json::json!({"goal":"Create build check"}),
+                        _ => serde_json::json!({"draft":draft}),
+                    };
+                    assert!(!executor.execute(&call(name, args)).await.ok);
+                }
+                openwebide_agent::skills::configure(
+                    &mut tools,
+                    &mut None,
+                    &store.project_skills(user, project).await.unwrap(),
+                    None,
+                );
+                assert!(tools.is_empty());
+                store
+                    .skill_command(
+                        user,
+                        project,
+                        &SkillCommand::SetEnabled { enabled: true },
+                        false,
+                        3,
+                    )
+                    .await
+                    .unwrap();
+                assert!(
+                    executor
+                        .execute(&call(
+                            "skill_delete",
+                            serde_json::json!({"id":id,"revision":2})
+                        ))
+                        .await
+                        .ok
+                );
+                store.delete_session(session, user).await.unwrap();
+                assert!(
+                    !executor
+                        .execute(&call("skill_list", serde_json::json!({})))
+                        .await
+                        .ok
+                );
             }
         });
     }

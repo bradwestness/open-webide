@@ -11,6 +11,7 @@ mod push;
 mod reviews;
 mod rewind;
 mod rows;
+mod skills;
 pub use push::PushDelivery;
 mod scheduled;
 mod sessions;

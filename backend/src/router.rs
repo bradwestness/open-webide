@@ -51,6 +51,10 @@ enum Route {
     ProjectMemoryCommand,
     GetSessionMemories,
     SessionMemoryCommand,
+    GetProjectSkills,
+    ProjectSkillCommand,
+    GetSessionSkills,
+    SessionSkillCommand,
     ListProjects,
     GetEditorRecovery,
     SaveEditorRecovery,
@@ -195,6 +199,10 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("POST", ["sessions", id, "memories"]) if numeric_id(id) => {
             Some(Route::SessionMemoryCommand)
         }
+        ("GET", ["projects", id, "skills"]) if numeric_id(id) => Some(Route::GetProjectSkills),
+        ("POST", ["projects", id, "skills"]) if numeric_id(id) => Some(Route::ProjectSkillCommand),
+        ("GET", ["sessions", id, "skills"]) if numeric_id(id) => Some(Route::GetSessionSkills),
+        ("POST", ["sessions", id, "skills"]) if numeric_id(id) => Some(Route::SessionSkillCommand),
         ("GET", ["projects"]) => Some(Route::ListProjects),
         ("POST", ["projects"]) => Some(Route::CreateProject),
         ("PUT", ["projects", _]) => Some(Route::RenameProject),
@@ -411,6 +419,18 @@ pub async fn route(req: Request) -> JsonResp {
         }
         (Some(Route::SessionMemoryCommand), Some(user)) => {
             api::memories::command(req, &state, &path, user, true).await
+        }
+        (Some(Route::GetProjectSkills), Some(user)) => {
+            api::skills::get(&state, &path, user, false).await
+        }
+        (Some(Route::ProjectSkillCommand), Some(user)) => {
+            api::skills::command(req, &state, &path, user, false).await
+        }
+        (Some(Route::GetSessionSkills), Some(user)) => {
+            api::skills::get(&state, &path, user, true).await
+        }
+        (Some(Route::SessionSkillCommand), Some(user)) => {
+            api::skills::command(req, &state, &path, user, true).await
         }
         (Some(Route::GetEditorRecovery), Some(user)) => {
             api::editor_recovery::get(&state, &path, user).await
@@ -865,6 +885,10 @@ mod tests {
                 );
             }
             for route in [
+                Route::GetProjectSkills,
+                Route::ProjectSkillCommand,
+                Route::GetSessionSkills,
+                Route::SessionSkillCommand,
                 Route::GetProjectMemories,
                 Route::ProjectMemoryCommand,
                 Route::GetSessionMemories,
@@ -908,6 +932,10 @@ mod tests {
             ("POST", "system-prompts", Route::CreateSystemPrompt),
             ("PUT", "system-prompts/5", Route::UpdateSystemPrompt),
             ("DELETE", "system-prompts/5", Route::DeleteSystemPrompt),
+            ("GET", "projects/5/skills", Route::GetProjectSkills),
+            ("POST", "projects/5/skills", Route::ProjectSkillCommand),
+            ("GET", "sessions/5/skills", Route::GetSessionSkills),
+            ("POST", "sessions/5/skills", Route::SessionSkillCommand),
             ("GET", "projects/5/memories", Route::GetProjectMemories),
             ("POST", "projects/5/memories", Route::ProjectMemoryCommand),
             ("GET", "sessions/5/memories", Route::GetSessionMemories),

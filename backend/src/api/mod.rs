@@ -138,6 +138,7 @@ mod query;
 pub(super) mod reviews;
 pub(super) mod sessions;
 pub(super) mod settings;
+pub(crate) mod skills;
 pub(super) mod web;
 use paths::*;
 use query::query;

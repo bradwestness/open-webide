@@ -4,7 +4,7 @@ What's left, grouped by how soon it's coming: **Next** (queued up), **Later**
 (planned, not yet started). Finished work —
 phases 1 through 14, telemetry, hardening, streaming, `/test`, database-backed
 theme and prompt history, frontend performance & polish, app branding and the chat
-welcome — moved to [CHANGELOG.md](../CHANGELOG.md).
+welcome, database-backed agent skills and skill import/export — moved to [CHANGELOG.md](../CHANGELOG.md).
 
 ## Next
 

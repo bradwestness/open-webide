@@ -479,6 +479,13 @@ pub(super) async fn build_run_plan(
         &memories,
         runtime.settings.context_limit,
     );
+    let skills = state.store.session_skills(user_id, session_id).await?;
+    openwebide_agent::skills::configure(
+        &mut input.tools,
+        &mut input.system_prompt,
+        &skills,
+        runtime.settings.context_limit,
+    );
     openwebide_agent::scheduled::configure(&mut input.tools);
     let plan = openwebide_agent::session::plan(&runtime, input);
     plan.validate_prompt().map_err(ApiError::bad_request)?;

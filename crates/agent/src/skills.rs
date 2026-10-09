@@ -1,0 +1,519 @@
+//! Shared skill tools and authoring workflow above thin persistence adapters.
+use crate::{ToolExecutor, ToolOutcome, ToolPreview};
+use openwebide_core::{
+    FileDiff, ProjectSkills, SkillCommand, ToolCall, ToolDefinition, rewind::ProjectSnapshot,
+};
+use serde::Deserialize;
+use std::future::Future;
+
+pub const TOOL_NAMES: &[&str] = &[
+    "skill_list",
+    "skill_read",
+    "skill_create",
+    "skill_update",
+    "skill_delete",
+    "skill_creator",
+];
+pub fn is_skill_tool(name: &str) -> bool {
+    TOOL_NAMES.contains(&name)
+}
+pub fn configure(
+    tools: &mut Vec<ToolDefinition>,
+    prompt: &mut Option<String>,
+    data: &ProjectSkills,
+    context_limit: Option<usize>,
+) {
+    tools.retain(|tool| !is_skill_tool(&tool.name));
+    if !data.enabled {
+        return;
+    }
+    tools.extend(TOOL_NAMES.iter().map(|name| definition(name)));
+    let limit = context_limit.unwrap_or(32768);
+    let fixed = openwebide_core::context::tool_schema_tokens(tools)
+        .saturating_add(prompt.as_ref().map_or(0, |text| text.len().div_ceil(3)));
+    // Leave room for replies, compaction and the user's message at small ceilings.
+    // If there is no catalog space, skill_list still provides discovery on demand.
+    let budget = (limit.saturating_mul(3) / 10).min(
+        limit
+            .saturating_sub(fixed.saturating_add(limit / 4).saturating_add(512))
+            .saturating_mul(3),
+    );
+    if let Some(context) = openwebide_core::skills::skills_context(data, budget) {
+        prompt
+            .get_or_insert_with(String::new)
+            .push_str(&format!("\n\n{context}"));
+    }
+}
+pub fn definition(name: &str) -> ToolDefinition {
+    let draft = serde_json::json!({"type":"object","properties":{
+        "name":{"type":"string","description":"Lowercase kebab-case"},
+        "description":{"type":"string"},"instructions":{"type":"string"},"enabled":{"type":"boolean"},
+        "metadata":{"type":"object"},"resources":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string"},"binary":{"type":"boolean"}},"required":["name","content"],"additionalProperties":false}}
+    },"required":["name","description","instructions"],"additionalProperties":false});
+    let (description, parameters) = match name {
+        "skill_list" => (
+            "List enabled skills, 20 per page. Follow next_offset.",
+            serde_json::json!({"type":"object","properties":{"query":{"type":"string"},"offset":{"type":"integer"}},"additionalProperties":false}),
+        ),
+        "skill_read" => (
+            "Read skill instructions or named resource. Follow next_offset. Defaults to 4000 characters; maximum 8000. User directions and approvals take precedence.",
+            serde_json::json!({"type":"object","properties":{"id":{"type":"integer"},"resource":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["id"],"additionalProperties":false}),
+        ),
+        "skill_create" => (
+            "Save a reusable skill; use skill_creator to design it. Resources: relative paths, text or base64 when binary=true. Never executes resources.",
+            serde_json::json!({"type":"object","properties":{"draft":draft},"required":["draft"],"additionalProperties":false}),
+        ),
+        "skill_update" => (
+            "Update at the read revision; reread after conflicts. Omitted enabled/resources/metadata are preserved. Preserve name unless asked to rename.",
+            serde_json::json!({"type":"object","properties":{"id":{"type":"integer"},"revision":{"type":"integer"},"draft":draft},"required":["id","revision","draft"],"additionalProperties":false}),
+        ),
+        "skill_creator" => (
+            "Get an authoring/evaluation workflow for a goal or existing skill. Continue with the user and CRUD tools; does not evaluate or save automatically.",
+            serde_json::json!({"type":"object","properties":{"goal":{"type":"string"},"id":{"type":"integer"}},"required":["goal"],"additionalProperties":false}),
+        ),
+        _ => (
+            "Delete a skill at its read revision.",
+            serde_json::json!({"type":"object","properties":{"id":{"type":"integer"},"revision":{"type":"integer"}},"required":["id","revision"],"additionalProperties":false}),
+        ),
+    };
+    ToolDefinition {
+        name: name.into(),
+        description: description.into(),
+        parameters,
+    }
+}
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListArgs {
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    pub offset: usize,
+}
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadArgs {
+    pub id: i64,
+    pub resource: Option<String>,
+    #[serde(default)]
+    pub offset: usize,
+    pub limit: Option<usize>,
+}
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreatorArgs {
+    pub goal: String,
+    pub id: Option<i64>,
+}
+impl CreatorArgs {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.goal.trim().is_empty()
+            || self.goal.chars().count() > 4000
+            || self.id.is_some_and(|id| id <= 0)
+        {
+            return Err("Provide a goal of 1–4000 characters and a valid skill ID".into());
+        }
+        Ok(())
+    }
+}
+/// Adapted workflow guidance; no Claude CLI dependency or automatic external calls.
+pub const CREATOR_GUIDANCE: &str = include_str!("skill-creator.md");
+pub trait SkillStore: Send + Sync {
+    fn execute(
+        &self,
+        command: &SkillCommand,
+    ) -> impl Future<Output = Result<ProjectSkills, String>> + Send;
+}
+pub struct SkillTools<E, S> {
+    executor: E,
+    store: S,
+}
+impl<E, S> SkillTools<E, S> {
+    pub const fn new(executor: E, store: S) -> Self {
+        Self { executor, store }
+    }
+}
+fn summary(entry: &openwebide_core::ProjectSkill) -> serde_json::Value {
+    serde_json::json!({"id":entry.id,"revision":entry.revision,"name":entry.draft.name,"description":entry.draft.description,"enabled":entry.draft.enabled})
+}
+fn text_page(text: &str, offset: usize, limit: usize) -> serde_json::Value {
+    let total = text.chars().count();
+    let content = text.chars().skip(offset).take(limit).collect::<String>();
+    let end = offset.saturating_add(content.chars().count());
+    serde_json::json!({"content": content, "offset": offset, "next_offset": (end < total).then_some(end), "total_characters": total})
+}
+fn instructions(
+    entry: &openwebide_core::ProjectSkill,
+    offset: usize,
+    limit: usize,
+) -> serde_json::Value {
+    let mut value = summary(entry);
+    value["instructions"] = text_page(&entry.draft.instructions, offset, limit);
+    value["resources"] = serde_json::json!(
+        entry
+            .draft
+            .resources
+            .iter()
+            .map(|resource| &resource.name)
+            .collect::<Vec<_>>()
+    );
+    value
+}
+impl<E, S: SkillStore> SkillTools<E, S> {
+    async fn preserve_fields(
+        &self,
+        call: &ToolCall,
+        mut command: SkillCommand,
+    ) -> Result<SkillCommand, String> {
+        if let SkillCommand::Update {
+            id,
+            revision,
+            draft,
+        } = &mut command
+        {
+            let data = self
+                .store
+                .execute(&SkillCommand::Read {
+                    id: *id,
+                    resource: None,
+                })
+                .await?;
+            let entry = data
+                .entries
+                .iter()
+                .find(|entry| entry.id == *id)
+                .ok_or("Skill no longer exists")?;
+            if entry.revision != *revision {
+                return Err("Skill changed. Read it again before editing.".into());
+            }
+            let args: serde_json::Value =
+                serde_json::from_str(&call.arguments).map_err(|error| error.to_string())?;
+            let supplied = args["draft"].as_object().ok_or("Provide a skill draft")?;
+            if !supplied.contains_key("resources") {
+                draft.resources.clone_from(&entry.draft.resources);
+            }
+            if !supplied.contains_key("metadata") {
+                draft.metadata.clone_from(&entry.draft.metadata);
+            }
+            if !supplied.contains_key("enabled") {
+                draft.enabled = entry.draft.enabled;
+            }
+        }
+        Ok(command)
+    }
+}
+impl<E: ToolExecutor + Sync, S: SkillStore> ToolExecutor for SkillTools<E, S> {
+    fn has_context(&self) -> bool {
+        self.executor.has_context()
+    }
+    async fn context(
+        &mut self,
+        tools: &[ToolDefinition],
+        call: Option<&ToolCall>,
+    ) -> Option<String> {
+        self.executor.context(tools, call).await
+    }
+    fn describe(&self, call: &ToolCall) -> String {
+        if is_skill_tool(&call.name) {
+            crate::tools::parse(call).map_or_else(|e| e.to_string(), |tool| tool.describe())
+        } else {
+            self.executor.describe(call)
+        }
+    }
+    async fn preview(&self, call: &ToolCall) -> Option<ToolPreview> {
+        if !is_skill_tool(&call.name) {
+            return self.executor.preview(call).await;
+        }
+        let note = async {
+            let crate::tools::Tool::Skill(command) =
+                crate::tools::parse(call).map_err(|e| e.to_string())?
+            else {
+                return Ok(None);
+            };
+            let command = self.preserve_fields(call, command).await?;
+            command.validate()?;
+            match command {
+                SkillCommand::Create { draft } => Ok(Some(
+                    serde_json::to_string_pretty(&draft).map_err(|e| e.to_string())?,
+                )),
+                SkillCommand::Update {
+                    id,
+                    revision,
+                    draft,
+                } => {
+                    let data = self
+                        .store
+                        .execute(&SkillCommand::Read { id, resource: None })
+                        .await?;
+                    let entry = data.entries.first().ok_or("Skill no longer exists")?;
+                    if entry.revision != revision {
+                        return Err("Skill changed. Read it again before editing.".into());
+                    }
+                    Ok(Some(format!(
+                        "Replace skill {}:\n{}",
+                        entry.draft.name,
+                        serde_json::to_string_pretty(&draft).map_err(|e| e.to_string())?
+                    )))
+                }
+                SkillCommand::Delete { id, revision } => {
+                    let data = self
+                        .store
+                        .execute(&SkillCommand::Read { id, resource: None })
+                        .await?;
+                    let entry = data.entries.first().ok_or("Skill no longer exists")?;
+                    if entry.revision != revision {
+                        return Err("Skill changed. Read it again before deleting.".into());
+                    }
+                    Ok(Some(format!(
+                        "Delete skill {}\n{}",
+                        entry.draft.name, entry.draft.description
+                    )))
+                }
+                _ => Ok(None),
+            }
+        }
+        .await;
+        match note {
+            Ok(None) => None,
+            Ok(Some(note)) | Err(note) => Some(ToolPreview {
+                diff: None,
+                note: Some(note),
+            }),
+        }
+    }
+    async fn checkpoint(&self, call: &ToolCall) -> Result<Option<FileDiff>, String> {
+        self.executor.checkpoint(call).await
+    }
+    async fn project_checkpoint(&self, call: &ToolCall) -> Result<Option<ProjectSnapshot>, String> {
+        self.executor.project_checkpoint(call).await
+    }
+    fn acknowledge(&self, id: &str) {
+        self.executor.acknowledge(id);
+    }
+    async fn execute(&self, call: &ToolCall) -> ToolOutcome {
+        if !is_skill_tool(&call.name) {
+            return self.executor.execute(call).await;
+        }
+        let result = async {
+            let parsed = crate::tools::parse(call).map_err(|e| e.to_string())?;
+            if let crate::tools::Tool::SkillCreator(args) = parsed {
+                args.validate()?;
+                let data = self.store.execute(&SkillCommand::List { query: String::new() }).await?;
+                let existing = if let Some(id) = args.id {
+                    let entry = data.entries.iter().find(|entry| entry.id == id).ok_or("Enabled skill not found")?;
+                    Some(instructions(entry, 0, 4000))
+                } else { None };
+                return Ok(serde_json::json!({"goal":args.goal,"existing_skill":existing,"workflow":CREATOR_GUIDANCE}).to_string());
+            }
+            if let crate::tools::Tool::SkillList(args) = &parsed {
+                if args.offset > openwebide_core::skills::MAX_SKILLS { return Err("Invalid skill list offset".into()); }
+                let command = SkillCommand::List { query: args.query.clone() };
+                let command = self.preserve_fields(call, command).await?;
+            command.validate()?;
+                let data = self.store.execute(&command).await?;
+                let total = data.entries.len();
+                let entries = data.entries.iter().filter(|entry| entry.draft.enabled).skip(args.offset).take(20).map(|entry| {
+                    let mut value = summary(entry);
+                    value["description"] = serde_json::json!(entry.draft.description.chars().take(256).collect::<String>());
+                    value["description_truncated"] = serde_json::json!(entry.draft.description.chars().count() > 256);
+                    value
+                }).collect::<Vec<_>>();
+                let end = args.offset + entries.len();
+                return Ok(serde_json::json!({"entries": entries, "total":total, "next_offset": (end < total).then_some(end)}).to_string());
+            }
+            if let crate::tools::Tool::SkillRead(args) = &parsed {
+                let limit = args.limit.unwrap_or(4000);
+                if args.offset > openwebide_core::skills::MAX_INSTRUCTIONS || !(1..=8000).contains(&limit) { return Err("Invalid skill read window".into()); }
+                let command = SkillCommand::Read { id: args.id, resource: args.resource.clone() };
+                let command = self.preserve_fields(call, command).await?;
+            command.validate()?;
+                let data = self.store.execute(&command).await?;
+                let entry = data.entries.iter().find(|entry| entry.id == args.id).ok_or("Skill not found")?;
+                let value = if let Some(name) = &args.resource {
+                    let resource = entry.draft.resources.iter().find(|resource| &resource.name == name).ok_or("Skill resource not found")?;
+                    let mut value = text_page(&resource.content, args.offset, limit);
+                    value["name"] = serde_json::json!(name); value["binary"] = serde_json::json!(resource.binary);
+                    value
+                } else { instructions(entry, args.offset, limit) };
+                return Ok(value.to_string());
+            }
+            let crate::tools::Tool::Skill(command) = parsed else { return Err("Invalid skill tool".into()); };
+            let command = self.preserve_fields(call, command).await?;
+            command.validate()?;
+            let data = self.store.execute(&command).await?;
+            let value = match command {
+                SkillCommand::List { .. } => serde_json::json!(data.entries.iter().filter(|entry| entry.draft.enabled).map(summary).collect::<Vec<_>>()),
+                SkillCommand::Read { id, resource } => {
+                    let entry = data.entries.iter().find(|entry| entry.id == id).ok_or("Skill not found")?;
+                    if let Some(name) = resource { serde_json::json!(entry.draft.resources.iter().find(|resource| resource.name == name).ok_or("Skill resource not found")?) } else { instructions(entry, 0, 4000) }
+                }
+                SkillCommand::Create { draft } => summary(data.entries.iter().find(|entry| entry.draft.name == draft.name).ok_or("Created skill not found")?),
+                SkillCommand::Update { id, .. } => summary(data.entries.iter().find(|entry| entry.id == id).ok_or("Updated skill not found")?),
+                SkillCommand::Delete { id, .. } => serde_json::json!({"deleted":id}),
+                SkillCommand::SetEnabled { .. } => return Err("Agents cannot toggle project skills".into()),
+            };
+            Ok(value.to_string())
+        }.await;
+        match result {
+            Ok(content) => ToolOutcome {
+                ok: true,
+                content,
+                summary: format!("{} complete", self.describe(call)),
+                diff: None,
+            },
+            Err(content) => ToolOutcome {
+                ok: false,
+                summary: format!("Skill operation failed: {content}"),
+                content,
+                diff: None,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct ReadStore(ProjectSkills);
+    impl SkillStore for ReadStore {
+        async fn execute(&self, _: &SkillCommand) -> Result<ProjectSkills, String> {
+            Ok(self.0.clone())
+        }
+    }
+    fn fixture() -> SkillTools<crate::VfsToolExecutor<openwebide_core::MemoryVfs>, ReadStore> {
+        let draft = openwebide_core::SkillDraft {
+            name: "test-skill".into(),
+            description: "d".repeat(1024),
+            instructions: "🦀\u{0}".repeat(10000),
+            enabled: true,
+            resources: Vec::new(),
+            metadata: Default::default(),
+        };
+        let data = ProjectSkills {
+            enabled: true,
+            entries: (1..=25)
+                .map(|id| openwebide_core::ProjectSkill {
+                    id,
+                    revision: 1,
+                    updated_at: 0,
+                    draft: draft.clone(),
+                })
+                .collect(),
+        };
+        SkillTools::new(
+            crate::VfsToolExecutor::new(openwebide_core::MemoryVfs::new()),
+            ReadStore(data),
+        )
+    }
+    #[test]
+    fn update_preserves_omitted_resources_metadata_and_enabled_with_revision_checks() {
+        futures::executor::block_on(async {
+            let mut executor = fixture();
+            let entry = &mut executor.store.0.entries[0];
+            entry.draft.resources.push(openwebide_core::SkillResource {
+                name: "reference.txt".into(),
+                content: "keep".into(),
+                binary: false,
+            });
+            entry
+                .draft
+                .metadata
+                .insert("license".into(), serde_json::json!("MIT"));
+            entry.draft.enabled = false;
+            let call = ToolCall { id: "test".into(), name: "skill_update".into(), arguments: serde_json::json!({"id":1,"revision":1,"draft":{"name":"test-skill","description":"Updated","instructions":"New"}}).to_string() };
+            let crate::tools::Tool::Skill(command) = crate::tools::parse(&call).unwrap() else {
+                panic!("Expected skill command");
+            };
+            let SkillCommand::Update { draft, .. } = executor
+                .preserve_fields(&call, command.clone())
+                .await
+                .unwrap()
+            else {
+                panic!("Expected update");
+            };
+            assert_eq!(draft.instructions, "New");
+            assert_eq!(draft.resources, executor.store.0.entries[0].draft.resources);
+            assert_eq!(draft.metadata, executor.store.0.entries[0].draft.metadata);
+            assert!(!draft.enabled);
+            executor.store.0.entries[0].revision = 2;
+            assert!(executor.preserve_fields(&call, command).await.is_err());
+        });
+    }
+    #[test]
+    fn discovery_falls_back_to_list_when_fixed_context_leaves_no_catalog_room() {
+        let executor = fixture();
+        let mut tools = Vec::new();
+        let original = "project instructions ".repeat(1000);
+        let mut prompt = Some(original.clone());
+        configure(&mut tools, &mut prompt, &executor.store.0, Some(4096));
+        assert_eq!(prompt.as_deref(), Some(original.as_str()));
+        assert!(tools.iter().any(|tool| tool.name == "skill_list"));
+    }
+    #[test]
+    fn skill_schemas_have_a_bounded_context_cost() {
+        let tools = TOOL_NAMES
+            .iter()
+            .map(|name| definition(name))
+            .collect::<Vec<_>>();
+        assert!(openwebide_core::context::tool_schema_tokens(&tools) < 1400);
+    }
+    #[test]
+    fn skill_read_and_list_pages_are_bounded_complete_and_strict() {
+        futures::executor::block_on(async {
+            let executor = fixture();
+            let call = |name: &str, args: serde_json::Value| ToolCall {
+                id: "test".into(),
+                name: name.into(),
+                arguments: args.to_string(),
+            };
+            let mut offset = 0;
+            let mut text = String::new();
+            loop {
+                let result = executor
+                    .execute(&call(
+                        "skill_read",
+                        serde_json::json!({"id":1,"offset":offset,"limit":8000}),
+                    ))
+                    .await;
+                assert!(result.ok);
+                assert!(result.content.len() < 64 * 1024);
+                let value: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+                text.push_str(value["instructions"]["content"].as_str().unwrap());
+                let Some(next) = value["instructions"]["next_offset"].as_u64() else {
+                    break;
+                };
+                offset = next;
+            }
+            assert_eq!(text, "🦀\u{0}".repeat(10000));
+            let result = executor
+                .execute(&call("skill_list", serde_json::json!({})))
+                .await;
+            assert!(result.ok);
+            assert!(result.content.len() < 64 * 1024);
+            let value: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+            assert_eq!(value["entries"].as_array().unwrap().len(), 20);
+            assert_eq!(value["next_offset"], 20);
+            assert_eq!(value["entries"][0]["description_truncated"], true);
+            let result = executor
+                .execute(&call("skill_list", serde_json::json!({"offset":20})))
+                .await;
+            let value: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+            assert_eq!(value["entries"].as_array().unwrap().len(), 5);
+            assert!(value["next_offset"].is_null());
+            for args in [
+                serde_json::json!({"id":1,"limit":0}),
+                serde_json::json!({"id":1,"limit":8001}),
+                serde_json::json!({"id":1,"offset":-1}),
+                serde_json::json!({"id":1,"action":"delete"}),
+            ] {
+                assert!(!executor.execute(&call("skill_read", args)).await.ok);
+            }
+            assert!(
+                !executor
+                    .execute(&call("skill_list", serde_json::json!({"offset":101})))
+                    .await
+                    .ok
+            );
+        });
+    }
+}

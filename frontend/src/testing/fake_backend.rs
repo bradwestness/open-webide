@@ -62,6 +62,10 @@ pub struct FakeBackend {
     pub scheduled_load_results:
         RefCell<VecDeque<Deferred<Vec<openwebide_core::scheduled::ScheduledTask>>>>,
     pub scheduled_commands: RefCell<Vec<(Option<i64>, openwebide_core::scheduled::TaskCommand)>>,
+    pub skills: RefCell<BTreeMap<i64, openwebide_core::ProjectSkills>>,
+    pub skill_load_results: RefCell<VecDeque<Deferred<openwebide_core::ProjectSkills>>>,
+    pub skill_command_results: RefCell<VecDeque<Deferred<openwebide_core::ProjectSkills>>>,
+    pub skill_commands: RefCell<Vec<(i64, openwebide_core::SkillCommand, bool)>>,
     pub memories: RefCell<BTreeMap<i64, openwebide_core::ProjectMemories>>,
     pub memory_load_results: RefCell<VecDeque<Deferred<openwebide_core::ProjectMemories>>>,
     pub memory_command_results: RefCell<VecDeque<Deferred<openwebide_core::ProjectMemories>>>,
@@ -1969,6 +1973,149 @@ impl Backend for FakeBackend {
                 }
             }
             self.scheduled_tasks(project).await
+        })
+    }
+    fn project_skills(
+        &self,
+        project: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectSkills, String>> {
+        Box::pin(async move {
+            let pending = self.skill_load_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|e| e.to_string())?;
+            }
+            Ok(self
+                .skills
+                .borrow()
+                .get(&project)
+                .cloned()
+                .unwrap_or_default())
+        })
+    }
+    fn session_skills(
+        &self,
+        session: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectSkills, String>> {
+        Box::pin(async move {
+            let project = self
+                .sessions
+                .borrow()
+                .iter()
+                .find(|entry| entry.id == session)
+                .and_then(|entry| entry.project_id);
+            match project {
+                Some(project) => self.project_skills(project).await,
+                None => Ok(openwebide_core::ProjectSkills {
+                    enabled: false,
+                    entries: Vec::new(),
+                }),
+            }
+        })
+    }
+    fn skill_command<'a>(
+        &'a self,
+        id: i64,
+        command: &'a openwebide_core::SkillCommand,
+        session: bool,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ProjectSkills, String>> {
+        Box::pin(async move {
+            use openwebide_core::{ProjectSkill, SkillCommand};
+            command.validate()?;
+            self.skill_commands
+                .borrow_mut()
+                .push((id, command.clone(), session));
+            let pending = self.skill_command_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|e| e.to_string())?;
+            }
+            let project = if session {
+                self.sessions
+                    .borrow()
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .and_then(|entry| entry.project_id)
+                    .ok_or("Project skills require a project")?
+            } else {
+                id
+            };
+            let mut map = self.skills.borrow_mut();
+            let data = map.entry(project).or_default();
+            if session && (!data.enabled || matches!(command, SkillCommand::SetEnabled { .. })) {
+                return Err("Project skills disabled".into());
+            }
+            match command {
+                SkillCommand::Create { draft } => {
+                    if data
+                        .entries
+                        .iter()
+                        .any(|entry| entry.draft.name == draft.name)
+                    {
+                        return Err("Skill name already exists".into());
+                    }
+                    let id = data.entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
+                    data.entries.push(ProjectSkill {
+                        id,
+                        revision: 1,
+                        updated_at: 0,
+                        draft: draft.clone(),
+                    });
+                }
+                SkillCommand::Update {
+                    id,
+                    revision,
+                    draft,
+                } => {
+                    let entry = data
+                        .entries
+                        .iter_mut()
+                        .find(|entry| entry.id == *id && entry.revision == *revision)
+                        .ok_or("Skill changed")?;
+                    entry.draft = draft.clone();
+                    entry.revision += 1;
+                }
+                SkillCommand::Delete { id, revision } => {
+                    let index = data
+                        .entries
+                        .iter()
+                        .position(|entry| entry.id == *id && entry.revision == *revision)
+                        .ok_or("Skill changed")?;
+                    data.entries.remove(index);
+                }
+                SkillCommand::SetEnabled { enabled } => data.enabled = *enabled,
+                SkillCommand::List { query } => {
+                    return Ok(openwebide_core::ProjectSkills {
+                        enabled: data.enabled,
+                        entries: data
+                            .entries
+                            .iter()
+                            .filter(|entry| {
+                                (!session || entry.draft.enabled)
+                                    && (entry.draft.name.contains(query)
+                                        || entry.draft.description.contains(query))
+                            })
+                            .cloned()
+                            .collect(),
+                    });
+                }
+                SkillCommand::Read { id, resource } => {
+                    let entry = data
+                        .entries
+                        .iter()
+                        .find(|entry| entry.id == *id && (!session || entry.draft.enabled))
+                        .ok_or("Skill not found")?;
+                    if resource
+                        .as_ref()
+                        .is_some_and(|name| !entry.draft.resources.iter().any(|r| &r.name == name))
+                    {
+                        return Err("Resource not found".into());
+                    }
+                    return Ok(openwebide_core::ProjectSkills {
+                        enabled: data.enabled,
+                        entries: vec![entry.clone()],
+                    });
+                }
+            }
+            Ok(data.clone())
         })
     }
     fn project_memories(

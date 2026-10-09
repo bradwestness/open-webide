@@ -29,6 +29,8 @@ pub struct TestState {
     pub auth: AuthState,
     pub scheduled: openwebide_frontend::state::scheduled::TasksState,
     pub task_actions: openwebide_frontend::scheduled::TaskActions,
+    pub skills: openwebide_frontend::state::skills::SkillsState,
+    pub skill_actions: openwebide_frontend::project_skills::ProjectSkillActions,
     pub memories: openwebide_frontend::state::memories::MemoriesState,
     pub memory_actions: openwebide_frontend::project_memory::ProjectMemoryActions,
     pub api: Api,
@@ -65,6 +67,12 @@ impl TestState {
         provide_context(workspace);
         provide_context(git);
         provide_context(chat);
+        let skills = openwebide_frontend::state::skills::SkillsState::new();
+        provide_context(skills);
+        let skill_actions = openwebide_frontend::project_skills::ProjectSkillActions::new(
+            api, skills, auth, projects, chat,
+        );
+        provide_context(skill_actions);
         let memories = openwebide_frontend::state::memories::MemoriesState::new();
         provide_context(memories);
         let memory_actions = openwebide_frontend::project_memory::ProjectMemoryActions::new(
@@ -90,6 +98,8 @@ impl TestState {
             scheduled,
             task_actions,
             auth,
+            skills,
+            skill_actions,
             memories,
             memory_actions,
             api,

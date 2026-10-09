@@ -50,6 +50,14 @@ pub trait RunBackend: Send + Sync {
     ) -> impl Future<Output = Result<openwebide_core::ProjectMemories, String>> + Send {
         async { Err("Project memory unavailable".into()) }
     }
+    fn skill_command(
+        &self,
+        _user: i64,
+        _session: i64,
+        _command: &openwebide_core::SkillCommand,
+    ) -> impl Future<Output = Result<openwebide_core::ProjectSkills, String>> + Send {
+        async { Err("Project skills unavailable".into()) }
+    }
     fn get_todo_plan(
         &self,
         _user: i64,
@@ -401,6 +409,20 @@ impl RunBackend for BackendClient {
             user,
             "POST",
             &format!("/sessions/{session}/memories"),
+            serde_json::to_value(command).map_err(|error| error.to_string())?,
+        )
+        .await
+    }
+    async fn skill_command(
+        &self,
+        user: i64,
+        session: i64,
+        command: &openwebide_core::SkillCommand,
+    ) -> Result<openwebide_core::ProjectSkills, String> {
+        self.call(
+            user,
+            "POST",
+            &format!("/sessions/{session}/skills"),
             serde_json::to_value(command).map_err(|error| error.to_string())?,
         )
         .await
@@ -1016,5 +1038,46 @@ mod assistance_tests {
         assert!(request.starts_with("post /api/models/background http/1.1"));
         assert!(request.contains("x-openwebide-user: 42\r\n"));
         assert!(request.contains("\"timeout_seconds\":5"));
+    }
+}
+
+#[cfg(test)]
+mod skill_tests {
+    use super::*;
+    #[tokio::test]
+    async fn skill_adapter_forwards_owned_session_and_reports_failed_persistence() {
+        for status in [200, 409] {
+            let body = if status == 200 {
+                r#"{"enabled":true,"entries":[]}"#
+            } else {
+                r#"{"error":"Skill changed"}"#
+            };
+            let response = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let (url, captured) =
+                crate::runs::http_client::tests::capture(Box::leak(response.into_boxed_str()))
+                    .await;
+            let client = BackendClient::new(
+                format!("{url}/api"),
+                "secret".into(),
+                ReqwestHttpClient::default(),
+            );
+            let result = client
+                .skill_command(
+                    42,
+                    7,
+                    &openwebide_core::SkillCommand::Delete { id: 9, revision: 2 },
+                )
+                .await;
+            assert_eq!(result.is_ok(), status == 200);
+            let request = captured.await.unwrap().to_ascii_lowercase();
+            assert!(request.starts_with("post /api/sessions/7/skills http/1.1"));
+            assert!(request.contains("authorization: bearer secret\r\n"));
+            assert!(request.contains("x-openwebide-user: 42\r\n"));
+            assert!(request.contains(r#""revision":2"#));
+            assert!(request.contains(r#""action":"delete""#));
+        }
     }
 }

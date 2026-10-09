@@ -29,6 +29,7 @@ pub mod model;
 pub mod policy;
 pub mod scheduled;
 pub mod session;
+pub mod skills;
 pub mod tasks;
 pub mod title;
 pub mod todo;

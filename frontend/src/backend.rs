@@ -465,6 +465,26 @@ pub trait Backend {
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(async { Ok(()) })
     }
+    fn project_skills(
+        &self,
+        _project: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectSkills, String>> {
+        Box::pin(async { Err("Project skills unavailable".into()) })
+    }
+    fn session_skills(
+        &self,
+        _session: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectSkills, String>> {
+        Box::pin(async { Err("Project skills unavailable".into()) })
+    }
+    fn skill_command<'a>(
+        &'a self,
+        _id: i64,
+        _command: &'a openwebide_core::SkillCommand,
+        _session: bool,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ProjectSkills, String>> {
+        Box::pin(async { Err("Project skills unavailable".into()) })
+    }
     fn project_memories(
         &self,
         _project: i64,
@@ -1227,6 +1247,26 @@ impl Backend for BackendApi {
         release: bool,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
         Box::pin(BackendApi::run_lease(self, session, token, release))
+    }
+    fn project_skills(
+        &self,
+        project: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectSkills, String>> {
+        Box::pin(BackendApi::skills(self, project, false))
+    }
+    fn session_skills(
+        &self,
+        session: i64,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::ProjectSkills, String>> {
+        Box::pin(BackendApi::skills(self, session, true))
+    }
+    fn skill_command<'a>(
+        &'a self,
+        id: i64,
+        command: &'a openwebide_core::SkillCommand,
+        session: bool,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::ProjectSkills, String>> {
+        Box::pin(BackendApi::skill_command(self, id, command, session))
     }
     fn project_memories(
         &self,

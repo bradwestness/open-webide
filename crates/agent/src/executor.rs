@@ -64,6 +64,7 @@ pub fn vfs_tools() -> Vec<ToolDefinition> {
         .iter()
         .filter(|tool| {
             !crate::memory::is_memory_tool(tool.as_str())
+                && !crate::skills::is_skill_tool(tool.as_str())
                 && !crate::scheduled::is_scheduled_tool(tool.as_str())
         })
         .map(|t| t.definition())
@@ -616,6 +617,9 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             Tool::FetchWebPage(args) => self.fetch_web_page(&args).await,
             Tool::RunCommand(args) => self.run_command(&args).await,
             Tool::Scheduled(_) => fail("schedule", "", "Scheduled task persistence is unavailable"),
+            Tool::Skill(_) | Tool::SkillCreator(_) | Tool::SkillList(_) | Tool::SkillRead(_) => {
+                fail("skill", "", "Project skills persistence is unavailable")
+            }
             Tool::Memory(_) => fail("memory", "", "Project memory persistence is unavailable"),
             Tool::TodoWrite(_) => fail("todo_write", "", "Session plan persistence is unavailable"),
             Tool::HostInfo => match self.bridge.host_info().await {

@@ -6,7 +6,7 @@ Project tabs let you switch repositories; sessions keep separate conversations.
 The logo and chevron open the app menu: local/remote folders, open and recent
 projects, Servers, Help / Keyboard shortcuts and About. On phones the same menu
 opens a side drawer. The user dropdown contains Settings, System prompts and Log out.
-Sessions contains conversations.
+Sessions contains conversations, project memories, skills and scheduled tasks.
 
 Use **Search…** or Ctrl/Cmd+Shift+P to find commands, filenames, projects and
 sessions. Prefix a query with `>` for commands, `/` for files, `#` for projects or
@@ -26,6 +26,7 @@ configuration source. Layout and tree preferences sync through your account.
 
 - [First session](first-session.md): connect a model and review agent changes.
 - [Local and remote projects](workspaces.md): file access and execution capabilities.
+- [Agent skills](agent-skills.md): reusable workflows, agent tools and skill import/export.
 - [Scheduled tasks](scheduled-tasks.md): repeating or one-time prompts and execution hosts.
 - [Assistance model](assistance-model.md): automatic names, recaps, suggestions, Git drafts and search.
 - [Chat commands and goals](chat-controls.md): command discovery, activity,
