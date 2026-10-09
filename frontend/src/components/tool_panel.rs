@@ -19,10 +19,10 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
         _ => ActiveResizer::None,
     };
     view! { <section id=format!("panel-{}", panel.id()) class="tool-panel"
-        class:tool-panel-center=panel == Panel::Editor
+        class:tool-panel-center=move ||layout.flexible_panel()==Some(panel)
         style=move || {
             let order = if panel == Panel::Terminal { 255 } else { layout.preferences.with(|prefs| prefs.order(panel.id())) };
-            format!("display: {}; order: {order}; --files-panel-width: {}px; --tool-window-width: {}px; --tool-window-height: {}px;", if layout.visible_panels.get().visible(panel) { "flex" } else { "none" }, layout.tree_width.get(), if kind == ActiveResizer::None { 0.0 } else { layout.width(kind).get() }, layout.terminal_height.get())
+            format!("display: {}; order: {order}; --files-panel-width: {}px; --tool-window-width: {}px; --tool-window-height: {}px;", if layout.visible_panels.get().visible(panel) { "flex" } else { "none" }, layout.tree_width.get(), if kind == ActiveResizer::None { 260.0 } else { layout.width(kind).get() }, layout.terminal_height.get())
         }
         aria-label=panel.label()>
         <div class="tool-panel-heading" data-context-menu="" hidden=panel == Panel::Terminal || panel == Panel::Editor || panel == Panel::Files>
@@ -109,13 +109,7 @@ fn DockBoundary(panel: Panel) -> impl IntoView {
             panels.sort_by_key(|candidate| prefs.order(candidate.id()));
             let index = panels.iter().position(|candidate| *candidate == panel)?;
             let next = *panels.get(index + 1)?;
-            let flexible = if visible.editor {
-                Some(Panel::Editor)
-            } else if visible.chat {
-                Some(Panel::Chat)
-            } else {
-                None
-            };
+            let flexible = layout.flexible_panel();
             let flexible_index = flexible
                 .and_then(|flexible| panels.iter().position(|candidate| *candidate == flexible));
             let invert = flexible_index.is_some_and(|flexible| index == flexible);

@@ -148,6 +148,7 @@ pub struct WorkspaceActions {
     pub refresh_tree: Callback<()>,
     pub on_open_lossy: Callback<()>,
     pub request_open: Callback<String>,
+    pub open_with_completion: Callback<(String, Callback<Result<(), String>>)>,
     pub close_file: Callback<String>,
     pub file_tab_action: Callback<(String, crate::tabs::TabAction)>,
     pub on_toggle: Callback<String>,
@@ -460,153 +461,234 @@ impl WorkspaceActions {
                 EditorRoot,
             >::new()));
         let save_editor = super::editor::EditorActions::new(workspace);
-        let on_open = Callback::new(move |path: String| {
-            let Some(project_id) = active_project.get_untracked() else {
-                return;
-            };
-            let Some(project) = projects.project(project_id) else {
-                return;
-            };
-            let root = EditorRoot::for_project(&project, projects, settings);
-            let changed = editor_roots.with_value(|roots| {
-                roots
-                    .get(&project_id)
-                    .is_some_and(|previous| previous.changed(&root))
-            });
-            if changed
-                && (workspace.dirty.get_untracked()
-                    || workspace.editor_buffers.with_untracked(|buffers| {
-                        buffers
-                            .iter()
-                            .any(|((id, _), buffer)| *id == project_id && buffer.dirty)
-                    }))
-            {
-                ui.notify("The project folder changed while files have unsaved edits. Restore the original folder to save them before opening files from the new folder.");
-                return;
-            }
-            editor_roots.update_value(|roots| {
-                roots.insert(project_id, root);
-            });
-            save_editor.cancel_composition();
-            if changed {
-                workspace.editor_recovery_overwrites.update(|permits| {
-                    permits.retain(|(id, _), _| *id != project_id);
-                });
-                workspace.editor_recovery_checks.update(|checks| {
-                    checks.retain(|(id, _), _| *id != project_id);
-                });
-                workspace.editor_recovered.update(|files| {
-                    files.retain(|(id, _)| *id != project_id);
-                });
-                workspace.editor_tabs.update(|tabs| {
-                    tabs.remove(&project_id);
-                });
-                workspace
-                    .editor_buffers
-                    .update(|buffers| buffers.retain(|(id, _), _| *id != project_id));
-                workspace
-                    .editor_documents
-                    .update(|documents| documents.retain(|(id, _), _| *id != project_id));
-                workspace
-                    .editor_scroll
-                    .update(|positions| positions.retain(|(id, _), _| *id != project_id));
-                workspace.open_file.set(None);
-                workspace.content.set(String::new().into());
-                workspace.dirty.set(false);
-            }
-            workspace.retain_editor_buffer(read_only.get_untracked());
-            let cached = workspace
-                .editor_buffers
-                .with_untracked(|buffers| buffers.get(&(project_id, path.clone())).cloned());
-            let revision = workspace.begin_editor_read();
-            let generation = auth.generation.get_untracked();
-            let epoch = directory_epoch.get_untracked();
-            let kind = FileKind::from_path(&path);
-            let retained = cached
-                .as_ref()
-                .is_some_and(|buffer| buffer.dirty || buffer.read_only)
-                || workspace
-                    .editor_recovery_checks
-                    .with_untracked(|checks| checks.contains_key(&(project_id, path.clone())));
-            let baseline = cached
-                .as_ref()
-                .map(|buffer| buffer.content.clone())
-                .unwrap_or_default();
-            // Publish the restored text and identity together so history is never
-            // reconciled against another file's text or a temporary empty buffer.
-            batch(|| {
-                workspace.open_file.set(Some(path.clone()));
-                workspace
-                    .dirty
-                    .set(cached.as_ref().is_some_and(|buffer| buffer.dirty));
-                workspace.content.set(
-                    cached
-                        .as_ref()
-                        .map(|buffer| buffer.content.clone())
-                        .unwrap_or_default(),
-                );
-                read_only.set(cached.as_ref().is_some_and(|buffer| buffer.read_only));
-                workspace
-                    .editor_loading
-                    .set(!retained && !kind.is_non_text());
-                revoke_object_url(workspace.media_url.get_untracked());
-                workspace.media_url.set(None);
-            });
-            ui.toast.set(None);
-            spawn_local(async move {
-                let current = || {
-                    auth.generation.try_get_untracked() == Some(generation)
-                        && directory_epoch.try_get_untracked() == Some(epoch)
-                        && workspace.editor_read_current(revision, project_id, &path)
-                };
-                if !current() {
-                    return;
-                }
-                let Some(ws) = workspace_for.run(project_id) else {
-                    workspace.editor_loading.set(false);
-                    return;
-                };
-                if kind.is_non_text()
-                    && FileKind::supports_preview(&path)
-                    && let Ok(url) = ws.read_blob_url(&path).await
-                {
-                    if current() {
-                        workspace.media_url.set(Some(url));
-                    } else {
-                        revoke_object_url(Some(url));
+        let open_request = Callback::new(
+            move |(path, completion): (String, Option<Callback<Result<(), String>>>)| {
+                let Some(project_id) = active_project.get_untracked() else {
+                    if let Some(done) = completion {
+                        done.run(Err("Open a project first.".into()));
                     }
-                }
-                if kind.is_non_text() || retained {
                     return;
-                }
-                let result = ws.read(&path).await;
-                if !current() {
+                };
+                let Some(project) = projects.project(project_id) else {
+                    if let Some(done) = completion {
+                        done.run(Err("Project unavailable.".into()));
+                    }
                     return;
-                }
-                // Facade callers may edit without a DOM. Such input still wins
-                // over a read that began against an empty loading buffer.
-                let loaded = result.is_ok() || workspace.dirty.get_untracked();
-                if !workspace.dirty.get_untracked() && workspace.content.get_untracked() == baseline
+                };
+                let root = EditorRoot::for_project(&project, projects, settings);
+                let changed = editor_roots.with_value(|roots| {
+                    roots
+                        .get(&project_id)
+                        .is_some_and(|previous| previous.changed(&root))
+                });
+                if changed
+                    && (workspace.dirty.get_untracked()
+                        || workspace.editor_buffers.with_untracked(|buffers| {
+                            buffers
+                                .iter()
+                                .any(|((id, _), buffer)| *id == project_id && buffer.dirty)
+                        }))
                 {
-                    match result {
-                        Ok(content) => {
-                            if workspace
-                                .content
-                                .with_untracked(|current| current.as_str() != content)
-                            {
-                                workspace.content.set(content.into());
+                    if let Some(done) = completion {
+                        done.run(Err(
+                            "Restore the original project folder before opening this file.".into(),
+                        ));
+                    }
+                    ui.notify("The project folder changed while files have unsaved edits. Restore the original folder to save them before opening files from the new folder.");
+                    return;
+                }
+                editor_roots.update_value(|roots| {
+                    roots.insert(project_id, root);
+                });
+                save_editor.cancel_composition();
+                if changed {
+                    workspace.editor_recovery_overwrites.update(|permits| {
+                        permits.retain(|(id, _), _| *id != project_id);
+                    });
+                    workspace.editor_recovery_checks.update(|checks| {
+                        checks.retain(|(id, _), _| *id != project_id);
+                    });
+                    workspace.editor_recovered.update(|files| {
+                        files.retain(|(id, _)| *id != project_id);
+                    });
+                    workspace.editor_tabs.update(|tabs| {
+                        tabs.remove(&project_id);
+                    });
+                    workspace
+                        .editor_buffers
+                        .update(|buffers| buffers.retain(|(id, _), _| *id != project_id));
+                    workspace
+                        .editor_documents
+                        .update(|documents| documents.retain(|(id, _), _| *id != project_id));
+                    workspace
+                        .editor_scroll
+                        .update(|positions| positions.retain(|(id, _), _| *id != project_id));
+                    workspace.open_file.set(None);
+                    workspace.content.set(String::new().into());
+                    workspace.dirty.set(false);
+                }
+                workspace.retain_editor_buffer(read_only.get_untracked());
+                let cached = workspace
+                    .editor_buffers
+                    .with_untracked(|buffers| buffers.get(&(project_id, path.clone())).cloned());
+                let revision = workspace.begin_editor_read();
+                let generation = auth.generation.get_untracked();
+                let session = workspace.active_session.get_untracked();
+                let epoch = directory_epoch.get_untracked();
+                let kind = FileKind::from_path(&path);
+                let retained = cached
+                    .as_ref()
+                    .is_some_and(|buffer| buffer.dirty || buffer.read_only)
+                    || workspace
+                        .editor_recovery_checks
+                        .with_untracked(|checks| checks.contains_key(&(project_id, path.clone())));
+                let baseline = cached
+                    .as_ref()
+                    .map(|buffer| buffer.content.clone())
+                    .unwrap_or_default();
+                // Publish the restored text and identity together so history is never
+                // reconciled against another file's text or a temporary empty buffer.
+                batch(|| {
+                    workspace.open_file.set(Some(path.clone()));
+                    workspace
+                        .dirty
+                        .set(cached.as_ref().is_some_and(|buffer| buffer.dirty));
+                    workspace.content.set(
+                        cached
+                            .as_ref()
+                            .map(|buffer| buffer.content.clone())
+                            .unwrap_or_default(),
+                    );
+                    read_only.set(cached.as_ref().is_some_and(|buffer| buffer.read_only));
+                    workspace
+                        .editor_loading
+                        .set(!retained && !kind.is_non_text());
+                    revoke_object_url(workspace.media_url.get_untracked());
+                    workspace.media_url.set(None);
+                });
+                ui.toast.set(None);
+                spawn_local(async move {
+                    let current = || {
+                        workspace.active_session.try_get_untracked() == Some(session)
+                            && auth.generation.try_get_untracked() == Some(generation)
+                            && directory_epoch.try_get_untracked() == Some(epoch)
+                            && workspace.editor_read_current(revision, project_id, &path)
+                    };
+                    if !current() {
+                        return;
+                    }
+                    let Some(ws) = workspace_for.run(project_id) else {
+                        workspace.editor_loading.set(false);
+                        if let Some(done) = completion {
+                            done.run(Err("Reconnect the project folder first.".into()));
+                        }
+                        return;
+                    };
+                    if kind.is_non_text() && FileKind::supports_preview(&path) {
+                        match ws.read_blob_url(&path).await {
+                            Ok(url) => {
+                                if current() {
+                                    workspace.media_url.set(Some(url));
+                                } else {
+                                    revoke_object_url(Some(url));
+                                }
+                            }
+                            Err(error) => {
+                                if current()
+                                    && let Some(done) = completion
+                                {
+                                    done.run(Err(error.to_string()));
+                                    return;
+                                }
                             }
                         }
-                        Err(error) => ui.toast.set(Some(error.to_string())),
                     }
-                }
-                workspace.editor_loading.set(false);
-                if loaded {
-                    workspace.retain_editor_buffer(read_only.get_untracked());
-                }
-            });
-        });
-
+                    if kind.is_non_text() || retained {
+                        if let Some(done) = completion {
+                            let result = ws
+                                .canonical_path(&path)
+                                .await
+                                .map(|_| ())
+                                .map_err(|error| error.to_string());
+                            if current() {
+                                done.run(result);
+                            }
+                        }
+                        return;
+                    }
+                    let result = ws.read(&path).await;
+                    if !current() {
+                        return;
+                    }
+                    // Facade callers may edit without a DOM. Such input still wins
+                    // over a read that began against an empty loading buffer.
+                    let completion_result =
+                        result.as_ref().map(|_| ()).map_err(ToString::to_string);
+                    let loaded = result.is_ok() || workspace.dirty.get_untracked();
+                    if !workspace.dirty.get_untracked()
+                        && workspace.content.get_untracked() == baseline
+                    {
+                        match result {
+                            Ok(content) => {
+                                if workspace
+                                    .content
+                                    .with_untracked(|current| current.as_str() != content)
+                                {
+                                    workspace.content.set(content.into());
+                                }
+                            }
+                            Err(error) => ui.toast.set(Some(error.to_string())),
+                        }
+                    }
+                    workspace.editor_loading.set(false);
+                    if loaded {
+                        workspace.retain_editor_buffer(read_only.get_untracked());
+                    }
+                    if let Some(done) = completion {
+                        done.run(completion_result);
+                    }
+                });
+            },
+        );
+        let on_open = Callback::new(move |path| open_request.run((path, None)));
+        let open_with_completion = Callback::new(
+            move |(path, done): (String, Callback<Result<(), String>>)| {
+                let project = active_project.get_untracked();
+                let generation = auth.generation.get_untracked();
+                let epoch = directory_epoch.get_untracked();
+                let session = workspace.active_session.get_untracked();
+                spawn_local(async move {
+                    let result = async {
+                        let ws = workspace_for
+                            .run(project.ok_or("Open a project first.")?)
+                            .ok_or("Reconnect the project folder first.")?;
+                        let (parent, name) = path.rsplit_once('/').unwrap_or(("", path.as_str()));
+                        if !ws
+                            .list(parent)
+                            .await
+                            .map_err(|error| error.to_string())?
+                            .iter()
+                            .any(|entry| entry.name == name && !entry.is_dir)
+                        {
+                            return Err("The current working file no longer exists.".to_owned());
+                        }
+                        Ok(())
+                    }
+                    .await;
+                    if workspace.active_session.try_get_untracked() != Some(session)
+                        || active_project.try_get_untracked() != Some(project)
+                        || auth.generation.try_get_untracked() != Some(generation)
+                        || directory_epoch.try_get_untracked() != Some(epoch)
+                    {
+                        return;
+                    }
+                    match result {
+                        Ok(()) => open_request.run((path, Some(done))),
+                        Err(error) => done.run(Err(error)),
+                    }
+                });
+            },
+        );
         let request_open = on_open;
 
         let close_files = Callback::new(move |paths: Vec<String>| {
@@ -1316,6 +1398,7 @@ impl WorkspaceActions {
             refresh_tree,
             on_open_lossy,
             request_open,
+            open_with_completion,
             close_file,
             file_tab_action,
             on_toggle,

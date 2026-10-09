@@ -69,23 +69,27 @@ impl GitChangesActions {
                 match result {
                     Ok((paths, saved)) => {
                         match paths {
-                            Ok(paths) => git.path_changes.set(Some(paths)),
+                            Ok(paths) => {
+                                if git.path_changes.get_untracked().as_ref() != Some(&paths) {
+                                    git.path_changes.set(Some(paths));
+                                }
+                            }
                             Err(message) => {
-                                git.path_changes.set(None);
                                 error.set(Some(message));
                             }
                         }
                         match saved {
-                            Ok(saved) => stashes.set(saved.stashes),
+                            Ok(saved) => {
+                                if stashes.get_untracked() != saved.stashes {
+                                    stashes.set(saved.stashes);
+                                }
+                            }
                             Err(message) => {
-                                stashes.set(Vec::new());
                                 error.set(Some(message));
                             }
                         }
                     }
                     Err(message) => {
-                        git.path_changes.set(None);
-                        stashes.set(Vec::new());
                         error.set(Some(message));
                     }
                 }

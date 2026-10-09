@@ -1827,6 +1827,32 @@ impl Backend for FakeBackend {
             })
         })
     }
+    fn staged_assistance<'a>(
+        &'a self,
+        request: &'a openwebide_core::AssistanceRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::assistance::GitDraftResult, String>> {
+        Box::pin(async move {
+            let runtime = self
+                .model_runtime(request.connection_id, request.model.as_deref())
+                .await?;
+            let text = self
+                .assistance(request)
+                .await?
+                .ok_or("The model could not produce a draft. Try again.")?;
+            Ok(openwebide_core::assistance::GitDraftResult {
+                text,
+                context_limit: runtime
+                    .settings
+                    .context_limit
+                    .or(runtime.connection.context_limit)
+                    .unwrap_or(8192),
+                output_limit: runtime.settings.max_output_tokens.unwrap_or(512).min(512),
+                timeout_seconds: runtime.transport.timeout_seconds,
+                input_tokens: request.input.len(),
+                estimated: true,
+            })
+        })
+    }
     fn assistance<'a>(
         &'a self,
         request: &'a openwebide_core::AssistanceRequest,

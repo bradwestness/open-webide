@@ -58,6 +58,7 @@ impl GitActions {
             pending.update_value(|pending| {
                 pending.insert(key);
             });
+            git.status_loading.set(true);
             spawn_local(async move {
                 let result = async {
                     let repository = project_git.repository(Some(project_id)).await?;
@@ -84,9 +85,34 @@ impl GitActions {
                     && auth.generation.try_get_untracked() == Some(generation)
                     && project_git.revision() == revision
                 {
+                    git.status_loading.set(false);
                     match result {
-                        Ok(status) => git.status.set(Some(status)),
-                        Err(_) => git.status.set(None),
+                        Ok(mut status) => {
+                            if status.availability
+                                == openwebide_core::git::GitStatusAvailability::Passive
+                            {
+                                if let Some(previous) = git.status.get_untracked() {
+                                    status.files = previous.files;
+                                    status.line_stats = previous.line_stats;
+                                    status.file_line_stats = previous.file_line_stats;
+                                }
+                                git.status_error.set(Some("Git status unavailable. Reconnect the execution host and refresh.".into()));
+                            } else {
+                                git.status_error.set(None);
+                            }
+                            if git.status.get_untracked().as_ref() != Some(&status) {
+                                git.status.set(Some(status));
+                            }
+                        }
+                        Err(message) => {
+                            git.status.update(|status| {
+                                if let Some(status) = status {
+                                    status.availability =
+                                        openwebide_core::git::GitStatusAvailability::Unavailable;
+                                }
+                            });
+                            git.status_error.set(Some(message));
+                        }
                     }
                 }
             });
@@ -277,6 +303,10 @@ impl GitActions {
             {
                 return;
             }
+            if git.status_error.get_untracked().is_some() {
+                ui.notify("Git status unavailable. Refresh before committing.");
+                return;
+            }
             if request.message.trim().is_empty() {
                 return;
             }
@@ -347,11 +377,15 @@ impl GitActions {
                     branch: None,
                 };
                 let result = async {
-                    project_git
-                        .repository(Some(project_id))
-                        .await?
-                        .sync(&request)
-                        .await
+                    let repo = project_git.repository(Some(project_id)).await?;
+                    if active_project.try_get_untracked() != Some(Some(project_id))
+                        || auth.generation.try_get_untracked() != Some(generation)
+                        || project_git.revision() != host_revision
+                        || git.branch_revision.try_get_untracked() != Some(revision)
+                    {
+                        return Err("Git operation superseded".into());
+                    }
+                    repo.sync(&request).await
                 }
                 .await;
                 if active_project.try_get_untracked() != Some(Some(project_id))
@@ -362,18 +396,19 @@ impl GitActions {
                     return;
                 }
                 git.sync_busy.set(None);
+                refresh.run(());
+                git.changes_revision.update(|revision| *revision += 1);
+                on_load_branches.run(());
+                git.history_revision.update(|revision| *revision += 1);
                 match result {
                     Ok(result) => {
-                        refresh.run(());
-                        on_load_branches.run(());
-                        git.history_revision.update(|revision| *revision += 1);
                         let notice = if result.output.trim().is_empty() {
                             format!("Git {action} complete")
                         } else {
                             result.output
                         };
                         git.sync_notice.set(Some(notice.clone()));
-                        chat.notify(notice);
+                        ui.notify(format!("Git {action} complete"));
                     }
                     Err(error) => {
                         let error = format!("Git {action} failed: {error}");

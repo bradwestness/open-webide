@@ -1642,6 +1642,7 @@ mod tests {
                 openwebide_core::GitFileStatus::Modified,
             );
             Ok(GitRepoStatus {
+                availability: openwebide_core::git::GitStatusAvailability::Complete,
                 branch: "main".into(),
                 commit_hash: "abcdef123456".into(),
                 commit_message: Some("init".into()),

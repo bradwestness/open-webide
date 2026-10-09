@@ -85,6 +85,8 @@ pub(crate) async fn summary(
     if let Some(connection_id) = connection {
         let request = AssistanceRequest {
             kind: AssistanceKind::Completion,
+            model: None,
+            staged_draft: false,
             connection_id,
             session_id: Some(session_id),
             project_id: session.project_id,

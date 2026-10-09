@@ -28,9 +28,12 @@ export function gitHttp() {
         }
         if (mock.invalid) return json({error:'cwd does not exist: repos/local'}, 400);
         if (path === '/git/history' && mock.deferHistory) await new Promise(resolve => { mock.historyResolve = resolve; });
+        if (path === '/git/path-status' && mock.deferPaths) await new Promise(resolve => { mock.pathsResolve = resolve; });
+        if (path === '/git/path-status' && mock.pathsError) return json({error:'index unavailable'}, 500);
         if (path === '/git/commit-diff' && mock.deferDiff) await new Promise(resolve => { mock.diffResolve = resolve; });
         if (path === '/git/history') return mock.historyError ? json({error:'history unavailable'}, 500) : json(mock.history || {commits:[],refs:[],has_more:false});
         if (path === '/git/commit-diff') return mock.diffError ? json({error:'diff unavailable'}, 500) : json(mock.commitDiff || {files:[],diff:''});
+        if (path === '/git/status' && mock.statusError) return json({error:'status unavailable'}, 500);
         if (path === '/git/status') return json({branch:mock.currentBranch,commit_hash:'abc',commit_message:null,upstream:null,ahead:0,behind:0,is_clean:mock.clean,line_stats:{insertions:0,deletions:0},files:mock.clean?{}:{'main.rs':'modified'}});
         if (path === '/git/path-status' || path === '/git/path') return mock.pathError && path === '/git/path' ? json({error:'path action failed'}, 400) : json({has_head:true,staged:['a.txt'],unstaged:['a.txt'],untracked:[],renamed_from:{}});
         if (path === '/git/show') return json({content:'committed'});
@@ -50,7 +53,7 @@ export function gitHistoryFixture(mock, history, diff) { mock.history = JSON.par
 export function gitDiff(mock, diff) { mock.diff = diff; }
 export function gitBranches(mock, branches) { mock.branches = JSON.parse(branches); mock.currentBranch = "main"; }
 export function gitCalls(mock) { return JSON.stringify(mock.calls); }
-export function gitRelease(mock, field) { mock[field] = false; const resolve = field === "deferHistory" ? mock.historyResolve : mock.diffResolve; if (resolve) resolve(); }
+export function gitRelease(mock, field) { mock[field] = false; const resolve = field === "deferHistory" ? mock.historyResolve : field === "deferPaths" ? mock.pathsResolve : mock.diffResolve; if (resolve) resolve(); }
 export function gitChange(mock, field, value) { mock[field] = value; }
 export function gitRestore(mock) { mock.restore(); }
 "#)]
@@ -150,12 +153,19 @@ async fn local_git_badges_and_all_actions_share_verified_bridge_repository() {
         mounted.state.git.status.get_untracked().unwrap().branch,
         "local-branch"
     );
+    assert!(
+        mounted
+            .element("[data-tree-path='main.rs']")
+            .get_attribute("title")
+            .unwrap()
+            .contains("Modified")
+    );
     assert_eq!(
         mounted
             .element(".git-badge-modified")
-            .get_attribute("title")
+            .get_attribute("aria-hidden")
             .as_deref(),
-        Some("Modified")
+        Some("true")
     );
     assert!(
         mounted
@@ -797,4 +807,149 @@ async fn branch_menus_stay_mounted_during_background_status_and_option_refreshes
             settle().await;
         }
     }
+}
+
+#[wasm_bindgen_test]
+async fn degraded_git_refresh_retains_rows_and_complete_empty_status_clears_them_in_both_modes() {
+    use super::support::wait_until;
+    use openwebide_core::git::{GitFileStatus, GitStatusAvailability};
+    let old = token().await;
+    for mode in [WorkspaceMode::Remote, WorkspaceMode::Local] {
+        let http = Http(gitHttp());
+        let handle = probe_folder();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.projects.local_handles.update(|handles| {
+                handles.insert(1, handle.unchecked_into());
+            });
+            state.settings.bridge_url.set("ws://git.test:3001".into());
+            state.workspace.entries.update(|entries| {
+                entries.insert(
+                    String::new(),
+                    vec![FileEntry {
+                        name: "main.rs".into(),
+                        path: "main.rs".into(),
+                        is_dir: false,
+                        size: 1,
+                    }],
+                );
+            });
+            if mode == WorkspaceMode::Remote {
+                for result in [
+                    GitRepoStatus {
+                        branch: "main".into(),
+                        files: [("main.rs".into(), GitFileStatus::Modified)].into(),
+                        ..Default::default()
+                    },
+                    GitRepoStatus {
+                        branch: "passive branch".into(),
+                        availability: GitStatusAvailability::Passive,
+                        ..Default::default()
+                    },
+                    GitRepoStatus {
+                        branch: "main".into(),
+                        is_clean: true,
+                        ..Default::default()
+                    },
+                ] {
+                    let (send, receive) = futures::channel::oneshot::channel();
+                    send.send(Ok(result)).unwrap();
+                    state.fake.git_statuses.borrow_mut().push_back(receive);
+                }
+            }
+            let refresh = GitActions::refresh(
+                expect_context::<ProjectGit>(),
+                state.projects,
+                state.git,
+                state.auth,
+            );
+            let git = state.git;
+            view! {<button id="refresh-degraded" on:click=move |_|refresh.run(())>"Refresh"</button><openwebide_frontend::components::ui::FeedbackOverlay message=git.status_error.read_only() on_dismiss=Callback::new(|()|()) /><FileTree on_toggle=Callback::new(|_:String|()) on_open=Callback::new(|_:String|()) />}
+        });
+        settle().await;
+        mounted.click("#refresh-degraded");
+        wait_until("complete status", || {
+            mounted.state.git.status.get_untracked().is_some()
+                && !mounted.state.git.status_loading.get_untracked()
+        })
+        .await;
+        let row = mounted.element("[data-tree-path='main.rs']");
+        assert!(
+            row.query_selector(".tree-icon.git-badge-modified")
+                .unwrap()
+                .is_some()
+        );
+        if mode == WorkspaceMode::Local {
+            gitChange(&http.0, "statusError", true);
+        }
+        mounted.click("#refresh-degraded");
+        wait_until("degraded status", || {
+            mounted.state.git.status_error.get_untracked().is_some()
+        })
+        .await;
+        let retained = mounted.state.git.status.get_untracked().unwrap();
+        assert_eq!(
+            retained.files.get("main.rs"),
+            Some(&GitFileStatus::Modified)
+        );
+        assert_eq!(
+            retained.availability,
+            if mode == WorkspaceMode::Remote {
+                GitStatusAvailability::Passive
+            } else {
+                GitStatusAvailability::Unavailable
+            }
+        );
+        if mode == WorkspaceMode::Remote {
+            assert_eq!(retained.branch, "passive branch");
+        }
+        assert!(row.is_same_node(Some(mounted.element("[data-tree-path='main.rs']").as_ref())));
+        assert!(
+            row.query_selector(".tree-icon.git-badge-modified")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector("[role=alert]")
+                .unwrap()
+                .is_some()
+        );
+        gitChange(&http.0, "statusError", false);
+        gitChange(&http.0, "clean", true);
+        mounted.click("#refresh-degraded");
+        wait_until(&format!("empty complete status in {mode:?}"), || {
+            mounted
+                .state
+                .git
+                .status
+                .get_untracked()
+                .is_some_and(|status| {
+                    status.availability == GitStatusAvailability::Complete
+                        && status.files.is_empty()
+                })
+                && !mounted.state.git.status_loading.get_untracked()
+        })
+        .await;
+        assert!(mounted.state.git.status_error.get_untracked().is_none());
+        assert!(row.is_same_node(Some(mounted.element("[data-tree-path='main.rs']").as_ref())));
+        assert!(
+            row.query_selector(".tree-icon.git-badge-modified")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            row.get_attribute("aria-label")
+                .unwrap()
+                .contains("Unchanged")
+        );
+        drop(mounted);
+        drop(http);
+    }
+    restore_token(old).await;
 }

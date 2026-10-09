@@ -34,6 +34,8 @@ async fn resolve(
         .map(|selection| selection.server_id)
     {
         let request = AssistanceRequest {
+            model: None,
+            staged_draft: false,
             connection_id,
             project_id: search.project_id,
             session_id: None,

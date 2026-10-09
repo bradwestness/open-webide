@@ -38,6 +38,7 @@ impl ProjectHost {
         let local = StoredValue::new_local(HashMap::new());
         let epoch = StoredValue::new_local(Rc::new(Cell::new(0u64)));
         Effect::new(move |_| {
+            projects.projects.track();
             projects.local_handles.track();
             settings.bridge_url.track();
             auth.generation.track();

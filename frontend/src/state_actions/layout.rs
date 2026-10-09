@@ -13,6 +13,7 @@ use leptos::{prelude::*, task::spawn_local};
 #[derive(Clone, Copy)]
 pub struct LayoutActions {
     pub save_width: Callback<ActiveResizer>,
+    pub save_size: Callback<(String, f64)>,
     pub toggle: Callback<Panel>,
     pub select_files_view: Callback<FilesView>,
     pub set_tree_preferences: Callback<bool>,
@@ -27,6 +28,8 @@ impl LayoutActions {
         let saving = StoredValue::new(None::<u64>);
         Effect::new(move |_| {
             auth.generation.track();
+            layout.history_tree_width.set(260.0);
+            layout.history_tree_revision.set(0);
             layout.panels.set(PanelVisibility::default());
             layout.panel_revision.set(0);
             layout.width_revision.set(0);
@@ -182,15 +185,12 @@ impl LayoutActions {
             auth.generation.track();
             width_pending.update_value(std::collections::BTreeMap::clear);
         });
-        let save_width = Callback::new(move |kind: ActiveResizer| {
-            if kind == ActiveResizer::None || auth.user.get_untracked().is_none() {
+        let save_size = Callback::new(move |(key, value): (String, f64)| {
+            if !value.is_finite() || auth.user.get_untracked().is_none() {
                 return;
             }
             width_pending.update_value(|values| {
-                values.insert(
-                    kind.setting_key().into(),
-                    layout.width(kind).get_untracked().to_string(),
-                );
+                values.insert(key, value.to_string());
             });
             let epoch = auth.generation.get_untracked();
             if width_saving.get_value() == Some(epoch) {
@@ -221,8 +221,17 @@ impl LayoutActions {
                 }
             });
         });
+        let save_width = Callback::new(move |kind: ActiveResizer| {
+            if kind != ActiveResizer::None {
+                save_size.run((
+                    kind.setting_key().into(),
+                    layout.width(kind).get_untracked(),
+                ));
+            }
+        });
         Self {
             save_width,
+            save_size,
             select_files_view,
             move_panel: Callback::new(move |(panel, right): (Panel, bool)| {
                 let mut preferences = layout.preferences.get_untracked();

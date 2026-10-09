@@ -533,6 +533,22 @@ async fn shared_panel_resizers_use_the_right_edge_and_save_widths_in_both_modes(
                 let leading = layout.preferences.with_untracked(|prefs| {
                     prefs.order(panel.id()) > prefs.order(Panel::Editor.id())
                 });
+                if panel == Panel::History && leading {
+                    assert!(
+                        mounted
+                            .element("#panel-history")
+                            .class_list()
+                            .contains("tool-panel-center")
+                    );
+                    assert!(
+                        mounted
+                            .root
+                            .query_selector("#panel-editor [role=separator]")
+                            .unwrap()
+                            .is_none()
+                    );
+                    continue;
+                }
                 let owner = if leading { Panel::Editor } else { panel };
                 let separator = mounted.element(&format!("#panel-{} [role=separator]", owner.id()));
                 let before = layout.width(kind).get_untracked();
@@ -1488,5 +1504,108 @@ async fn window_title_tracks_file_project_session_and_logout_in_both_modes() {
         mounted.state.auth.logout();
         settle().await;
         assert_eq!(document().title(), "Open WebIDE");
+    }
+}
+
+#[wasm_bindgen_test]
+async fn rightmost_history_fills_remaining_dock_width_in_both_modes() {
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let observed_layout = StoredValue::new(None);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            let layout = expect_context::<LayoutState>();
+            observed_layout.set_value(Some(layout));
+            provide_context(LayoutActions::new(state.api, layout, state.auth, state.ui));
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <div class="app" style="width:1200px;height:600px;display:flex;flex-direction:row">
+                    <ToolPanel panel=Panel::Editor><textarea>"editor"</textarea></ToolPanel>
+                    <ToolPanel panel=Panel::Chat><textarea>"chat"</textarea></ToolPanel>
+                    <ToolPanel panel=Panel::History><span>"history"</span></ToolPanel>
+                </div>
+            }
+        });
+        settle().await;
+        let layout = observed_layout.get_value().unwrap();
+        layout.panels.update(|panels| {
+            panels.sessions = false;
+            panels.files = false;
+            panels.history = true;
+        });
+        layout.preferences.set(
+            serde_json::from_str(
+                r#"{"mode":"desktop","order":["editor","chat","history","files","sessions"]}"#,
+            )
+            .unwrap(),
+        );
+        settle().await;
+        let history = mounted.element("#panel-history");
+        assert!(history.class_list().contains("tool-panel-center"));
+        let width = history.get_bounding_client_rect().width();
+        assert!(width > 500.0, "history width {width}");
+        assert!(
+            mounted
+                .element("#panel-editor")
+                .get_bounding_client_rect()
+                .width()
+                >= 260.0
+        );
+        assert!(
+            mounted
+                .element("#panel-chat")
+                .get_bounding_client_rect()
+                .width()
+                >= 200.0
+        );
+        mounted.click("#panel-chat button[aria-label='Minimize Chat']");
+        settle().await;
+        assert!(history.get_bounding_client_rect().width() > width);
+        mounted
+            .element(".app")
+            .class_list()
+            .add_1("editor-collapsed")
+            .unwrap();
+        layout.panels.update(|panels| {
+            panels.editor = false;
+            panels.chat = true;
+        });
+        settle().await;
+        assert!(
+            !mounted
+                .element("#panel-chat")
+                .class_list()
+                .contains("tool-panel-center")
+        );
+        assert!(
+            (history.get_bounding_client_rect().width()
+                - (1200.0 - layout.chat_width.get_untracked()))
+            .abs()
+                < 1.0
+        );
+        mounted
+            .element(".app")
+            .class_list()
+            .remove_1("editor-collapsed")
+            .unwrap();
+        layout.panels.update(|panels| {
+            panels.editor = true;
+            panels.chat = false;
+        });
+        settle().await;
+        mounted.click("#panel-history button[aria-label='Panel actions']");
+        settle().await;
+        mounted.click("#panel-history button[aria-label='Move History left']");
+        settle().await;
+        assert!(!history.class_list().contains("tool-panel-center"));
+        assert!(
+            mounted
+                .element("#panel-editor")
+                .class_list()
+                .contains("tool-panel-center")
+        );
     }
 }

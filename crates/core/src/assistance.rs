@@ -107,14 +107,29 @@ impl AssistanceKind {
 pub struct AssistanceRequest {
     pub kind: AssistanceKind,
     pub connection_id: i64,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub staged_draft: bool,
     pub session_id: Option<i64>,
     pub project_id: Option<i64>,
     pub input: String,
 }
 impl AssistanceRequest {
     pub fn validate(&self) -> Result<(), String> {
+        if self.staged_draft
+            && (self.kind != AssistanceKind::Commit
+                || self
+                    .model
+                    .as_ref()
+                    .is_none_or(|model| model.trim().is_empty()))
+        {
+            return Err(
+                "Staged drafting requires a commit request and an explicit primary model.".into(),
+            );
+        }
         if self.input.trim().is_empty() || self.input.len() > 48 * 1024 {
-            return Err("Background input must contain 1–49152 bytes".into());
+            return Err(if self.staged_draft {"Staged draft input must contain 1–49152 bytes. No diff was truncated and no model request was sent."}else{"Background input must contain 1–49152 bytes"}.into());
         }
         Ok(())
     }
@@ -150,6 +165,26 @@ pub fn input_excerpt(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn staged_requests_require_an_explicit_model_and_commit_kind() {
+        let mut request = super::AssistanceRequest {
+            kind: super::AssistanceKind::Commit,
+            connection_id: 1,
+            model: Some("primary".into()),
+            staged_draft: true,
+            project_id: Some(1),
+            session_id: None,
+            input: "full staged diff".into(),
+        };
+        assert!(request.validate().is_ok());
+        request.kind = super::AssistanceKind::Branch;
+        assert!(request.validate().is_err());
+        request.kind = super::AssistanceKind::Commit;
+        request.model = None;
+        assert!(request.validate().is_err());
+        request.staged_draft = false;
+        assert!(request.validate().is_ok());
+    }
+    #[test]
     fn excerpts_keep_unicode_boundaries_and_remove_hidden_completion_details() {
         let source = "🦀".repeat(10000);
         let excerpt = super::input_excerpt(&source);
@@ -159,5 +194,31 @@ mod tests {
             super::completion_excerpt("<think>private</think>Tests failed\0\nRetry needed"),
             "Tests failed Retry needed"
         );
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GitDraftResult {
+    pub text: String,
+    pub context_limit: usize,
+    pub output_limit: usize,
+    pub timeout_seconds: u32,
+    pub input_tokens: usize,
+    pub estimated: bool,
+}
+impl GitDraftResult {
+    pub fn limits_note(&self) -> String {
+        format!(
+            "Primary model draft: context {} tokens; output reserve {} tokens; timeout {}s; input {} tokens ({}). Safety reserve: 128 tokens. Full staged diff included.",
+            self.context_limit,
+            self.output_limit,
+            self.timeout_seconds,
+            self.input_tokens,
+            if self.estimated {
+                "conservative one-token-per-byte estimate"
+            } else {
+                "provider tokenizer"
+            }
+        )
     }
 }

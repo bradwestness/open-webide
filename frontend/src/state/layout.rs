@@ -276,6 +276,8 @@ pub struct LayoutState {
     pub sidebar_width: RwSignal<f64>,
     pub tree_width: RwSignal<f64>,
     pub history_width: RwSignal<f64>,
+    pub history_tree_width: RwSignal<f64>,
+    pub history_tree_revision: RwSignal<u64>,
     pub chat_width: RwSignal<f64>,
     pub terminal_height: RwSignal<f64>,
     pub active_resizer: RwSignal<ActiveResizer>,
@@ -332,9 +334,36 @@ impl LayoutState {
             sidebar_width: RwSignal::new(ActiveResizer::Sidebar.default()),
             tree_width: RwSignal::new(ActiveResizer::Tree.default()),
             history_width: RwSignal::new(ActiveResizer::History.default()),
+            history_tree_width: RwSignal::new(260.0),
+            history_tree_revision: RwSignal::new(0),
             chat_width: RwSignal::new(ActiveResizer::Chat.default()),
             terminal_height: RwSignal::new(ActiveResizer::Terminal.default()),
             active_resizer: RwSignal::new(ActiveResizer::None),
+        }
+    }
+
+    pub fn flexible_panel(&self) -> Option<Panel> {
+        let visible = self.visible_panels.get();
+        let rightmost = self.preferences.with(|prefs| {
+            [
+                Panel::Sessions,
+                Panel::Files,
+                Panel::History,
+                Panel::Editor,
+                Panel::Chat,
+            ]
+            .into_iter()
+            .filter(|panel| visible.visible(*panel))
+            .max_by_key(|panel| prefs.order(panel.id()))
+        });
+        if rightmost == Some(Panel::History) {
+            Some(Panel::History)
+        } else if visible.editor {
+            Some(Panel::Editor)
+        } else if visible.chat {
+            Some(Panel::Chat)
+        } else {
+            None
         }
     }
 
@@ -364,13 +393,19 @@ impl LayoutState {
             ActiveResizer::Terminal,
             ActiveResizer::History,
         ];
-        let widths = kinds.map(|kind| self.width(kind).get_untracked());
+        let mut widths = kinds.map(|kind| self.width(kind).get_untracked());
+        let flexible_history = untrack(|| self.flexible_panel() == Some(Panel::History));
+        if flexible_history {
+            widths[4] = ActiveResizer::History.min();
+        }
         for (kind, width) in kinds.into_iter().zip(fit_history_panels(
             viewport,
             widths,
             self.visible_panels.get_untracked(),
         )) {
-            self.width(kind).set(width);
+            if kind != ActiveResizer::History || !flexible_history {
+                self.width(kind).set(width);
+            }
         }
     }
 
@@ -428,7 +463,11 @@ impl LayoutState {
             0.0
         };
         let history = if panels.history {
-            self.history_width.get_untracked()
+            if self.flexible_panel() == Some(Panel::History) {
+                ActiveResizer::History.min()
+            } else {
+                self.history_width.get_untracked()
+            }
         } else {
             0.0
         };
@@ -732,5 +771,31 @@ mod tests {
                     < f64::EPSILON
             );
         }
+    }
+}
+
+pub fn history_tree_width(container: f64, requested: f64) -> Option<f64> {
+    if !container.is_finite() || container < 426.0 {
+        return None;
+    }
+    Some(
+        if requested.is_finite() {
+            requested
+        } else {
+            260.0
+        }
+        .clamp(160.0, (container - 266.0).min(650.0)),
+    )
+}
+#[cfg(test)]
+mod history_tree_tests {
+    use super::*;
+    #[test]
+    fn internal_tree_keeps_viewer_reserve_and_stacks_when_too_small() {
+        assert_eq!(history_tree_width(425.0, 260.0), None);
+        assert_eq!(history_tree_width(426.0, 650.0), Some(160.0));
+        assert_eq!(history_tree_width(900.0, 650.0), Some(634.0));
+        assert_eq!(history_tree_width(1200.0, 900.0), Some(650.0));
+        assert_eq!(history_tree_width(1200.0, f64::NAN), Some(260.0));
     }
 }

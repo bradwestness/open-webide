@@ -87,6 +87,7 @@ pub async fn repo_status(
                 Err(_) => {
                     // Return a default "unknown" status if .git doesn't exist or is unreadable
                     Ok(GitRepoStatus {
+                        availability: openwebide_core::git::GitStatusAvailability::Passive,
                         branch: "unknown".into(),
                         commit_hash: "".into(),
                         commit_message: None,
@@ -133,6 +134,7 @@ fn passive_repo_status(project_full_path: &Path) -> Result<GitRepoStatus, String
     }
 
     Ok(GitRepoStatus {
+        availability: openwebide_core::git::GitStatusAvailability::Passive,
         branch,
         commit_hash,
         commit_message: None,

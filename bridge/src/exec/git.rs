@@ -270,6 +270,7 @@ pub async fn get_repo_status(repo_dir: &Path) -> Result<GitRepoStatus, GitError>
     };
 
     Ok(GitRepoStatus {
+        availability: openwebide_core::git::GitStatusAvailability::Complete,
         branch,
         commit_hash,
         commit_message,

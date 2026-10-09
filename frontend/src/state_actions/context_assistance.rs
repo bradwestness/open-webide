@@ -162,6 +162,8 @@ impl ContextAssistance {
                 }
                 let request = AssistanceRequest {
                     kind: AssistanceKind::Context,
+                    model: None,
+                    staged_draft: false,
                     connection_id,
                     session_id,
                     project_id,

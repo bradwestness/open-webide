@@ -12,11 +12,14 @@ pub fn LogoMark(#[prop(default = "")] class: &'static str) -> impl IntoView {
 
 /// Compact, accessible progress for an operation with no percentage to report.
 #[component]
-pub fn LoadingStatus(label: &'static str, #[prop(default = false)] compact: bool) -> impl IntoView {
+pub fn LoadingStatus(
+    #[prop(into)] label: Signal<String>,
+    #[prop(default = false)] compact: bool,
+) -> impl IntoView {
     view! {
         <span class="ui-loading-status" role="status">
             <span class="ui-spinner" aria-hidden="true" />
-            <span class:sr-only=compact>{label}</span>
+            <span class:sr-only=compact>{move ||label.get()}</span>
         </span>
     }
 }
@@ -302,6 +305,7 @@ pub enum DialogSize {
     #[default]
     Standard,
     Wide,
+    Available,
 }
 impl DialogSize {
     pub fn class_name(self) -> &'static str {
@@ -309,6 +313,7 @@ impl DialogSize {
             Self::Small => "modal-sm",
             Self::Standard => "",
             Self::Wide => "modal-wide",
+            Self::Available => "modal-available",
         }
     }
 }
@@ -376,16 +381,41 @@ pub fn Icon(#[prop(into)] name: Signal<IconName>) -> impl IntoView {
 #[component]
 pub fn PanelToolbar(
     #[prop(default = "")] class: &'static str,
+    #[prop(default = false)] inset: bool,
     children: Children,
 ) -> impl IntoView {
-    view! { <div class=format!("panel-toolbar {class}") data-context-menu="">{children()}</div> }
+    view! { <div class=format!("panel-toolbar {class} {}", if inset {"panel-inline-inset"}else{""}) data-context-menu="">{children()}</div> }
 }
 
 /// Consistent search input and inline actions for tool panels.
 #[component]
 pub fn PanelSearchRow(
     #[prop(default = "")] class: &'static str,
+    #[prop(default = false)] unpadded: bool,
     children: Children,
 ) -> impl IntoView {
-    view! { <div class=format!("panel-search-row {class}")><Icon name=IconName::Search />{children()}</div> }
+    view! { <div class=format!("panel-search-row {class} {}",if unpadded {"panel-search-unpadded"}else{""})><Icon name=IconName::Search />{children()}</div> }
+}
+
+#[component]
+pub fn FeedbackOverlay(
+    #[prop(into)] message: Signal<Option<String>>,
+    on_dismiss: Callback<()>,
+) -> impl IntoView {
+    let dismissed = RwSignal::new(false);
+    Effect::new(move |_| {
+        message.track();
+        dismissed.set(false);
+    });
+    view! {<Show when=move ||message.get().is_some() && !dismissed.get()>
+        <div class="ui-feedback-overlay">
+            <FormNotice tone=NoticeTone::Error>{move ||message.get().unwrap_or_default()}</FormNotice>
+            <IconButton label="Dismiss feedback" on_click=Callback::new(move |_|{dismissed.set(true);on_dismiss.run(());})><Icon name=IconName::X /></IconButton>
+        </div>
+    </Show>}
+}
+
+#[component]
+pub fn GitStatusIcon(#[prop(into)] status: Signal<crate::git_status::Status>) -> impl IntoView {
+    view! {<span class=move ||format!("tree-icon {}",status.get().presentation().class) aria-hidden="true"><Icon name=Signal::derive(move ||status.get().presentation().glyph) /></span>}
 }

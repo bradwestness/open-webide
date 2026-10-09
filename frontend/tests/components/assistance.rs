@@ -308,6 +308,7 @@ async fn assistance_git_drafts_keep_edits_and_reject_changed_sources_in_both_mod
             }
             let mounted = mount_test_with_backend(fake, move |state| {
                 state.seed_project();
+                state.seed_connection();
                 state.seed_session();
                 state
                     .projects

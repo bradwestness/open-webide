@@ -307,6 +307,19 @@ impl FileTreeActions {
         if !self.current(scope) {
             return Err("Project changed; reopen the menu".into());
         }
+        if matches!(mutation, Mutation::Git(_) | Mutation::Stash(_))
+            && self.git_state.is_some_and(|git| {
+                git.status_error.get_untracked().is_some()
+                    || git.status.with_untracked(|status| {
+                        status.as_ref().is_some_and(|status| {
+                            status.availability
+                                != openwebide_core::git::GitStatusAvailability::Complete
+                        })
+                    })
+            })
+        {
+            return Err("Git status unavailable. Reconnect the execution host and refresh.".into());
+        }
         if self.disabled() {
             return Err("Wait for the current operation to finish".into());
         }

@@ -15,6 +15,8 @@ pub mod components;
 pub mod conversation;
 #[cfg(target_arch = "wasm32")]
 pub mod editor_worker;
+pub mod git_status;
+pub mod git_timeline;
 pub mod history;
 #[cfg(target_arch = "wasm32")]
 pub mod idb;

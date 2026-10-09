@@ -66,6 +66,12 @@ async fn history_inline_tree_readonly_diff_and_branch_dropdown_in_both_modes() {
         let checkout = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
         let checkout_result = checkout.clone();
         let mounted = mount_test(move |state| {
+            let layout = expect_context::<openwebide_frontend::state::layout::LayoutState>();
+            provide_context(
+                openwebide_frontend::state_actions::layout::LayoutActions::new(
+                    state.api, layout, state.auth, state.ui,
+                ),
+            );
             state.seed_project();
             state
                 .projects
@@ -297,6 +303,12 @@ async fn history_paging_and_query_failures_have_the_same_recovery_in_both_modes(
         let actions_slot = slot.clone();
         let handle = probe_folder();
         let mounted = mount_test(move |state| {
+            let layout = expect_context::<openwebide_frontend::state::layout::LayoutState>();
+            provide_context(
+                openwebide_frontend::state_actions::layout::LayoutActions::new(
+                    state.api, layout, state.auth, state.ui,
+                ),
+            );
             state.seed_project();
             state
                 .projects
@@ -379,7 +391,7 @@ async fn history_paging_and_query_failures_have_the_same_recovery_in_both_modes(
         actions.load.run(false);
         wait_until("history error", || actions.error.get_untracked().is_some()).await;
         assert!(!actions.loading.get_untracked());
-        assert!(actions.commits.get_untracked().is_empty());
+        assert_eq!(actions.commits.with_untracked(Vec::len), 1);
         gitChange(&http.0, "historyError", false);
         actions.search.set(String::new());
         actions.load.run(false);
@@ -438,6 +450,12 @@ async fn git_actions_refresh_history_and_publish_failures_in_both_modes() {
         let slot = std::rc::Rc::new(std::cell::Cell::new(None));
         let actions_slot = slot.clone();
         let mounted = mount_test(move |state| {
+            let layout = expect_context::<openwebide_frontend::state::layout::LayoutState>();
+            provide_context(
+                openwebide_frontend::state_actions::layout::LayoutActions::new(
+                    state.api, layout, state.auth, state.ui,
+                ),
+            );
             state.seed_project();
             state
                 .projects
@@ -492,7 +510,7 @@ async fn git_actions_refresh_history_and_publish_failures_in_both_modes() {
         .await;
         assert!(!mounted.state.git.commit_busy.get_untracked());
         assert!(mounted.state.git.commit_message.get_untracked().is_empty());
-        for action in ["fetch", "pull", "push"] {
+        for action in ["sync", "fetch", "pull", "push"] {
             let revision = mounted.state.git.history_revision.get_untracked();
             let (send, receive) = futures::channel::oneshot::channel();
             if mode == WorkspaceMode::Remote {
@@ -530,13 +548,15 @@ async fn git_actions_refresh_history_and_publish_failures_in_both_modes() {
             send.send(Err("sync failed".into())).unwrap();
         }
         gitChange(&http.0, "syncError", true);
-        actions.on_sync.run("push".into());
+        let failed_revision = mounted.state.git.history_revision.get_untracked();
+        actions.on_sync.run("sync".into());
         wait_until("sync failure", || {
             mounted.state.git.sync_error.get_untracked().is_some()
         })
         .await;
         assert!(mounted.state.git.sync_busy.get_untracked().is_none());
         assert!(mounted.state.ui.toast.get_untracked().is_some());
+        assert!(mounted.state.git.history_revision.get_untracked() > failed_revision);
     }
     restore_token(old).await;
 }
@@ -626,6 +646,12 @@ async fn history_details_remain_visible_in_narrow_panes_in_both_modes() {
         );
         let handle = probe_folder();
         let mounted = mount_test(move |state| {
+            let layout = expect_context::<openwebide_frontend::state::layout::LayoutState>();
+            provide_context(
+                openwebide_frontend::state_actions::layout::LayoutActions::new(
+                    state.api, layout, state.auth, state.ui,
+                ),
+            );
             state.seed_project();
             state
                 .projects
@@ -691,6 +717,12 @@ async fn file_history_modal_uses_branch_path_and_revision_timeline_in_both_modes
             &serde_json::to_string(&changes()).unwrap(),
         );
         let mounted = mount_test(move |state| {
+            let layout = expect_context::<openwebide_frontend::state::layout::LayoutState>();
+            provide_context(
+                openwebide_frontend::state_actions::layout::LayoutActions::new(
+                    state.api, layout, state.auth, state.ui,
+                ),
+            );
             state.seed_project();
             state
                 .projects
@@ -702,7 +734,15 @@ async fn file_history_modal_uses_branch_path_and_revision_timeline_in_both_modes
             state.settings.bridge_url.set("ws://git.test:3001".into());
             *state.fake.git_history.borrow_mut() = history;
             *state.fake.git_commit_diff.borrow_mut() = Some(changes());
-            view! {<openwebide_frontend::components::git_history::FileHistory path="src/main.rs".to_owned() on_open=Callback::new(|_|()) on_close=Callback::new(|()|()) />}
+            openwebide_frontend::state_actions::workspace::WorkspaceActions::new(
+                state.api,
+                state.projects,
+                state.workspace,
+                state.ui,
+                RwSignal::new(false),
+                Callback::new(|()| ()),
+            );
+            view! {<openwebide_frontend::components::git_history::FileHistory path="src/main.rs".to_owned() on_close=Callback::new(|()|()) />}
         });
         wait_until("file timeline", || {
             mounted
@@ -757,5 +797,391 @@ async fn file_history_modal_uses_branch_path_and_revision_timeline_in_both_modes
         drop(mounted);
         drop(http);
     }
+    restore_token(old).await;
+}
+
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function historyWorkingFolder(present) {
+    const files = new Map(present ? [['current.rs','working source']] : []);
+    const handle = name => {
+        const handle = Object.create(FileSystemFileHandle.prototype);
+        Object.defineProperties(handle, {name:{value:name}, kind:{value:'file'}, getFile:{value:async()=>new File([files.get(name)], name)}, createWritable:{value:async()=>Object.assign(Object.create(FileSystemWritableFileStream.prototype),{write:async value=>files.set(name,value),close:async()=>{}})}});
+        return handle;
+    };
+    return {name:'project', queryPermission:async()=> 'granted', values:async function*(){for(const name of files.keys()) yield handle(name);}, getFileHandle:async(name,options)=>{if(!files.has(name) && !options?.create) throw new DOMException('missing','NotFoundError'); if(!files.has(name)) files.set(name,'');return handle(name);}, removeEntry:async name=>files.delete(name), getDirectoryHandle:async()=>{throw new DOMException('missing','NotFoundError');}};
+}
+"#)]
+extern "C" {
+    fn historyWorkingFolder(present: bool) -> wasm_bindgen::JsValue;
+}
+
+#[wasm_bindgen_test]
+async fn file_history_open_current_preserves_edits_and_missing_files_in_both_modes() {
+    let old = token().await;
+    for mode in [WorkspaceMode::Remote, WorkspaceMode::Local] {
+        for (present, dirty) in [(false, false), (true, false), (true, true)] {
+            let http = Http(gitHttp());
+            gitHistoryFixture(
+                &http.0,
+                &serde_json::to_string(&fixture()).unwrap(),
+                &serde_json::to_string(&changes()).unwrap(),
+            );
+            let handle = historyWorkingFolder(present);
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.projects.local_handles.update(|handles| {
+                    handles.insert(1, handle.unchecked_into());
+                });
+                state.settings.bridge_url.set("ws://git.test:3001".into());
+                *state.fake.git_history.borrow_mut() = fixture();
+                *state.fake.git_commit_diff.borrow_mut() = Some(changes());
+                if present {
+                    state
+                        .fake
+                        .files
+                        .borrow_mut()
+                        .insert((1, "current.rs".into()), "working source".into());
+                }
+                if dirty {
+                    state.workspace.open_file.set(Some("current.rs".into()));
+                    state.workspace.content.set("unsaved edits".into());
+                    state.workspace.dirty.set(true);
+                }
+                let layout = expect_context::<openwebide_frontend::state::layout::LayoutState>();
+                provide_context(
+                    openwebide_frontend::state_actions::layout::LayoutActions::new(
+                        state.api, layout, state.auth, state.ui,
+                    ),
+                );
+                openwebide_frontend::state_actions::workspace::WorkspaceActions::new(
+                    state.api,
+                    state.projects,
+                    state.workspace,
+                    state.ui,
+                    RwSignal::new(false),
+                    Callback::new(|()| ()),
+                );
+                let git = state.git;
+                git.file_history.set(Some("current.rs".into()));
+                view! {
+                    <openwebide_frontend::components::ToolPanel panel=openwebide_frontend::state::layout::Panel::Editor><textarea>"editor"</textarea></openwebide_frontend::components::ToolPanel>
+                    <Show when=move ||git.file_history.get().is_some()>
+                        <openwebide_frontend::components::git_history::FileHistory path="current.rs".to_owned() on_close=Callback::new(move |()|git.file_history.set(None)) />
+                    </Show>
+                }
+            });
+            wait_until("timeline", || {
+                mounted
+                    .root
+                    .query_selector(".git-file-timeline button")
+                    .unwrap()
+                    .is_some()
+            })
+            .await;
+            mounted.click(".git-file-timeline button");
+            wait_until("file action", || {
+                mounted
+                    .root
+                    .query_selector("button[aria-label='Open current file in editor']")
+                    .unwrap()
+                    .is_some()
+            })
+            .await;
+            mounted.click("button[aria-label='Open current file in editor']");
+            if present {
+                wait_until("modal closes and editor focuses", || {
+                    mounted
+                        .root
+                        .query_selector("[role=dialog]")
+                        .unwrap()
+                        .is_none()
+                        && web_sys::window()
+                            .unwrap()
+                            .document()
+                            .unwrap()
+                            .active_element()
+                            .is_some_and(|element| element.tag_name() == "TEXTAREA")
+                })
+                .await;
+                assert_eq!(
+                    mounted.state.workspace.open_file.get_untracked().as_deref(),
+                    Some("current.rs")
+                );
+                assert_eq!(
+                    mounted.state.workspace.content.get_untracked().as_str(),
+                    if dirty {
+                        "unsaved edits"
+                    } else {
+                        "working source"
+                    }
+                );
+                assert_eq!(mounted.state.workspace.dirty.get_untracked(), dirty);
+            } else {
+                wait_until("missing file alert", || {
+                    mounted
+                        .root
+                        .query_selector("[role=alert]")
+                        .unwrap()
+                        .is_some()
+                })
+                .await;
+                assert!(
+                    mounted
+                        .root
+                        .query_selector("[role=dialog]")
+                        .unwrap()
+                        .is_some()
+                );
+                assert!(
+                    mounted
+                        .state
+                        .ui
+                        .toast
+                        .get_untracked()
+                        .unwrap()
+                        .contains("no longer exists")
+                );
+            }
+            drop(mounted);
+            drop(http);
+            openwebide_frontend::util::sleep_ms(0).await;
+            settle().await;
+        }
+    }
+    restore_token(old).await;
+}
+
+#[wasm_bindgen_test]
+async fn history_status_rows_insets_and_internal_seam_share_geometry_in_both_modes() {
+    let old = token().await;
+    for mode in [WorkspaceMode::Remote, WorkspaceMode::Local] {
+        let http = Http(gitHttp());
+        let mut payload = changes();
+        payload.files = ["A", "D", "M", "R100", "C100", "T", "U", "???", ""]
+            .into_iter()
+            .enumerate()
+            .map(|(index, status)| GitCommitFile {
+                path: format!(
+                    "planning-tms-integration/{index}-{}.rs",
+                    if index == 0 {
+                        "a"
+                    } else {
+                        "a-very-long-file-name-that-must-never-wrap"
+                    }
+                ),
+                status: status.into(),
+                previous_path: (status == "R100").then(|| "old-name.rs".into()),
+            })
+            .collect();
+        gitHistoryFixture(
+            &http.0,
+            &serde_json::to_string(&fixture()).unwrap(),
+            &serde_json::to_string(&payload).unwrap(),
+        );
+        let handle = probe_folder();
+        let width = RwSignal::new(900.0);
+        let mounted = mount_test(move |state| {
+            state.auth.set_user(openwebide_core::User {
+                id: openwebide_core::UserId::new(1),
+                username: "owner".into(),
+                role: openwebide_core::UserRole::User,
+                created_at: 0,
+            });
+            let layout = expect_context::<openwebide_frontend::state::layout::LayoutState>();
+            provide_context(
+                openwebide_frontend::state_actions::layout::LayoutActions::new(
+                    state.api, layout, state.auth, state.ui,
+                ),
+            );
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.projects.local_handles.update(|handles| {
+                handles.insert(1, handle.unchecked_into());
+            });
+            state.settings.bridge_url.set("ws://git.test:3001".into());
+            *state.fake.git_history.borrow_mut() = fixture();
+            *state.fake.git_commit_diff.borrow_mut() = Some(payload);
+            view! {<style>{include_str!("../../styles.css")}</style><div style=move ||format!("width:{}px;height:700px;display:flex",width.get())><GitHistory on_open=Callback::new(|_:String|()) on_select_branch=Callback::new(|_:String|()) on_new_branch=Callback::new(|()|()) /></div>}
+        });
+        wait_until("history", || {
+            mounted
+                .root
+                .query_selector(".git-history-row")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        mounted.click(".git-history-row");
+        wait_until("files", || {
+            mounted
+                .root
+                .query_selector_all(".git-commit-file")
+                .unwrap()
+                .length()
+                == 9
+        })
+        .await;
+        for theme in ["dark", "light"] {
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .document_element()
+                .unwrap()
+                .set_attribute("data-theme", theme)
+                .unwrap();
+            for tree_width in [260.0, 160.0] {
+                let separator = mounted.element("[aria-label='Resize History tree']");
+                while separator
+                    .get_attribute("aria-valuenow")
+                    .unwrap()
+                    .parse::<f64>()
+                    .unwrap()
+                    > tree_width
+                {
+                    let init = web_sys::KeyboardEventInit::new();
+                    init.set_key("ArrowLeft");
+                    separator
+                        .dispatch_event(
+                            &web_sys::KeyboardEvent::new_with_keyboard_event_init_dict(
+                                "keydown", &init,
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    settle().await;
+                }
+                let tree = mounted.element(".git-commit-files");
+                let seam = separator.get_bounding_client_rect();
+                let maximum = separator
+                    .get_attribute("aria-valuemax")
+                    .unwrap()
+                    .parse::<f64>()
+                    .unwrap();
+                assert!(
+                    maximum <= 650.0
+                        && maximum + 266.0
+                            <= separator
+                                .parent_element()
+                                .unwrap()
+                                .get_bounding_client_rect()
+                                .width()
+                                + 1.0
+                );
+                assert!((seam.left() - tree.get_bounding_client_rect().right()).abs() < 1.0);
+                assert!(seam.width() >= 6.0);
+                let rows = mounted
+                    .root
+                    .query_selector_all(".git-commit-file > .tree-item")
+                    .unwrap();
+                let mut origin: Option<(f64, f64)> = None;
+                for index in 0..rows.length() {
+                    let row = rows
+                        .item(index)
+                        .unwrap()
+                        .dyn_into::<web_sys::Element>()
+                        .unwrap();
+                    let name = row
+                        .query_selector(".tree-name")
+                        .unwrap()
+                        .unwrap()
+                        .get_bounding_client_rect();
+                    let position = (name.left(), row.get_bounding_client_rect().height());
+                    if let Some((x, height)) = origin {
+                        assert!((position.0 - x).abs() < 1.0);
+                        assert!((position.1 - height).abs() < 1.0);
+                    } else {
+                        origin = Some(position);
+                    }
+                    let style = web_sys::window()
+                        .unwrap()
+                        .get_computed_style(&row)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                        style.get_property_value("justify-content").unwrap(),
+                        "flex-start"
+                    );
+                    assert!(!row.get_attribute("title").unwrap().is_empty());
+                    assert!(
+                        row.get_attribute("aria-label")
+                            .unwrap()
+                            .contains("planning-tms-integration/")
+                    );
+                    assert!(
+                        (row.query_selector(".tree-icon")
+                            .unwrap()
+                            .unwrap()
+                            .get_bounding_client_rect()
+                            .width()
+                            - 20.0)
+                            .abs()
+                            < 1.0
+                    );
+                }
+                assert!(
+                    mounted
+                        .element(".git-history-folder > summary")
+                        .get_attribute("title")
+                        .unwrap()
+                        .contains("Conflict")
+                );
+                assert!(
+                    mounted
+                        .root
+                        .query_selector(".git-commit-file .git-status")
+                        .unwrap()
+                        .is_none()
+                );
+                let toolbar = mounted.element(".git-history-reference");
+                let glyph = toolbar
+                    .query_selector(".ui-icon-glyph")
+                    .unwrap()
+                    .unwrap()
+                    .get_bounding_client_rect();
+                assert!(
+                    (glyph.left() - toolbar.get_bounding_client_rect().left() - 12.0).abs() < 1.0
+                );
+            }
+        }
+        settle().await;
+        assert_eq!(
+            mounted.state.fake.settings.borrow()["panel_history_tree_width"],
+            "160"
+        );
+        assert!(
+            mounted
+                .element(".git-readonly-diff")
+                .get_bounding_client_rect()
+                .width()
+                >= 260.0
+        );
+        width.set(400.0);
+        settle().await;
+        assert!(
+            mounted
+                .element("[aria-label='Resize History tree']")
+                .get_bounding_client_rect()
+                .width()
+                < 1.0
+        );
+        drop(mounted);
+        drop(http);
+    }
+    web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .document_element()
+        .unwrap()
+        .set_attribute("data-theme", "dark")
+        .unwrap();
     restore_token(old).await;
 }

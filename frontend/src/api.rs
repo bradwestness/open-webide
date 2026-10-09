@@ -780,8 +780,16 @@ impl BackendApi {
         request: &openwebide_core::AssistanceRequest,
     ) -> Result<Option<String>, String> {
         let mut request = request.clone();
-        request.input = openwebide_core::assistance::input_excerpt(&request.input);
+        if !request.staged_draft {
+            request.input = openwebide_core::assistance::input_excerpt(&request.input);
+        }
         self.post("/assistance", &request).await
+    }
+    pub async fn staged_assistance(
+        &self,
+        request: &openwebide_core::AssistanceRequest,
+    ) -> Result<openwebide_core::assistance::GitDraftResult, String> {
+        self.post("/assistance", request).await
     }
     pub async fn model_complete(
         &self,

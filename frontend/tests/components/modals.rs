@@ -495,6 +495,7 @@ async fn responsive_dialog_sizes_keep_headers_actions_and_scroll_inside_viewport
                     DialogSize::Small => 380.0,
                     DialogSize::Standard => 480.0,
                     DialogSize::Wide => 720.0,
+                    DialogSize::Available => width,
                 };
                 preferred.min(width - 2.0 * gutter)
             };

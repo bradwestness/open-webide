@@ -578,3 +578,34 @@ fn editor_caret_at_point(
     }
     crate::components::editor_paint::native_offset(&paint, &node, offset as u32)
 }
+
+#[wasm_bindgen(inline_js = r#"
+export function observe_element_width(element, update) {
+    const observer = new ResizeObserver(() => update(element.clientWidth));
+    observer.observe(element);
+    update(element.clientWidth);
+    return () => observer.disconnect();
+}
+"#)]
+extern "C" {
+    fn observe_element_width(element: &web_sys::Element, update: &js_sys::Function) -> JsValue;
+}
+
+pub fn track_width(element: web_sys::Element, width: RwSignal<f64>) {
+    let update = Closure::<dyn Fn(f64)>::new(move |value| {
+        let _ = width.try_set(value);
+    });
+    let stop = StoredValue::new_local(observe_element_width(
+        &element,
+        update.as_ref().unchecked_ref(),
+    ));
+    let update = StoredValue::new_local(update);
+    on_cleanup(move || {
+        stop.with_value(|stop| {
+            let _ = stop
+                .unchecked_ref::<js_sys::Function>()
+                .call0(&JsValue::NULL);
+        });
+        update.with_value(|_| ());
+    });
+}

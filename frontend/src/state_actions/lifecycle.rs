@@ -375,6 +375,14 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                 {
                     stored_active_project = Some(id);
                 }
+                if layout.history_tree_revision.get_untracked() == 0
+                    && let Some(width) = values
+                        .get("panel_history_tree_width")
+                        .and_then(|value| value.parse::<f64>().ok())
+                        .filter(|width| width.is_finite())
+                {
+                    layout.history_tree_width.set(width.clamp(160.0, 650.0));
+                }
                 if layout.width_revision.get_untracked() == 0 {
                     let mut widths = [
                         layout.sidebar_width.get_untracked(),

@@ -404,6 +404,10 @@ pub trait Backend {
             })
         })
     }
+    fn staged_assistance<'a>(
+        &'a self,
+        request: &'a openwebide_core::AssistanceRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::assistance::GitDraftResult, String>>;
     fn assistance<'a>(
         &'a self,
         _request: &'a openwebide_core::AssistanceRequest,
@@ -1134,6 +1138,12 @@ impl Backend for BackendApi {
         search: &'a openwebide_core::SessionSearch,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::SessionSearchResults, String>> {
         Box::pin(BackendApi::session_search_suggestions(self, search))
+    }
+    fn staged_assistance<'a>(
+        &'a self,
+        request: &'a openwebide_core::AssistanceRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::assistance::GitDraftResult, String>> {
+        Box::pin(BackendApi::staged_assistance(self, request))
     }
     fn assistance<'a>(
         &'a self,

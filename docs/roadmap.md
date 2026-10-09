@@ -5,7 +5,9 @@ What's left, grouped by how soon it's coming: **Next** (queued up), **Later**
 phases 1 through 14, telemetry, hardening, streaming, `/test`, database-backed
 theme and prompt history, frontend performance & polish, app branding and the chat
 welcome — moved to [CHANGELOG.md](../CHANGELOG.md).
-The [Git pane](git.md) now includes commit history and repository actions.
+The [Git pane](git.md) includes commit history, staged-only commits and repository
+actions, with retained refresh results, primary-model drafting, resizable history
+inspection and shared Git-status icons in both project modes.
 
 ## Next
 
@@ -24,6 +26,8 @@ The following checks still require hands-on device or environment testing:
 
 - First-paint theme and both themes visually; terminal dock hide/show.
 - Docker browser terminal and Files/Changes interactions.
+- Git pane polish on live local/remote repositories: cold primary-model drafting
+  and configured transport timeouts, dense file timelines and pointer resizing.
 - A phone on the LAN; podman/systemd.
 - Editor IME composition, paste and caret behaviour with a real input method.
 - Windows runtime process cleanup. The Windows adapter compiles without TLS locally;

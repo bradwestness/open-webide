@@ -8,6 +8,7 @@ use crate::state_actions::layout::LayoutActions;
 #[component]
 pub fn PanelResizer(
     kind: ActiveResizer,
+    #[prop(optional)] size: Option<RwSignal<f64>>,
     #[prop(optional)] panel: Option<Panel>,
     #[prop(default = false)] invert: bool,
     #[prop(default = None)] partner: Option<ActiveResizer>,
@@ -16,6 +17,14 @@ pub fn PanelResizer(
     let actions = expect_context::<LayoutActions>();
     let auth = expect_context::<AuthState>();
     let handle = NodeRef::<leptos::html::Div>::new();
+    let container_width = RwSignal::new(426.0);
+    Effect::new(move |_| {
+        if size.is_some()
+            && let Some(parent) = handle.get().and_then(|handle| handle.parent_element())
+        {
+            crate::viewport::track_width(parent, container_width);
+        }
+    });
     let epoch = RwSignal::new(0_u64);
     let dragging = RwSignal::new(false);
     let panel = panel.unwrap_or(match kind {
@@ -31,14 +40,22 @@ pub fn PanelResizer(
     let start_x = RwSignal::new(0.0f64);
     let start_total = RwSignal::new(0.0);
     let start_width = RwSignal::new(0.0f64);
-    let width = if kind == ActiveResizer::None {
+    let width = if let Some(size) = size {
+        size
+    } else if kind == ActiveResizer::None {
         RwSignal::new(0.0)
     } else {
         layout.width(kind)
     };
 
     let set_size = move |requested: f64, total: f64| {
-        let value = if let Some(partner) = partner {
+        let value = if size.is_some() {
+            let available = handle
+                .get_untracked()
+                .and_then(|handle| handle.parent_element())
+                .map_or(426.0, |parent| parent.get_bounding_client_rect().width());
+            crate::state::layout::history_tree_width(available, requested).unwrap_or(160.0)
+        } else if let Some(partner) = partner {
             requested.clamp(
                 kind.min().max(total - partner.max()),
                 kind.max().min(total - partner.min()),
@@ -69,7 +86,13 @@ pub fn PanelResizer(
         }
     };
     let save_sizes = move || {
-        actions.save_width.run(kind);
+        if size.is_some() {
+            actions
+                .save_size
+                .run(("panel_history_tree_width".into(), width.get_untracked()));
+        } else {
+            actions.save_width.run(kind);
+        }
         if let Some(partner) = partner {
             actions.save_width.run(partner);
         }
@@ -78,7 +101,7 @@ pub fn PanelResizer(
     let pointer_move = window_event_listener(leptos::ev::pointermove, move |ev: PointerEvent| {
         if !dragging.get_untracked()
             || layout.active_resizer.get() != kind
-            || kind == ActiveResizer::None
+            || (kind == ActiveResizer::None && size.is_none())
             || auth.generation.get_untracked() != epoch.get_untracked()
         {
             return;
@@ -97,7 +120,7 @@ pub fn PanelResizer(
     let pointer_up = window_event_listener(leptos::ev::pointerup, move |_| {
         if !dragging.get_untracked()
             || layout.active_resizer.get() != kind
-            || kind == ActiveResizer::None
+            || (kind == ActiveResizer::None && size.is_none())
             || auth.generation.get_untracked() != epoch.get_untracked()
         {
             return;
@@ -128,7 +151,9 @@ pub fn PanelResizer(
         }
     });
 
-    let title = if invert {
+    let title = if size.is_some() {
+        "Drag to resize History tree, double-click to reset"
+    } else if invert {
         "Drag to resize pane, double-click to reset adjacent panel"
     } else {
         match kind {
@@ -141,6 +166,13 @@ pub fn PanelResizer(
         }
     };
 
+    Effect::new(move |_| {
+        auth.generation.track();
+        layout.active_project.track();
+        if dragging.get_untracked() {
+            dragging.set(false);
+        }
+    });
     view! {
         <div
             class=move || {
@@ -152,8 +184,8 @@ pub fn PanelResizer(
             }
             title=title node_ref=handle
             role="separator" aria-orientation=if horizontal { "horizontal" } else { "vertical" } tabindex="0"
-            aria-label=format!("Resize {}", panel.label())
-            aria-valuemin=kind.min() aria-valuemax=kind.max() aria-valuenow=move || width.get()
+            aria-label=if size.is_some(){"Resize History tree".to_owned()}else{format!("Resize {}", panel.label())}
+            aria-valuemin=if size.is_some(){160.0}else{kind.min()} aria-valuemax=move ||if size.is_some(){crate::state::layout::history_tree_width(container_width.get(),650.0).unwrap_or(160.0)}else{kind.max()} aria-valuenow=move ||if size.is_some(){crate::state::layout::history_tree_width(container_width.get(),width.get()).unwrap_or(width.get())}else{width.get()}
             on:keydown=move |event: web_sys::KeyboardEvent| {
                 let delta = match (horizontal, event.key().as_str()) {
                     (false, "ArrowLeft") | (true, "ArrowUp") => -20.0,
@@ -161,35 +193,35 @@ pub fn PanelResizer(
                     _ => return,
                 };
                 event.prevent_default();
-                layout.width_revision.update(|revision| *revision += 1);
+                if size.is_some() {layout.history_tree_revision.update(|revision|*revision += 1);}else{layout.width_revision.update(|revision| *revision += 1);}
                 let requested = width.get_untracked() + delta * direction;
                 let total = width.get_untracked() + partner.map_or(0.0, |partner| layout.width(partner).get_untracked());
                 set_size(requested, total);
                 save_sizes();
             }
             on:pointerdown=move |ev: PointerEvent| {
-                if kind == ActiveResizer::None {
+                if kind == ActiveResizer::None && size.is_none() {
                     return;
                 }
                 ev.prevent_default();
                 dragging.set(true);
                 epoch.set(auth.generation.get_untracked());
-                layout.width_revision.update(|revision| *revision += 1);
+                if size.is_some() {layout.history_tree_revision.update(|revision|*revision += 1);}else{layout.width_revision.update(|revision| *revision += 1);}
                 start_x.set(if horizontal { ev.client_y() } else { ev.client_x() });
                 start_width.set(width.get());
                 start_total.set(width.get_untracked() + partner.map_or(0.0, |partner| layout.width(partner).get_untracked()));
                 layout.active_resizer.set(kind);
             }
             on:dblclick=move |_| {
-                if kind == ActiveResizer::None {
+                if kind == ActiveResizer::None && size.is_none() {
                     return;
                 }
-                layout.width_revision.update(|revision| *revision += 1);
-                let default_width = kind.default();
+                if size.is_some() {layout.history_tree_revision.update(|revision|*revision += 1);}else{layout.width_revision.update(|revision| *revision += 1);}
+                let default_width = if size.is_some() {260.0}else{kind.default()};
                 let total = width.get_untracked() + partner.map_or(0.0, |partner| layout.width(partner).get_untracked());
                 set_size(default_width, total);
                 let viewport = window().inner_width().ok().and_then(|value| value.as_f64()).unwrap_or(1200.0);
-                layout.fit(viewport);
+                if size.is_none() {layout.fit(viewport);}
                 save_sizes();
             }
         />

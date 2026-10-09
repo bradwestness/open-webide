@@ -9,6 +9,17 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Polish Changes and History without refresh layout shifts: retain matching results
+  on failures, anchor feedback, group composer actions and reserve header progress.
+  Draft staged commits with the exact primary model and visible context/output/
+  transport-timeout limits; reject oversized input without truncating the diff.
+  Add pull-then-push Sync, clear stage/unstage arrows and shared status-aware file
+  and descendant folder icons. Retain history/diff tuples, hide patch metadata,
+  align tree/filter rows and persist the internal tree width. Fill remaining width
+  with rightmost History; show committer-time file timelines with local ticks and
+  timezone. Opening the current file closes file history and focuses the editor;
+  failed opens retain the modal. Share these behaviors across local/remote projects.
+
 - Add one top-level resizable History panel with coherent branch/merge tracks,
   debounced search, branch/remotes/tag dropdowns, changed-file trees and read-only
   syntax diffs with original line numbers and per-parent comparisons. Add file

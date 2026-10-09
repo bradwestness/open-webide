@@ -65,6 +65,15 @@ impl GitLineStats {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitStatusAvailability {
+    #[default]
+    Complete,
+    Passive,
+    Unavailable,
+}
+
 /// Comprehensive Git repository status returned to the frontend.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitRepoStatus {
@@ -74,6 +83,8 @@ pub struct GitRepoStatus {
     pub upstream: Option<String>,
     pub ahead: usize,
     pub behind: usize,
+    #[serde(default)]
+    pub availability: GitStatusAvailability,
     pub is_clean: bool,
     pub line_stats: GitLineStats,
     #[serde(default)]
@@ -91,6 +102,7 @@ impl Default for GitRepoStatus {
             upstream: None,
             ahead: 0,
             behind: 0,
+            availability: GitStatusAvailability::Complete,
             is_clean: true,
             line_stats: GitLineStats::default(),
             file_line_stats: HashMap::new(),

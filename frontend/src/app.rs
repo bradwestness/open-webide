@@ -434,7 +434,7 @@ pub fn App() -> impl IntoView {
     </SearchPane>
                             </crate::components::FilesPanel>
                             </ToolPanel>
-                            {move || git_state.file_history.get().map(|path|view!{<crate::components::git_history::FileHistory path=path on_open=request_open on_close=Callback::new(move |()|git_state.file_history.set(None)) />})}
+                            {move || git_state.file_history.get().map(|path|view!{<crate::components::git_history::FileHistory path=path on_close=Callback::new(move |()|git_state.file_history.set(None)) />})}
                             <ToolPanel panel=Panel::History>
                                 <crate::components::git_history::GitHistory on_open=Callback::new(move |path| { request_open.run(path); layout_actions.show.run(Panel::Editor); }) on_select_branch=git_actions.on_select_branch on_new_branch=on_branch_click />
                             </ToolPanel>

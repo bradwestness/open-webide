@@ -1,6 +1,6 @@
 use super::{
     local_bridge::probe_folder,
-    project_git::{Http, gitCalls, gitHttp, restore_token, token},
+    project_git::{Http, gitCalls, gitChange, gitHttp, gitRelease, restore_token, token},
     support::{mount_test, settle, wait_until},
 };
 use leptos::prelude::*;
@@ -66,7 +66,16 @@ async fn staged_and_unstaged_controls_route_through_both_adapters() {
                 == 2
         })
         .await;
-        mounted.click("[aria-label=\"Stage all\"]");
+        for label in [
+            "Stage all changes",
+            "Unstage all changes",
+            "Stage file",
+            "Unstage file",
+        ] {
+            let button = mounted.element(&format!("[aria-label=\"{label}\"]"));
+            assert_eq!(button.get_attribute("title").as_deref(), Some(label));
+        }
+        mounted.click("[aria-label=\"Stage all changes\"]");
         wait_until("bulk staging", || {
             if mode == WorkspaceMode::Remote {
                 !mounted.state.fake.git_path_requests.borrow().is_empty()
@@ -79,6 +88,18 @@ async fn staged_and_unstaged_controls_route_through_both_adapters() {
         })
         .await;
         settle().await;
+        for label in ["Stage file", "Unstage file", "Unstage all changes"] {
+            wait_until("previous staging settled", || {
+                !slot.get().unwrap().busy.get_untracked()
+            })
+            .await;
+            mounted.click(&format!("[aria-label=\"{label}\"]"));
+            settle().await;
+        }
+        wait_until("all staging actions settled", || {
+            !slot.get().unwrap().busy.get_untracked()
+        })
+        .await;
         let requests: Vec<GitPathRequest> = if mode == WorkspaceMode::Remote {
             mounted
                 .state
@@ -98,6 +119,21 @@ async fn staged_and_unstaged_controls_route_through_both_adapters() {
         };
         assert_eq!(requests[0].action, GitPathAction::StageAll);
         assert!(requests[0].path.is_empty());
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.action)
+                .collect::<Vec<_>>(),
+            [
+                GitPathAction::StageAll,
+                GitPathAction::Stage,
+                GitPathAction::Unstage,
+                GitPathAction::UnstageAll
+            ]
+        );
+        assert_eq!(requests[1].path, "a.txt");
+        assert_eq!(requests[2].path, "a.txt");
+        assert!(requests[3].path.is_empty());
         mounted.click("[aria-label=\"Toggle staged changes\"]");
         settle().await;
         assert!(
@@ -146,6 +182,7 @@ async fn automatic_commit_summary_uses_index_and_keeps_user_edits_in_both_modes(
             let (send, receive) = futures::channel::oneshot::channel();
             let mounted = mount_test(move |state| {
                 state.seed_project();
+                state.seed_connection();
                 state.seed_session();
                 state
                     .projects
@@ -214,6 +251,132 @@ async fn automatic_commit_summary_uses_index_and_keeps_user_edits_in_both_modes(
             drop(mounted);
             drop(http);
         }
+    }
+    restore_token(old).await;
+}
+
+#[wasm_bindgen_test]
+async fn changes_refresh_and_feedback_keep_composer_and_rows_in_both_modes() {
+    let old = token().await;
+    for mode in [WorkspaceMode::Remote, WorkspaceMode::Local] {
+        let http = Http(gitHttp());
+        let handle = probe_folder();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.projects.local_handles.update(|handles| {
+                handles.insert(1, handle.unchecked_into());
+            });
+            state.settings.bridge_url.set("ws://git.test:3001".into());
+            state.git.commit_message.set("Keep my message".into());
+            for _ in 0..3 {
+                let (send, receive) = futures::channel::oneshot::channel();
+                send.send(Ok(paths())).unwrap();
+                state.fake.git_path_results.borrow_mut().push_back(receive);
+            }
+            WorkspaceActions::new(
+                state.api,
+                state.projects,
+                state.workspace,
+                state.ui,
+                RwSignal::new(false),
+                Callback::new(|()| ()),
+            );
+            view! {<style>{include_str!("../../styles.css")}</style><div style="width:420px;height:700px"><openwebide_frontend::components::GitPane on_open=Callback::new(|_|()) on_load_git_diff=Callback::new(|()|()) on_discard_git_diff=Callback::new(|()|()) /></div>}
+        });
+        wait_until("staged rows", || {
+            mounted
+                .root
+                .query_selector(".git-change-file")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let textarea = mounted.element("textarea");
+        let first = mounted.element(".git-change-file");
+        let before = textarea.get_bounding_client_rect();
+        let staged_before = first.get_bounding_client_rect();
+        let (send, receive) = futures::channel::oneshot::channel();
+        if mode == WorkspaceMode::Remote {
+            mounted.state.fake.git_path_results.borrow_mut().clear();
+            mounted
+                .state
+                .fake
+                .git_path_results
+                .borrow_mut()
+                .push_back(receive);
+        } else {
+            gitChange(&http.0, "deferPaths", true);
+        }
+        mounted
+            .state
+            .git
+            .changes_revision
+            .update(|revision| *revision += 1);
+        wait_until("reserved progress slot", || {
+            mounted
+                .root
+                .query_selector(".ui-progress-slot .ui-spinner")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        assert!(textarea.is_same_node(Some(&mounted.element("textarea"))));
+        assert!((textarea.get_bounding_client_rect().top() - before.top()).abs() < 1.0);
+        assert!((first.get_bounding_client_rect().top() - staged_before.top()).abs() < 1.0);
+        mounted.state.git.sync_busy.set(Some("sync".into()));
+        if mode == WorkspaceMode::Remote {
+            send.send(Err("index unavailable".into())).unwrap();
+        } else {
+            gitChange(&http.0, "pathsError", true);
+            gitRelease(&http.0, "deferPaths");
+        }
+        wait_until("visible index failure", || {
+            mounted
+                .root
+                .query_selector(".ui-feedback-overlay [role=alert]")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".ui-progress-slot .ui-spinner")
+                .unwrap()
+                .is_some()
+        );
+        assert!(first.is_same_node(Some(&mounted.element(".git-change-file"))));
+        assert!((textarea.get_bounding_client_rect().top() - before.top()).abs() < 1.0);
+        assert!((first.get_bounding_client_rect().top() - staged_before.top()).abs() < 1.0);
+        assert_eq!(
+            mounted.state.git.commit_message.get_untracked(),
+            "Keep my message"
+        );
+        mounted.state.git.sync_busy.set(None);
+        mounted
+            .state
+            .git
+            .path_changes
+            .set(Some(GitPathChanges::default()));
+        settle().await;
+        assert!(
+            mounted
+                .element("[aria-label=\"Draft staged commit message\"]")
+                .has_attribute("disabled")
+        );
+        assert_eq!(
+            mounted
+                .element(".ui-disabled-help")
+                .get_attribute("title")
+                .as_deref(),
+            Some("Stage changes to draft a commit message")
+        );
+        drop(mounted);
+        drop(http);
     }
     restore_token(old).await;
 }

@@ -10,6 +10,7 @@ pub struct GitHistoryActions {
     pub commits: RwSignal<Vec<GitHistoryCommit>>,
     pub refs: RwSignal<Vec<GitHistoryRef>>,
     pub search: RwSignal<String>,
+    pub displayed: RwSignal<GitHistoryRequest>,
     pub reference: RwSignal<Option<String>>,
     pub loading: RwSignal<bool>,
     pub error: RwSignal<Option<String>>,
@@ -30,6 +31,7 @@ impl GitHistoryActions {
     }
     pub fn for_path(file: Option<String>) -> Self {
         let file = StoredValue::new(file);
+        let file_history = file.get_value().is_some();
         let facade = expect_context::<ProjectGit>();
         let projects = expect_context::<ProjectsState>();
         let auth = expect_context::<AuthState>();
@@ -49,6 +51,7 @@ impl GitHistoryActions {
         let parent = RwSignal::new(None::<String>);
         let path = RwSignal::new(None::<String>);
         let applied = StoredValue::new(GitHistoryRequest::default());
+        let displayed = RwSignal::new(GitHistoryRequest::default());
         let version = RwSignal::new(0_u64);
         let selection_version = RwSignal::new(0_u64);
         let load = Callback::new(move |append: bool| {
@@ -57,7 +60,9 @@ impl GitHistoryActions {
                 return;
             }
             if append
-                && (loading.get_untracked() || search.get_untracked() != applied.get_value().search)
+                && (loading.get_untracked()
+                    || search.get_untracked() != applied.get_value().search
+                    || reference.get_untracked() != applied.get_value().reference)
             {
                 return;
             }
@@ -70,33 +75,66 @@ impl GitHistoryActions {
                 request.offset = commits.with_untracked(Vec::len);
                 request
             } else {
-                let request = GitHistoryRequest {
+                GitHistoryRequest {
                     offset: 0,
                     search: search.get_untracked(),
                     reference: reference.get_untracked(),
                     path: file.get_value(),
-                };
-                applied.set_value(request.clone());
-                request
+                }
             };
             loading.set(true);
             error.set(None);
-            if !append {
-                has_more.set(false);
-                parent.set(None);
-                path.set(None);
-                commits.set(Vec::new());
-                selected.set(None);
-                diff.set(None);
-                files.set(Vec::new());
-                diff_loading.set(false);
-                diff_error.set(None);
-                selection_version.update(|value| *value += 1);
-            }
+            diff_error.set(None);
+            let selected_before = selected.get_untracked();
+            let parent_before = parent.get_untracked();
+            let path_before = path.get_untracked();
+            let current = move || {
+                projects.active_project.try_get_untracked() == Some(project)
+                    && auth.generation.try_get_untracked() == Some(generation)
+                    && version.try_get_untracked() == Some(request_version)
+                    && facade.revision() == host
+            };
             spawn_local(async move {
-                let result =
-                    read_query(async { facade.repository(project).await?.history(&request).await })
-                        .await;
+                if !current() {
+                    return;
+                }
+                let result = read_query(async {
+                    let page = facade.repository(project).await?.history(&request).await?;
+                    if !current() {
+                        return Err("History query superseded".into());
+                    }
+                    let detail = if append {
+                        None
+                    } else {
+                        let chosen = selected_before.as_ref().and_then(|selected| {
+                            page.commits
+                                .iter()
+                                .find(|commit| commit.hash == selected.hash)
+                                .or_else(|| page.commits.first())
+                        });
+                        if let Some(commit) = chosen {
+                            let surviving = selected_before
+                                .as_ref()
+                                .is_some_and(|old| old.hash == commit.hash);
+                            Some(
+                                prepare_detail(
+                                    facade,
+                                    project,
+                                    commit.clone(),
+                                    if surviving { parent_before } else { None },
+                                    if surviving { path_before } else { None },
+                                    file_history,
+                                    None,
+                                )
+                                .await?,
+                            )
+                        } else {
+                            None
+                        }
+                    };
+                    Ok::<_, String>((page, detail))
+                })
+                .await;
                 if projects.active_project.try_get_untracked() != Some(project)
                     || auth.generation.try_get_untracked() != Some(generation)
                     || facade.revision() != host
@@ -106,11 +144,45 @@ impl GitHistoryActions {
                 }
                 loading.set(false);
                 match result {
-                    Ok(page) => {
-                        refs.set(page.refs);
+                    Ok((page, detail)) => batch(|| {
+                        if refs.get_untracked() != page.refs {
+                            refs.set(page.refs);
+                        }
                         has_more.set(page.has_more);
-                        commits.update(|commits| commits.extend(page.commits));
-                    }
+                        if append {
+                            commits.update(|commits| commits.extend(page.commits));
+                        } else {
+                            displayed.set(request.clone());
+                            applied.set_value(request);
+                            if commits.get_untracked() != page.commits {
+                                commits.set(page.commits);
+                            }
+                            if let Some((commit, comparison, selected_path, changed_files, value)) =
+                                detail
+                            {
+                                selection_version.update(|version| *version += 1);
+                                if selected.get_untracked().as_ref() != Some(&commit) {
+                                    selected.set(Some(commit));
+                                }
+                                parent.set(comparison);
+                                path.set(selected_path);
+                                if files.get_untracked() != changed_files {
+                                    files.set(changed_files);
+                                }
+                                if diff.get_untracked().as_ref() != Some(&value) {
+                                    diff.set(Some(value));
+                                }
+                                diff_error.set(None);
+                                diff_loading.set(false);
+                            } else {
+                                selected.set(None);
+                                parent.set(None);
+                                path.set(None);
+                                files.set(Vec::new());
+                                diff.set(None);
+                            }
+                        }
+                    }),
                     Err(message) => error.set(Some(message)),
                 }
             });
@@ -131,7 +203,8 @@ impl GitHistoryActions {
                 settings.bridge_url.get(),
                 facade.revision(),
             );
-            if boundary.get_value().as_ref() != Some(&identity) {
+            let changed_scope = boundary.get_value().as_ref() != Some(&identity);
+            if changed_scope {
                 boundary.set_value(Some(identity));
                 search.set(String::new());
                 reference.set(file.get_value().map(|_| "HEAD".to_owned()));
@@ -145,11 +218,15 @@ impl GitHistoryActions {
             git.branch_revision.track();
             version.update(|value| *value += 1);
             selection_version.update(|value| *value += 1);
-            commits.set(Vec::new());
-            refs.set(Vec::new());
-            selected.set(None);
-            diff.set(None);
-            files.set(Vec::new());
+            if changed_scope {
+                commits.set(Vec::new());
+                refs.set(Vec::new());
+                selected.set(None);
+                diff.set(None);
+                files.set(Vec::new());
+                parent.set(None);
+                path.set(None);
+            }
             loading.set(false);
             diff_loading.set(false);
             load.run(false);
@@ -196,14 +273,9 @@ impl GitHistoryActions {
                         .as_ref()
                         .is_some_and(|selected| selected.hash == commit.hash)
                 }) && parent.get_untracked() == requested_parent;
-                if !same_comparison {
-                    files.set(Vec::new());
-                }
                 let requested_path = requested_path.or_else(|| commit.history_path.clone());
-                parent.set(requested_parent.clone());
-                path.set(requested_path.clone());
-                selected.set(Some(commit.clone()));
-                diff.set(None);
+                version.update(|version| *version += 1);
+                loading.set(false);
                 diff_error.set(None);
                 diff_loading.set(true);
                 selection_version.update(|value| *value += 1);
@@ -211,19 +283,24 @@ impl GitHistoryActions {
                 let project = projects.active_project.get_untracked();
                 let generation = auth.generation.get_untracked();
                 let host = facade.revision();
+                let cached_files = same_comparison.then(|| files.get_untracked());
                 spawn_local(async move {
-                    let request = GitCommitDiffRequest {
-                        hash: commit.hash.clone(),
-                        parent: requested_parent,
-                        path: requested_path.clone(),
-                    };
-                    let result = read_query(async {
-                        facade
-                            .repository(project)
-                            .await?
-                            .commit_diff(&request)
-                            .await
-                    })
+                    if projects.active_project.try_get_untracked() != Some(project)
+                        || auth.generation.try_get_untracked() != Some(generation)
+                        || selection_version.try_get_untracked() != Some(revision)
+                        || facade.revision() != host
+                    {
+                        return;
+                    }
+                    let result = read_query(prepare_detail(
+                        facade,
+                        project,
+                        commit,
+                        requested_parent,
+                        requested_path,
+                        file_history,
+                        cached_files,
+                    ))
                     .await;
                     if projects.active_project.try_get_untracked() != Some(project)
                         || auth.generation.try_get_untracked() != Some(generation)
@@ -234,57 +311,20 @@ impl GitHistoryActions {
                     }
                     diff_loading.set(false);
                     match result {
-                        Ok(mut value) => {
-                            if requested_path.is_none() || !same_comparison {
-                                let changed_files = if file.get_value().is_some() {
-                                    value
-                                        .files
-                                        .iter()
-                                        .filter(|file| {
-                                            Some(&file.path) == requested_path.as_ref()
-                                                || file.previous_path.as_ref()
-                                                    == requested_path.as_ref()
-                                        })
-                                        .cloned()
-                                        .collect()
-                                } else {
-                                    value.files.clone()
-                                };
-                                files.set(changed_files);
-                            }
-                            if requested_path.is_none()
-                                && let Some(first) = value.files.first()
-                            {
-                                let first_path = first.path.clone();
-                                path.set(Some(first_path.clone()));
-                                let filtered = read_query(async {
-                                    facade
-                                        .repository(project)
-                                        .await?
-                                        .commit_diff(&GitCommitDiffRequest {
-                                            hash: commit.hash,
-                                            parent: request.parent,
-                                            path: Some(first_path),
-                                        })
-                                        .await
-                                })
-                                .await;
-                                if projects.active_project.try_get_untracked() != Some(project)
-                                    || auth.generation.try_get_untracked() != Some(generation)
-                                    || facade.revision() != host
-                                    || selection_version.try_get_untracked() != Some(revision)
-                                {
-                                    return;
+                        Ok((commit, comparison, selected_path, changed_files, value)) => {
+                            batch(|| {
+                                if selected.get_untracked().as_ref() != Some(&commit) {
+                                    selected.set(Some(commit));
                                 }
-                                match filtered {
-                                    Ok(filtered) => value = filtered,
-                                    Err(message) => {
-                                        diff_error.set(Some(message));
-                                        return;
-                                    }
+                                parent.set(comparison);
+                                path.set(selected_path);
+                                if files.get_untracked() != changed_files {
+                                    files.set(changed_files);
                                 }
-                            }
-                            diff.set(Some(value));
+                                if diff.get_untracked().as_ref() != Some(&value) {
+                                    diff.set(Some(value));
+                                }
+                            });
                         }
                         Err(message) => diff_error.set(Some(message)),
                     }
@@ -295,6 +335,7 @@ impl GitHistoryActions {
             commits,
             refs,
             search,
+            displayed,
             reference,
             loading,
             error,
@@ -326,4 +367,59 @@ pub(crate) async fn read_query<T>(
             Err("Git query timed out. Check the execution host and retry.".into())
         }
     }
+}
+
+async fn prepare_detail(
+    facade: ProjectGit,
+    project: Option<i64>,
+    commit: GitHistoryCommit,
+    comparison: Option<String>,
+    requested_path: Option<String>,
+    file_history: bool,
+    retained_files: Option<Vec<GitCommitFile>>,
+) -> Result<
+    (
+        GitHistoryCommit,
+        Option<String>,
+        Option<String>,
+        Vec<GitCommitFile>,
+        GitCommitDiff,
+    ),
+    String,
+> {
+    let comparison = comparison.or_else(|| commit.parents.first().cloned());
+    let mut path = requested_path.or_else(|| commit.history_path.clone());
+    let repo = facade.repository(project).await?;
+    let mut value = repo
+        .commit_diff(&GitCommitDiffRequest {
+            hash: commit.hash.clone(),
+            parent: comparison.clone(),
+            path: path.clone(),
+        })
+        .await?;
+    let changed_files = retained_files.unwrap_or_else(|| {
+        value
+            .files
+            .iter()
+            .filter(|file| {
+                !file_history
+                    || Some(&file.path) == path.as_ref()
+                    || file.previous_path.as_ref() == path.as_ref()
+            })
+            .cloned()
+            .collect()
+    });
+    if path.is_none()
+        && let Some(first) = value.files.first()
+    {
+        path = Some(first.path.clone());
+        value = repo
+            .commit_diff(&GitCommitDiffRequest {
+                hash: commit.hash.clone(),
+                parent: comparison.clone(),
+                path: path.clone(),
+            })
+            .await?;
+    }
+    Ok((commit, comparison, path, changed_files, value))
 }

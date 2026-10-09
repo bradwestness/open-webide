@@ -302,6 +302,7 @@ pub fn paint_unified_diff(patch: &str, path: &str) -> Vec<DiffPaintLine> {
     let mut rows = Vec::new();
     let (mut old, mut new) = (0, 0);
     let mut hunk = false;
+    let mut remaining = (0_usize, 0_usize);
     for line in patch.lines() {
         if let Some(header) = line.strip_prefix("@@ -") {
             let ranges = header.split_whitespace().take(2).collect::<Vec<_>>();
@@ -318,9 +319,30 @@ pub fn paint_unified_diff(patch: &str, path: &str) -> Vec<DiffPaintLine> {
                 old = left;
                 new = right;
                 hunk = true;
+                let count = |range: &str| {
+                    range
+                        .split_once(',')
+                        .and_then(|(_, count)| count.parse::<usize>().ok())
+                        .unwrap_or(1)
+                };
+                remaining = (count(ranges[0]), count(ranges[1]));
+                let context = header
+                    .split_once("@@")
+                    .map_or("", |(_, context)| context.trim());
+                rows.push(('m', None, None, context));
+                continue;
             }
         } else if line.starts_with("diff --git ") {
             hunk = false;
+        }
+        if !hunk || remaining == (0, 0) {
+            if line.starts_with("Binary files ")
+                || line.starts_with("GIT binary patch")
+                || line.starts_with("\\ No newline")
+            {
+                rows.push(('m', None, None, line));
+            }
+            continue;
         }
         let marker = line
             .chars()
@@ -331,22 +353,34 @@ pub fn paint_unified_diff(patch: &str, path: &str) -> Vec<DiffPaintLine> {
             '+' => {
                 let number = new;
                 new += 1;
+                remaining.1 = remaining.1.saturating_sub(1);
                 (None, Some(number), &line[1..])
             }
             '-' => {
                 let number = old;
                 old += 1;
+                remaining.0 = remaining.0.saturating_sub(1);
                 (Some(number), None, &line[1..])
             }
             ' ' => {
                 let numbers = (old, new);
                 old += 1;
                 new += 1;
+                remaining.0 = remaining.0.saturating_sub(1);
+                remaining.1 = remaining.1.saturating_sub(1);
                 (Some(numbers.0), Some(numbers.1), &line[1..])
             }
             _ => (None, None, line),
         };
         rows.push((marker, old_number, new_number, text));
+    }
+    if rows.is_empty() && !patch.trim().is_empty() {
+        rows.push((
+            'm',
+            None,
+            None,
+            "No textual hunks (binary, rename, copy or mode change).",
+        ));
     }
     let old_source = rows
         .iter()
@@ -423,27 +457,58 @@ mod patch_tests {
     fn patch_headers_and_multiple_hunks_preserve_source_numbers_and_text() {
         let patch = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -40,2 +50,2 @@\n-old\n+new\n context\n@@ -100 +120 @@\n-last\n+next\n\\ No newline at end of file";
         let lines = paint_unified_diff(patch, "a.rs");
-        assert!(lines[..4].iter().all(|line| line.old_number.is_none()
+        assert!(lines[..1].iter().all(|line| line.old_number.is_none()
             && line.new_number.is_none()
             && line.marker == ' '));
-        assert_eq!((lines[4].old_number, lines[4].new_number), (Some(40), None));
-        assert_eq!((lines[5].old_number, lines[5].new_number), (None, Some(50)));
+        assert_eq!((lines[1].old_number, lines[1].new_number), (Some(40), None));
+        assert_eq!((lines[2].old_number, lines[2].new_number), (None, Some(50)));
         assert_eq!(
-            (lines[6].old_number, lines[6].new_number),
+            (lines[3].old_number, lines[3].new_number),
             (Some(41), Some(51))
         );
         assert_eq!(
-            (lines[8].old_number, lines[9].new_number),
+            (lines[5].old_number, lines[6].new_number),
             (Some(100), Some(120))
         );
         assert_eq!(
-            lines[5]
+            lines[2]
                 .tokens
                 .iter()
                 .map(|token| token.token.text.as_str())
                 .collect::<String>(),
             "new"
         );
-        assert!(lines[10].new_number.is_none());
+        assert!(lines[7].new_number.is_none());
+    }
+}
+
+#[cfg(test)]
+mod patch_presentation_tests {
+    use super::*;
+    #[test]
+    fn hunk_context_remains_plain_and_metadata_like_source_is_not_filtered() {
+        let patch = "diff --git a/a b/a\nindex 123..456 100644\nold mode 100644\nnew mode 100755\nrename from old\nrename to new\n--- a/a\n+++ b/a\n@@ -10,2 +20,3 @@ function <script>\n--- source payload\n+++ source payload\n diff --git literal\n+index literal\n\\ No newline at end of file";
+        let lines = paint_unified_diff(patch, "a.txt");
+        let text = |line: &DiffPaintLine| {
+            line.tokens
+                .iter()
+                .map(|token| token.token.text.as_str())
+                .collect::<String>()
+        };
+        assert_eq!(text(&lines[0]), "function <script>");
+        assert_eq!(text(&lines[1]), "-- source payload");
+        assert_eq!(lines[1].old_number, Some(10));
+        assert_eq!(text(&lines[2]), "++ source payload");
+        assert_eq!(lines[2].new_number, Some(20));
+        assert_eq!(text(&lines[3]), "diff --git literal");
+        assert_eq!(text(&lines[4]), "index literal");
+        assert!(text(&lines[5]).contains("No newline"));
+        for patch in [
+            "diff --git a/a b/b\nrename from a\nrename to b",
+            "diff --git a/a b/a\nold mode 100644\nnew mode 100755",
+            "diff --git a/a b/a\nBinary files a/a and b/a differ",
+        ] {
+            assert!(!paint_unified_diff(patch, "a").is_empty());
+        }
     }
 }

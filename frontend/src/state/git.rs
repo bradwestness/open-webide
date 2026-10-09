@@ -15,6 +15,10 @@ pub struct HeadContent {
 pub struct GitState {
     pub active_project: RwSignal<Option<i64>>,
     pub status: RwSignal<Option<GitRepoStatus>>,
+    pub status_error: RwSignal<Option<String>>,
+    pub status_loading: RwSignal<bool>,
+    pub folder_summaries:
+        Memo<std::collections::BTreeMap<String, crate::git_status::FolderSummary>>,
     pub path_changes: RwSignal<Option<openwebide_core::git::GitPathChanges>>,
     pub changes_revision: RwSignal<u64>,
     pub head_content: RwSignal<Option<HeadContent>>,
@@ -30,6 +34,7 @@ pub struct GitState {
     pub sync_error: RwSignal<Option<String>>,
     pub sync_notice: RwSignal<Option<String>>,
     pub file_history: RwSignal<Option<String>>,
+    pub file_history_generation: RwSignal<u64>,
     pub history_revision: RwSignal<u64>,
     pub branch_revision: RwSignal<u64>,
     statuses_by_project: RwSignal<HashMap<i64, Option<GitRepoStatus>>>,
@@ -41,9 +46,25 @@ impl GitState {
     }
 
     pub fn with_active_project(active_project: RwSignal<Option<i64>>) -> Self {
+        let status = RwSignal::new(None::<GitRepoStatus>);
+        let folder_summaries = Memo::new(move |_| {
+            status.with(|repo| {
+                repo.as_ref().map_or_else(Default::default, |repo| {
+                    crate::git_status::folders(
+                        repo.files.iter().map(|(path, status)| {
+                            (path.as_str(), crate::git_status::Status::from(*status))
+                        }),
+                        repo.availability,
+                    )
+                })
+            })
+        });
         Self {
             active_project,
-            status: RwSignal::new(None),
+            folder_summaries,
+            status,
+            status_error: RwSignal::new(None),
+            status_loading: RwSignal::new(false),
             path_changes: RwSignal::new(None),
             changes_revision: RwSignal::new(0),
             head_content: RwSignal::new(None),
@@ -59,6 +80,7 @@ impl GitState {
             sync_error: RwSignal::new(None),
             sync_notice: RwSignal::new(None),
             file_history: RwSignal::new(None),
+            file_history_generation: RwSignal::new(0),
             history_revision: RwSignal::new(0),
             branch_revision: RwSignal::new(0),
             statuses_by_project: RwSignal::new(HashMap::new()),
@@ -99,6 +121,8 @@ impl GitState {
     }
 
     pub fn reset_branches(&self) {
+        self.status_error.set(None);
+        self.status_loading.set(false);
         self.file_history.set(None);
         self.path_changes.set(None);
         self.changes_revision.update(|revision| *revision += 1);
