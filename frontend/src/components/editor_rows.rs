@@ -152,8 +152,14 @@ async fn measure_paragraph(
     let Some(mut plan) = plan else {
         return Ok(None);
     };
-    if let Some(actions) = actions {
-        actions.resume_paragraph_measurements(scope, logical, &mut plan);
+    if let Some((actions, prefix)) = actions.and_then(|actions| {
+        actions
+            .paragraph_prefix(scope, logical)
+            .map(|prefix| (actions, prefix))
+    }) {
+        while current() && actions.resume_paragraph_prefix_batch(&prefix, &mut plan) > 0 {
+            crate::util::yield_task().await;
+        }
     }
     let suffix = actions.and_then(|actions| actions.paragraph_suffix(scope, logical));
     let mut probes = 0_usize;
@@ -223,7 +229,11 @@ async fn measure_wrapped_paragraph(
     let Some(mut plan) = actions.prepare_wrapped_paragraph(scope, logical) else {
         return Ok(None);
     };
-    actions.resume_paragraph_measurements(scope, logical, &mut plan);
+    if let Some(prefix) = actions.paragraph_prefix(scope, logical) {
+        while current() && actions.resume_paragraph_prefix_batch(&prefix, &mut plan) > 0 {
+            crate::util::yield_task().await;
+        }
+    }
     let suffix = actions.paragraph_suffix(scope, logical);
     let source_line = scope.projection.lines()[logical].source_line;
     let body = scope.projection.line_body(logical).ok_or(())?;

@@ -3585,3 +3585,50 @@ matrix, unwrapped suffix replay with stale scopes, painted caret movement,
 chunk cancellation and bounded near-limit native startup in both modes.
 Exact-head CI is checked separately; all five jobs and Project site passed for
 the preceding `39c1ba2` checkpoint.
+
+
+### Retained prefix replay batches
+
+Both core paragraph plans now expose bounded prefix replay. The shared editor
+facade captures the immutable source/style proof once, while its batch calls
+reject a replaced editor scope before resuming. Wrapped and unwrapped DOM
+preparation yield between at most eight retained probes, using the existing
+measurement batch limit. Terminal probes still measure complete dimensions
+freshly; no geometry tolerances, rectangle limits or fallback rules changed.
+The synchronous entry point uses the same policy for existing complete-renderer
+contracts. Initial proof preparation and individual probe replay remain work;
+yielding batches alone does not establish a latency or memory improvement.
+
+Core validation passes 587 parser-enabled tests and strict Clippy, including
+zero-budget calls, repeated bounded continuation, exact geometry and fresh
+terminal extents. Final optimized WASM component-test Clippy passes. Optimized Chrome contracts pass for wrapped full-renderer geometry, captured-prefix
+batch limits and stale-account rejection, unwrapped shifted suffix geometry, and
+wrapped chunk cancellation in both modes. The production Trunk bundle also passes.
+Quiet production traces use the same existing Linux ARM64 Chromium image,
+4 CPUs, 10 GiB memory, 1 GiB shared memory and frozen backend as the preceding
+wrapped-replay samples. No local builds or browser checks ran during measurement.
+The candidate module is `openwebide-frontend-41a1adbc2012954e.js`. Both positions
+have two repetitions per adapter, actual 1,048,567-byte source, exact source caret,
+complete source after input, String styling, and complete 547,721 × 264 extents.
+
+Raw traces: [beginning](editor-performance/prefix-batch-beginning-linux.jsonl) and
+[end](editor-performance/prefix-batch-end-linux.jsonl).
+
+| Position | Mode / repetition | Load ms | Input ms | Scroll ms | Largest frame ms | Fresh input probes | Peak Chrome PSS KiB |
+|---|---|---:|---:|---:|---:|---:|---:|
+| beginning | local 1 | 2564.8 | 1197.5 | 42.5 | 166.5 | 70 | 746169 |
+| beginning | local 2 | 2409.0 | 1131.1 | 39.9 | 150.0 | 70 | 733485 |
+| beginning | remote 1 | 2611.1 | 1206.8 | 40.6 | 150.0 | 70 | 734750 |
+| beginning | remote 2 | 2536.6 | 1190.9 | 41.8 | 150.0 | 70 | 756080 |
+| end | local 1 | 2587.0 | 117.1 | 42.9 | 216.7 | 2 | 741791 |
+| end | local 2 | 2397.9 | 121.4 | 34.9 | 166.7 | 2 | 736379 |
+| end | remote 1 | 2489.5 | 125.6 | 36.8 | 166.7 | 2 | 738816 |
+| end | remote 2 | 2429.6 | 113.8 | 30.7 | 149.9 | 2 | 725316 |
+
+These samples validate source/geometry preservation and retain the two-fresh-probe
+end path. They do not demonstrate a general wrapped-edit latency or memory win:
+beginning edits still require full reflow, and startup remains costly. The newer
+bundle also includes the intervening plugin integration, so differences from the
+preceding traces do not isolate prefix batching. Nonreconnecting geometry,
+individual replay cost, initial proof/run-table preparation and physical-device
+verification remain open.

@@ -304,11 +304,23 @@ impl<'a> WrappedParagraphPreparation<'a> {
         old: &ParagraphMeasurements,
         style_end: usize,
     ) -> usize {
+        self.reuse_prefix_batch(old_body, old, style_end, usize::MAX)
+    }
+    pub fn reuse_prefix_batch(
+        &mut self,
+        old_body: &str,
+        old: &ParagraphMeasurements,
+        style_end: usize,
+        max_records: usize,
+    ) -> usize {
         if !old.wrapped {
             return 0;
         }
         let mut reused = 0;
-        while let Some(probe) = self.probe().cloned() {
+        while reused < max_records {
+            let Some(probe) = self.probe().cloned() else {
+                break;
+            };
             if probe.bytes.end >= self.body.len() || probe.bytes.end > style_end {
                 break;
             }
@@ -525,8 +537,14 @@ impl<'a> WrappedParagraphPreparation<'a> {
 }
 
 impl ParagraphReplay for WrappedParagraphPreparation<'_> {
-    fn reuse_prefix(&mut self, body: &str, old: &ParagraphMeasurements, end: usize) -> usize {
-        self.reuse_prefix(body, old, end)
+    fn reuse_prefix_batch(
+        &mut self,
+        body: &str,
+        old: &ParagraphMeasurements,
+        end: usize,
+        limit: usize,
+    ) -> usize {
+        self.reuse_prefix_batch(body, old, end, limit)
     }
     fn reuse_suffix_batch(
         &mut self,
@@ -627,7 +645,16 @@ mod tests {
             let index = VisualLineIndex::new(&changed).unwrap();
             let runs = index.text_run_boundaries().collect();
             let mut plan = WrappedParagraphPreparation::new(&changed, index, runs).unwrap();
-            let reused = plan.reuse_prefix(&body, &old, at);
+            assert_eq!(plan.reuse_prefix_batch(&body, &old, at, 0), 0);
+            let mut reused = 0;
+            loop {
+                let next = plan.reuse_prefix_batch(&body, &old, at, 2);
+                assert!(next <= 2);
+                if next == 0 {
+                    break;
+                }
+                reused += next;
+            }
             if at > 0 {
                 assert!(reused > 2);
             } else {

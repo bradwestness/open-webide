@@ -18604,14 +18604,19 @@ async fn wrapped_paragraph_edits_reuse_exact_source_owned_geometry_in_both_modes
                     "{mode:?} styled={styled} reconnect={reconnect} change={change}: every retained glyph and complete extent"
                 );
                 let suffix = actions.paragraph_suffix(&scope, 0).unwrap();
+                let prefix = actions.paragraph_prefix(&scope, 0).unwrap();
                 let mut plan = actions.prepare_wrapped_paragraph(&scope, 0).unwrap();
-                assert!(actions.resume_paragraph_measurements(&scope, 0, &mut plan) > 2);
+                let reused = actions.resume_paragraph_prefix_batch(&prefix, &mut plan);
+                assert!(
+                    reused > 2 && reused <= openwebide_core::editor::MAX_MEASURE_BATCHES_PER_FRAME
+                );
                 mounted
                     .state
                     .auth
                     .generation
                     .update(|generation| *generation += 1);
                 assert_eq!(actions.resume_paragraph_suffix(&suffix, &mut plan), 0);
+                assert_eq!(actions.resume_paragraph_prefix_batch(&prefix, &mut plan), 0);
                 assert!(plan.probe().is_some());
                 mounted
                     .state

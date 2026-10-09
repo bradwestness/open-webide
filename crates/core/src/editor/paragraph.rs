@@ -68,11 +68,12 @@ pub(super) fn paragraph_anchor_glyphs(
 /// Shared facade contract for validated replay; layout-specific geometry remains
 /// in each core plan, above the browser's measurement primitives.
 pub trait ParagraphReplay {
-    fn reuse_prefix(
+    fn reuse_prefix_batch(
         &mut self,
         old_body: &str,
         old: &ParagraphMeasurements,
         style_end: usize,
+        max_records: usize,
     ) -> usize;
     fn reuse_suffix_batch(
         &mut self,
@@ -173,12 +174,27 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         old: &ParagraphMeasurements,
         style_end: usize,
     ) -> usize {
+        self.reuse_prefix_batch(old_body, old, style_end, usize::MAX)
+    }
+    pub fn reuse_prefix_batch(
+        &mut self,
+        old_body: &str,
+        old: &ParagraphMeasurements,
+        style_end: usize,
+        max_records: usize,
+    ) -> usize {
         if old.wrapped {
             return 0;
         }
         let mut reused = 0;
         let mut validated_runs = 0;
-        for record in &old.records {
+        let Some(start) = self.probe().map(|probe| probe.bytes.start) else {
+            return 0;
+        };
+        let first = old
+            .records
+            .partition_point(|record| record.bytes.start < start);
+        for record in old.records.iter().skip(first).take(max_records) {
             let end = record.bytes.end;
             let Some(probe) = self.probe() else { break };
             if record.bytes != probe.bytes
@@ -681,8 +697,14 @@ impl<'a> ParagraphMeasurementPlan<'a> {
 }
 
 impl ParagraphReplay for ParagraphMeasurementPlan<'_> {
-    fn reuse_prefix(&mut self, body: &str, old: &ParagraphMeasurements, end: usize) -> usize {
-        self.reuse_prefix(body, old, end)
+    fn reuse_prefix_batch(
+        &mut self,
+        body: &str,
+        old: &ParagraphMeasurements,
+        end: usize,
+        limit: usize,
+    ) -> usize {
+        self.reuse_prefix_batch(body, old, end, limit)
     }
     fn reuse_suffix_batch(
         &mut self,
@@ -828,7 +850,16 @@ mod tests {
         let mut plan =
             ParagraphMeasurementPlan::new(&changed, VisualLineIndex::new(&changed).unwrap())
                 .unwrap();
-        let reused = plan.reuse_prefix(&old, &retained, old.len());
+        assert_eq!(plan.reuse_prefix_batch(&old, &retained, old.len(), 0), 0);
+        let mut reused = 0;
+        loop {
+            let next = plan.reuse_prefix_batch(&old, &retained, old.len(), 1);
+            assert!(next <= 1);
+            if next == 0 {
+                break;
+            }
+            reused += next;
+        }
         assert!(reused > 1);
         assert!(plan.probe().unwrap().bytes.start < at);
         assert!(plan.probe().unwrap().bytes.end > at);

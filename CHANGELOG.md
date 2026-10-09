@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Yield between bounded batches of retained paragraph-prefix probes in wrapped and unwrapped editor preparation, rechecking source ownership between batches and measuring terminal dimensions freshly.
+
 - Make cold-editor queued-arrow and native-input browser checks deterministic by holding paint frames while testing pending layout, including composition and clipboard operations in local and remote projects.
 
 - Bundle pinned official Web, Project Memory, Scheduling and Skill Authoring plugins on execution hosts and install them once per account, including offline setup. Preserve uninstalls, selected versions, update preferences and project opt-outs. PR Review remains optional.

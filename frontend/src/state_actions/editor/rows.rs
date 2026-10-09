@@ -270,6 +270,14 @@ pub struct EditorRowSourceSlice {
     /// Immutable original text-run ends for exact clipping at arbitrary source seams.
     pub paint_runs: Option<Arc<[usize]>>,
 }
+/// Immutable source/style proof prepared once for yielding prefix replay.
+pub struct EditorParagraphPrefix {
+    scope: EditorRowPaint,
+    previous: EditorRowPaint,
+    row: usize,
+    measurements: Arc<openwebide_core::editor::ParagraphMeasurements>,
+    style_end: usize,
+}
 /// Immutable source/style proof for an eligible unchanged paragraph suffix.
 pub struct EditorParagraphSuffix {
     scope: EditorRowPaint,
@@ -347,31 +355,59 @@ impl EditorActions {
         row: usize,
         plan: &mut impl openwebide_core::editor::ParagraphReplay,
     ) -> usize {
+        self.paragraph_prefix(paint, row).map_or(0, |prefix| {
+            self.resume_paragraph_prefix_limit(&prefix, plan, usize::MAX)
+        })
+    }
+    pub fn paragraph_prefix(
+        self,
+        paint: &EditorRowPaint,
+        row: usize,
+    ) -> Option<EditorParagraphPrefix> {
         if !self.row_paint_current(paint) {
-            return 0;
+            return None;
         }
         self.workspace
             .editor_paragraph_cache
             .with_untracked(|cache| {
-                let Some(cache) = cache
+                let cache = cache
                     .as_ref()
-                    .filter(|cache| same_measurement_environment(&cache.paint, paint))
-                else {
-                    return 0;
-                };
-                let Some((_, measurements)) = cache.rows.iter().find(|(index, _)| *index == row)
-                else {
-                    return 0;
-                };
-                let Some((old, new)) = paint_row(&cache.paint, row).zip(paint_row(paint, row))
-                else {
-                    return 0;
-                };
-                let Some(body) = cache.paint.projection.line_body(row) else {
-                    return 0;
-                };
-                plan.reuse_prefix(body, measurements, paint_prefix_end(&old, &new))
+                    .filter(|cache| same_measurement_environment(&cache.paint, paint))?;
+                let (_, measurements) = cache.rows.iter().find(|(index, _)| *index == row)?;
+                let (old, new) = paint_row(&cache.paint, row).zip(paint_row(paint, row))?;
+                Some(EditorParagraphPrefix {
+                    scope: paint.clone(),
+                    previous: cache.paint.clone(),
+                    row,
+                    measurements: measurements.clone(),
+                    style_end: paint_prefix_end(&old, &new),
+                })
             })
+    }
+    pub fn resume_paragraph_prefix_batch(
+        self,
+        prefix: &EditorParagraphPrefix,
+        plan: &mut impl openwebide_core::editor::ParagraphReplay,
+    ) -> usize {
+        self.resume_paragraph_prefix_limit(
+            prefix,
+            plan,
+            openwebide_core::editor::MAX_MEASURE_BATCHES_PER_FRAME,
+        )
+    }
+    fn resume_paragraph_prefix_limit(
+        self,
+        prefix: &EditorParagraphPrefix,
+        plan: &mut impl openwebide_core::editor::ParagraphReplay,
+        limit: usize,
+    ) -> usize {
+        if !self.row_paint_current(&prefix.scope) {
+            return 0;
+        }
+        let Some(body) = prefix.previous.projection.line_body(prefix.row) else {
+            return 0;
+        };
+        plan.reuse_prefix_batch(body, &prefix.measurements, prefix.style_end, limit)
     }
     pub fn paragraph_suffix(
         self,

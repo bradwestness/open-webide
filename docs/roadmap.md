@@ -81,8 +81,8 @@ tracks the remaining work rather than every optimization already shipped.
   synchronously. Establish exact browser geometry against the complete renderer;
   retained DOM, canvas widths and approximate Rust advances are insufficient.
 - [ ] **Incremental paragraph updates:** wrapped prefixes and reconnecting
-  source/style-proved suffixes now reuse completed probes, with fresh terminal
-  dimensions. Finish nonreconnecting wrapped updates and extend shifted suffix
+  source/style-proved suffixes now reuse completed probes in yielding batches,
+  with fresh terminal dimensions. Finish nonreconnecting wrapped updates and extend shifted suffix
   reuse to changed long-token and plain-run boundaries; avoid repeated prefix
   segmentation for over-limit styled run tables. Bound initial run-table
   construction and the uncapped/unsupported-boundary fallbacks that still segment
