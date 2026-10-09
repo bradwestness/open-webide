@@ -779,7 +779,9 @@ impl BackendApi {
         &self,
         request: &openwebide_core::AssistanceRequest,
     ) -> Result<Option<String>, String> {
-        self.post("/assistance", request).await
+        let mut request = request.clone();
+        request.input = openwebide_core::assistance::input_excerpt(&request.input);
+        self.post("/assistance", &request).await
     }
     pub async fn model_complete(
         &self,

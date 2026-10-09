@@ -171,6 +171,9 @@ impl TaskActions {
                     .as_ref()
                     .map_or_else(String::new, |entry| entry.draft.title.clone()),
             );
+            state
+                .model
+                .set(entry.as_ref().and_then(|entry| entry.draft.model.clone()));
             state.prompt.set(
                 entry
                     .as_ref()
@@ -262,6 +265,7 @@ impl TaskActions {
                 },
             };
             let draft = TaskDraft {
+                model: state.model.get_untracked(),
                 session_target: state.session_target.get_untracked(),
                 auto_title: state.auto_title.get_untracked(),
                 title: state.title.get_untracked(),

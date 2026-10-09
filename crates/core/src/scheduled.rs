@@ -69,6 +69,9 @@ pub struct TaskDraft {
     pub prompt: String,
     #[serde(default)]
     pub session_id: i64,
+    /// None resolves the session’s current model when the task runs.
+    #[serde(default)]
+    pub model: Option<crate::ModelSelection>,
     pub schedule: Schedule,
     pub enabled: bool,
 }
@@ -82,6 +85,14 @@ impl TaskDraft {
         }
         if self.session_target == SessionTarget::Existing && self.session_id <= 0 {
             return Err("Choose a session for this task.".into());
+        }
+        if let Some(model) = &self.model
+            && (model.server_id <= 0
+                || model.model.trim().is_empty()
+                || model.model.len() > 256
+                || model.model.chars().any(char::is_control))
+        {
+            return Err("Choose a valid server and model for this task.".into());
         }
         self.schedule.validate(now)
     }
@@ -202,6 +213,20 @@ pub fn weekly_cron(time: &str, weekdays: &[u8]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn task_model_defaults_remain_compatible_and_reject_invalid_overrides() {
+        let mut draft: TaskDraft = serde_json::from_value(serde_json::json!({"title":"Task","prompt":"Work","session_id":1,"schedule":{"kind":"once","at":60},"enabled":true})).unwrap();
+        assert!(draft.model.is_none());
+        draft.validate(0).unwrap();
+        for (server_id, model) in [(0, "valid"), (1, " "), (1, "bad\nmodel")] {
+            draft.model = Some(crate::ModelSelection {
+                server_id,
+                model: model.into(),
+            });
+            assert!(draft.validate(0).is_err());
+        }
+    }
+
     #[test]
     fn calendar_choices_and_cron_keep_wall_time_across_dst() {
         assert_eq!(weekly_cron("09:30", &[5, 1, 1]).unwrap(), "30 9 * * 1,5");

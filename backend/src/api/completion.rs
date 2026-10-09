@@ -4,6 +4,18 @@ use crate::state::AppDb;
 use openwebide_core::{AssistanceKind, AssistanceRequest};
 use openwebide_storage::Store;
 
+/// Locate the completed response for one injected prompt, stopping at the next user turn.
+pub(crate) fn after_prompt(messages: &[openwebide_core::ChatMessage], anchor: i64) -> Option<i64> {
+    messages
+        .iter()
+        .skip_while(|message| message.id <= anchor)
+        .take_while(|message| message.role != Role::User)
+        .filter(|message| {
+            message.role == Role::Assistant && message.tool_calls.as_ref().is_none_or(Vec::is_empty)
+        })
+        .last()
+        .map(|message| message.id)
+}
 pub(crate) async fn summary(
     store: &Store<AppDb>,
     user: UserId,
@@ -142,7 +154,7 @@ mod tests {
                     .create_session("session", None, None, project, owner, 1)
                     .await
                     .unwrap();
-                store
+                let prompt = store
                     .insert_message(session.id, Role::User, "run tests", 1)
                     .await
                     .unwrap();
@@ -174,6 +186,10 @@ mod tests {
                     .insert_message(session.id, Role::Assistant, "Different outcome", 4)
                     .await
                     .unwrap();
+                assert_eq!(
+                    after_prompt(&store.list_messages(session.id).await.unwrap(), prompt.id),
+                    Some(failed.id)
+                );
                 assert_eq!(
                     summary(&store, owner, session.id, Some(failed.id))
                         .await

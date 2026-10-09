@@ -52,7 +52,7 @@ pub fn TopBar(
             </Show>
             {children.map(|children| children())}
             {if use_context::<crate::state_actions::omnibar::OmnibarActions>().is_some() { view! { <super::Omnibar /> }.into_any() } else { view! { <input class="form-input omnibar-trigger" aria-label="Search commands, files, projects and sessions" placeholder="Search…" disabled /> }.into_any() }}
-            <button class="btn ghost chat-tab" title="Chat without a project" aria-label="Chat without a project" aria-pressed={move || projects.active_project.get().is_none().to_string()} on:click=move |_| on_select_chat.run(())><super::ui::Icon name=super::ui::IconName::MessageCircle /></button>
+            <button class="btn ghost chat-tab" class:active=move || projects.active_project.get().is_none() title="Chat without a project" aria-label="Chat without a project" aria-pressed={move || projects.active_project.get().is_none().to_string()} on:click=move |_| on_select_chat.run(())><super::ui::Icon name=super::ui::IconName::MessageCircle /></button>
             <Show when=move || auth.username.get().is_some()>
                 <super::dropdown::Dropdown aria_label="Account menu" class="topbar-account" open=account_open label=move || view! { <super::ui::Icon name=super::ui::IconName::User /><span class="topbar-user">{move || auth.username.get().unwrap_or_default()}</span> }>
                     <button type="button" role="menuitem" class="ui-dropdown-item recent-item" aria-label="Settings" on:click=move |_| { account_open.set(false); on_open_settings.run(()); }><super::ui::Icon name=super::ui::IconName::Settings /><span>"Settings"</span></button>

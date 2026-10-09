@@ -117,6 +117,18 @@ impl ContextAssistance {
                     .map(|session| ContextCandidate::Session(session.id, session.name.clone()))
                     .collect::<Vec<_>>()
             }));
+            candidates.retain(|candidate| match candidate {
+                ContextCandidate::File(path) => {
+                    !draft.contains(&openwebide_core::prompt::mention_token(
+                        openwebide_core::prompt::MentionKind::File,
+                        path,
+                    ))
+                }
+                ContextCandidate::Memory(entry) => {
+                    !draft.contains(&format!("(memory #{})", entry.id))
+                }
+                ContextCandidate::Session(id, _) => !draft.contains(&format!("(chat #{id})")),
+            });
             if candidates.is_empty() {
                 return;
             }

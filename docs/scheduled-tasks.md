@@ -25,7 +25,12 @@ new-session approval rules, and remain in the Sessions list with their results.
 Saving an automatic task creates no empty session. **Cancel** dismisses the editor;
 if a save is already in progress, it continues in the background.
 
-Tasks using an existing session use its connection, model profile, memory, tools and normal
+**Model** defaults to **Current session model**, resolved when each run starts.
+Choose a model from any enabled server to override it for this task’s runs.
+An override does not change the destination session’s saved server or model.
+If the selected server becomes unavailable or disabled, the run reports a failure.
+
+Tasks use the chosen model’s profile and the destination session’s memory, tools and normal
 approval rules. Their prompt appears as a user message marked with the task name
 and ID. **Open session** takes you to that conversation. Expand a task to see its
 next run and last result, edit it, pause/resume it, or delete it. Waiting approvals
@@ -54,6 +59,9 @@ Browser folder permissions alone cannot authorize a daemon's filesystem access.
 ## Delivery and recovery
 
 The database stores task definitions, revisions, upcoming runs and history.
+Completed run details summarize the actual final response and tool outcomes using
+the assistance model, with a final-response excerpt if generation is unavailable.
+Failures, cancellation and approval blockers retain their execution details.
 Schedulers poll every five seconds and atomically claim due occurrences. Missed
 occurrences coalesce into one pending prompt after downtime. Each task has at
 most one pending/running occurrence, and each chat has a renewable run lease so

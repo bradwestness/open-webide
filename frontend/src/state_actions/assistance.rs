@@ -47,6 +47,7 @@ impl ChatAssistance {
             let session_id = chat.active_session.get();
             let project_id = projects.active_project.get();
             let streaming = chat.streaming.get();
+            let failure = chat.error.get();
             chat.messages.changed.track();
             revision.update_value(|revision| *revision += 1);
             let request_revision = revision.get_value();
@@ -122,7 +123,10 @@ impl ChatAssistance {
             {
                 return;
             }
-            let input = activity(&items);
+            let mut input = activity(&items);
+            if let Some(failure) = failure {
+                input.push_str(&format!("\nExecution error: {failure}"));
+            }
             spawn_local(async move {
                 // Foreground work wins. Debounce completed turns and navigation.
                 crate::util::sleep_ms(2000).await;
@@ -218,6 +222,7 @@ fn activity(items: &[ConversationItem]) -> String {
                     )
                 ),
                 ConversationItem::Stopped { .. } => "Execution stopped by user".into(),
+                ConversationItem::Notice { text, .. } => format!("Execution notice: {text}"),
                 _ => return None,
             };
             Some(text.chars().take(2000).collect::<String>())

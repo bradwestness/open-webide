@@ -45,7 +45,7 @@ pub async fn generate_text(
         id: 0,
         session_id: 0,
         role: Role::User,
-        content: input.chars().take(24000).collect(),
+        content: openwebide_core::assistance::input_excerpt(input),
         created_at: 0,
         tool_calls: None,
         tool_call_id: None,

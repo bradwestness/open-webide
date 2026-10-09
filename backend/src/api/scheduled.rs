@@ -87,13 +87,19 @@ struct ResultBody {
 pub(crate) async fn result(req: Request, state: &AppState) -> Result<JsonResp, ApiError> {
     let mut body: ResultBody = parse_json(read_body(req, 4096).await?)?;
     if body.result.status == "complete"
-        && let Some((user, session)) = state
+        && let Some((user, session, anchor)) = state
             .store
             .scheduled_run_session(&body.host_id, body.result.run_id)
             .await?
-        && let Some(summary) = super::completion::summary(&state.store, user, session, None).await
     {
-        body.result.detail = summary;
+        let messages = state.store.list_messages(session).await?;
+        let final_message = super::completion::after_prompt(&messages, anchor);
+        if let Some(message) = final_message
+            && let Some(summary) =
+                super::completion::summary(&state.store, user, session, Some(message)).await
+        {
+            body.result.detail = summary;
+        }
     }
     state
         .store

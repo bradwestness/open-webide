@@ -27,6 +27,7 @@ configuration source. Layout and tree preferences sync through your account.
 - [First session](first-session.md): connect a model and review agent changes.
 - [Local and remote projects](workspaces.md): file access and execution capabilities.
 - [Scheduled tasks](scheduled-tasks.md): repeating or one-time prompts and execution hosts.
+- [Assistance model](assistance-model.md): automatic names, recaps, suggestions, Git drafts and search.
 - [Chat commands and goals](chat-controls.md): command discovery, activity,
   manual compaction and saved objectives.
 - [Editor](editor.md): editing, navigation, diffs and previews.

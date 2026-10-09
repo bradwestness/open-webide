@@ -260,6 +260,7 @@ mod tests {
                     assert_eq!(saved.entries[0].title, "My build instructions");
                 }
                 let draft = TaskDraft {
+                    model: None,
                     session_target: openwebide_core::scheduled::SessionTarget::Existing,
                     auto_title: true,
                     title: String::new(),

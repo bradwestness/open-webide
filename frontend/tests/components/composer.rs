@@ -516,6 +516,22 @@ async fn images_paste_drop_pick_remove_normalize_and_send_in_projectless_chat() 
         assert!(
             mounted
                 .root
+                .query_selector(".composer [aria-label='Prompt attachments']")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".prompt-image img")
+                .unwrap()
+                .is_none()
+        );
+        mounted.click("button[aria-label='Prompt attachments']");
+        settle().await;
+        assert!(
+            mounted
+                .root
                 .query_selector(".prompt-image img")
                 .unwrap()
                 .is_some()

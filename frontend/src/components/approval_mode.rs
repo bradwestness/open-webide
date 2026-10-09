@@ -15,6 +15,7 @@ fn color_class(mode: ApprovalMode) -> &'static str {
 #[component]
 pub fn ApprovalModePicker() -> impl IntoView {
     let chat = expect_context::<ChatState>();
+    let composer = use_context::<crate::prompt::Composer>();
     let open = RwSignal::new(false);
     let select_mode = approvals::mode_selector(chat);
     let mode = Signal::derive(move || {
@@ -29,7 +30,7 @@ pub fn ApprovalModePicker() -> impl IntoView {
     view! {
         <super::dropdown::Dropdown class="approval-mode-picker" menu_class="approval-mode-menu" aria_label="Approval mode" trigger_class="btn tui-mode-badge" open=open above=true label=move || view! { <span class=move || color_class(mode.get())>{move || format!("[{}]", mode.get().label().to_uppercase())}</span> }>
             {ApprovalMode::CHOICES.into_iter().map(|choice| view! {
-                <button type="button" class="ui-dropdown-item recent-item" role="menuitemradio" aria-checked=move || (mode.get() == choice).to_string() on:click=move |_| { select_mode.run(choice); open.set(false); }>
+                <button type="button" class="ui-dropdown-item recent-item" role="menuitemradio" aria-checked=move || (mode.get() == choice).to_string() on:click=move |_| { select_mode.run(choice); open.set(false); if let Some(composer) = composer { composer.focus(); } }>
                     <span class="ui-dropdown-item-text">
                         <span class=color_class(choice)>{choice.label()}</span>
                         <span class="ui-dropdown-item-description">{choice.description()}</span>

@@ -128,6 +128,17 @@ pub trait RunBackend: Send + Sync {
         model: Option<&str>,
         editor_context: Option<&EditorContext>,
     ) -> impl Future<Output = Result<RunPlan, String>> + Send;
+    fn queued_run_plan(
+        &self,
+        user: i64,
+        session: i64,
+        content: &str,
+        model: Option<&str>,
+        editor_context: Option<&EditorContext>,
+        _key: openwebide_core::QueuedPromptKey,
+    ) -> impl Future<Output = Result<RunPlan, String>> + Send {
+        self.run_plan(user, session, content, model, editor_context)
+    }
     fn persist_message(
         &self,
         user_id: i64,
@@ -532,6 +543,18 @@ impl RunBackend for BackendClient {
         )
         .await
     }
+    async fn queued_run_plan(
+        &self,
+        user: i64,
+        session: i64,
+        content: &str,
+        model: Option<&str>,
+        editor_context: Option<&EditorContext>,
+        key: openwebide_core::QueuedPromptKey,
+    ) -> Result<RunPlan, String> {
+        self.call(user, "POST", &format!("/sessions/{session}/run-plan"),
+            json!({"content":content,"model":model,"editor_context":editor_context,"queued_prompt":key})).await
+    }
     async fn consume_queued_prompt(
         &self,
         user: i64,
@@ -855,6 +878,45 @@ mod memory_tests {
 #[cfg(test)]
 mod scheduled_tests {
     use super::*;
+    #[tokio::test]
+    async fn queued_plan_adapter_forwards_authoritative_prompt_identity() {
+        let body = r#"{"error":"Queue changed"}"#;
+        let response = format!(
+            "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let (url, captured) =
+            crate::runs::http_client::tests::capture(Box::leak(response.into_boxed_str())).await;
+        let client = BackendClient::new(
+            format!("{url}/api"),
+            "secret".into(),
+            ReqwestHttpClient::default(),
+        );
+        let result = client
+            .queued_run_plan(
+                42,
+                7,
+                "Work",
+                None,
+                None,
+                openwebide_core::QueuedPromptKey { id: 9, revision: 2 },
+            )
+            .await;
+        assert!(result.is_err());
+        let request = captured.await.unwrap();
+        let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("POST /api/sessions/7/run-plan HTTP/1.1"));
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains("x-openwebide-user: 42\r\n")
+        );
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["queued_prompt"], json!({"id":9,"revision":2}));
+        assert_eq!(body["content"], "Work");
+        assert!(body["model"].is_null());
+    }
+
     #[tokio::test]
     async fn schedule_adapters_keep_session_identity_and_service_scope_on_success_and_failure() {
         for status in [200, 409] {

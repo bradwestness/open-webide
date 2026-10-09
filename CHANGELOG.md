@@ -28,6 +28,10 @@ for what's still ahead.
   shared scanner, preserving complete metadata and source-bound publication.
 
 
+- Show suggested chat prompts as inline composer hints; Right Arrow accepts a matching hint without sending. Put clickable follow-up prompts and context suggestions in the history: follow-ups send immediately, while context suggestions attach to the draft. Keep attachments in a compact composer indicator with expandable previews, and restore composer focus after chat actions.
+
+- Restore the projectless chat button’s active accent, background and underline in the app bar.
+
 - Keep automatic task naming separate from scripted child edits in the browser
   approval regression fixture so CI checks the intended approval and history flow.
 
@@ -37,6 +41,8 @@ for what's still ahead.
   same scanner. YAML scalar lookahead and final assembly remain synchronous.
 
 
+- Let scheduled tasks override their run model using a shared dropdown. Default to the current session model at execution time; preserve the session’s saved model in local, remote and projectless chats.
+
 - Retain relative fallback contexts for unchanged embedded syntax bodies across
   source edits and coordinate shifts; rescan changed/new bodies without retaining
   extra source snapshots or bracket tables.
@@ -44,10 +50,14 @@ for what's still ahead.
 - Guide custom cron editing with five labeled fields, range hints, an expression preview, and full-expression paste.
 
 - Use shared form controls and Repeating/One time/Cron tabs in scheduled tasks; keep Cancel available and support existing, new-per-run, or latest active session targets. Resolve automatic targets when due using user defaults, and retain generated sessions and run links.
-- Rename the optional Fast model setting to Assistance model. Add shared bounded
-  generation with primary fallback and a user-owned database cache; refresh
-  automatic session names after six more turns and five minutes, preserving manual
-  names. Show idle chat recaps and suggested next prompts in every workspace mode.
+- Rename Fast model to Assistance model. Use shared bounded generation with primary
+  fallback and a user-owned database cache for automatic session, task and memory
+  names, idle chat recaps, completion summaries, suggested prompts and context,
+  editable Git drafts and related-term session search. Refresh automatic session
+  names after six more turns and five minutes, preserving manual names. Discard
+  stale context and Git results, preserve draft edits, and keep optional work behind
+  active chat. Summarize actual scheduled-task outcomes and notification results;
+  host-backed local runs use the same durable push delivery as remote runs.
 
 
 - Match retained embedded syntax trees across worker batches, allowing yields and

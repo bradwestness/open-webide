@@ -226,19 +226,6 @@ autocomplete) into the editor while keeping the core diagnostics engine
 - Offer the same actions through keyboard and touch controls in both modes.
 
 
-### Assistance model
-
-The shared generation facade, main-model fallback, owned cache, optional-work
-queue, periodic session names, automatic task/memory names, recaps, suggested
-prompts/context, editable Git drafts and related-term search are implemented and
-under verification. Remaining work:
-
-- Show readable activity, completion and scheduled-task notification summaries
-  grounded in actual tool outcomes, including failures and blockers.
-- Verify the complete behavior in local and remote projects and projectless chat,
-  including manual-name protection, model failure, draft edits, stale suggestions,
-  changed Git inputs, bounded requests and active-chat priority.
-
 ### Phone device verification
 
 The compact app/editor rows, universal search, logo drawer, single status footer,

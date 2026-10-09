@@ -1548,3 +1548,294 @@ fn project_memory_run_planning_includes_enabled_context_and_tools_and_omits_proj
         );
     });
 }
+
+#[test]
+fn scheduled_model_overrides_are_run_scoped_in_every_workspace() {
+    use openwebide_core::scheduled::{
+        ExecutionHost, HostBinding, Schedule, SessionTarget, TaskCommand, TaskDraft,
+    };
+    futures::executor::block_on(async {
+        for mode in [
+            None,
+            Some(WorkspaceMode::Local),
+            Some(WorkspaceMode::Remote),
+        ] {
+            let store =
+                openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
+            store.migrate_with(&|_| true).await.unwrap();
+            let user = store
+                .insert_user("owner", "hash", openwebide_core::UserRole::Admin, 0)
+                .await
+                .unwrap()
+                .id;
+            let other = store
+                .insert_user("other", "hash", openwebide_core::UserRole::User, 0)
+                .await
+                .unwrap()
+                .id;
+            let mut servers = Vec::new();
+            for name in ["Session", "Override"] {
+                servers.push(
+                    store
+                        .insert_connection(&NewConnection {
+                            name: name.into(),
+                            kind: openwebide_core::ProviderKind::Ollama,
+                            base_url: "http://localhost:11434".into(),
+                            model: Some(name.into()),
+                            context_limit: Some(8192),
+                        })
+                        .await
+                        .unwrap(),
+                );
+            }
+            let project = match mode {
+                Some(mode) => Some(
+                    store
+                        .create_project(
+                            &NewProject {
+                                name: "Project".into(),
+                                mode,
+                                path: Some("project".into()),
+                            },
+                            user,
+                            0,
+                        )
+                        .await
+                        .unwrap()
+                        .id,
+                ),
+                None => None,
+            };
+            let session = store
+                .create_session("Session", Some(servers[0].id), None, project, user, 0)
+                .await
+                .unwrap();
+            let host = ExecutionHost {
+                id: if mode == Some(WorkspaceMode::Local) {
+                    "paired"
+                } else {
+                    "server"
+                }
+                .into(),
+                name: "Host".into(),
+                last_seen: 0,
+            };
+            let binding = HostBinding {
+                host_id: host.id.clone(),
+                path: "project".into(),
+            };
+            let selection = openwebide_core::ModelSelection {
+                server_id: servers[1].id,
+                model: "chosen-override".into(),
+            };
+            let mut draft = TaskDraft {
+                model: Some(selection.clone()),
+                auto_title: false,
+                title: "Task".into(),
+                prompt: "Do work".into(),
+                session_id: session.id,
+                session_target: SessionTarget::Existing,
+                schedule: Schedule::Cron {
+                    expression: "* * * * *".into(),
+                    timezone: "UTC".into(),
+                },
+                enabled: true,
+            };
+            let task = store
+                .scheduled_command(
+                    user,
+                    project,
+                    &TaskCommand::Create {
+                        draft: draft.clone(),
+                    },
+                    Some(&binding),
+                    false,
+                    0,
+                )
+                .await
+                .unwrap()
+                .remove(0);
+            assert_eq!(task.draft.model, Some(selection.clone()));
+            let delivery = store.due_scheduled(&host, 60).await.unwrap().remove(0);
+            let key = delivery.prompt.key();
+            assert_eq!(
+                store
+                    .scheduled_prompt_model(user, session.id, key)
+                    .await
+                    .unwrap(),
+                Some(selection)
+            );
+            assert!(
+                store
+                    .scheduled_prompt_model(other, session.id, key)
+                    .await
+                    .is_err()
+            );
+            let state = AppState { store };
+            let body = || SendMessageBody {
+                content: delivery.prompt.content.clone(),
+                model: None,
+                editor_context: None,
+                browser_preferences: None,
+                queued_prompt: Some(key),
+            };
+            let plan = build_run_plan(&state, user, session.id, body())
+                .await
+                .unwrap();
+            assert_eq!(plan.connection.id, servers[1].id);
+            assert_eq!(plan.request.model.as_deref(), Some("chosen-override"));
+            assert_eq!(
+                state
+                    .store
+                    .get_session(session.id, user)
+                    .await
+                    .unwrap()
+                    .connection_id,
+                session.connection_id
+            );
+            assert!(
+                state
+                    .store
+                    .get_user_setting(user, &format!("session_model_{}", session.id))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                build_run_plan(&state, other, session.id, body())
+                    .await
+                    .is_err()
+            );
+            let mut disabled = servers[1].clone();
+            disabled.enabled = false;
+            state.store.update_connection(&disabled).await.unwrap();
+            assert!(
+                build_run_plan(&state, user, session.id, body())
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                state
+                    .store
+                    .list_queued_prompts(user, session.id)
+                    .await
+                    .unwrap()[0]
+                    .key(),
+                key
+            );
+            assert!(
+                state
+                    .store
+                    .scheduled_command(
+                        user,
+                        project,
+                        &TaskCommand::Update {
+                            id: task.id,
+                            revision: task.revision,
+                            draft: draft.clone()
+                        },
+                        None,
+                        false,
+                        61
+                    )
+                    .await
+                    .is_err()
+            );
+            state.store.update_connection(&servers[1]).await.unwrap();
+            // Clearing an override invalidates the previous occurrence rather than running stale settings.
+            draft.model = None;
+            let updated = state
+                .store
+                .scheduled_command(
+                    user,
+                    project,
+                    &TaskCommand::Update {
+                        id: task.id,
+                        revision: task.revision,
+                        draft: draft.clone(),
+                    },
+                    None,
+                    false,
+                    61,
+                )
+                .await
+                .unwrap()
+                .remove(0);
+            assert!(updated.draft.model.is_none());
+            assert!(
+                build_run_plan(&state, user, session.id, body())
+                    .await
+                    .is_err()
+            );
+            state
+                .store
+                .set_user_setting(
+                    user,
+                    &format!("session_model_{}", session.id),
+                    &serde_json::json!({"connection_id":servers[0].id,"model":"recently-selected"})
+                        .to_string(),
+                )
+                .await
+                .unwrap();
+            let next = state
+                .store
+                .due_scheduled(&host, 120)
+                .await
+                .unwrap()
+                .remove(0);
+            let mut current = body();
+            current.queued_prompt = Some(next.prompt.key());
+            let plan = build_run_plan(&state, user, session.id, current)
+                .await
+                .unwrap();
+            assert_eq!(plan.connection.id, servers[0].id);
+            assert_eq!(plan.request.model.as_deref(), Some("recently-selected"));
+            let ordinary = state
+                .store
+                .enqueue_prompt(user, session.id, "Ordinary prompt", 121)
+                .await
+                .unwrap();
+            assert!(
+                state
+                    .store
+                    .scheduled_prompt_model(user, session.id, ordinary.key())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let mut ordinary_body = body();
+            ordinary_body.content.clone_from(&ordinary.content);
+            ordinary_body.queued_prompt = Some(ordinary.key());
+            ordinary_body.model = Some("manual-choice".into());
+            let ordinary_plan = build_run_plan(&state, user, session.id, ordinary_body)
+                .await
+                .unwrap();
+            assert_eq!(
+                ordinary_plan.request.model.as_deref(),
+                Some("manual-choice")
+            );
+            draft.model = Some(openwebide_core::ModelSelection {
+                server_id: 99999,
+                model: "missing".into(),
+            });
+            assert!(
+                state
+                    .store
+                    .scheduled_command(
+                        user,
+                        project,
+                        &TaskCommand::Update {
+                            id: updated.id,
+                            revision: updated.revision,
+                            draft
+                        },
+                        None,
+                        false,
+                        121
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+    });
+}

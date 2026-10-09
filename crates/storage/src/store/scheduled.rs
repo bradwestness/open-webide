@@ -70,6 +70,10 @@ impl<D: Db> Store<D> {
                     TaskCommand::List => {},
                     TaskCommand::Create{draft} | TaskCommand::Update{draft,..} => {
                         draft.validate(now).map_err(StorageError::InvalidRequest)?;
+                        if let Some(model) = &draft.model
+                            && !store.get_connection(model.server_id).await?.enabled {
+                            return Err(StorageError::InvalidRequest("The selected model server is disabled.".into()));
+                        }
                         let session_id = if draft.session_target == SessionTarget::Existing {
                             let session = store.get_session(draft.session_id,user).await?;
                             if session.project_id != project { return Err(StorageError::InvalidRequest("Choose a session in this project.".into())); }
@@ -108,6 +112,26 @@ impl<D: Db> Store<D> {
                 store.scheduled_tasks(user,project,now).await
             }).await
         })
+    }
+    /// Resolve a queued task’s override without changing its destination session.
+    pub async fn scheduled_prompt_model(
+        &self,
+        user: UserId,
+        session: i64,
+        key: openwebide_core::QueuedPromptKey,
+    ) -> Result<Option<openwebide_core::ModelSelection>, StorageError> {
+        self.get_session(session, user).await?;
+        let rows = self.db.execute(
+            "SELECT t.draft FROM queued_prompts q LEFT JOIN scheduled_runs r ON r.queued_id=q.id LEFT JOIN scheduled_tasks t ON t.id=r.task_id AND t.user_id=? WHERE q.session_id=? AND q.id=? AND q.revision=?",
+            &[DbValue::Int(user.get()), DbValue::Int(session), DbValue::Int(key.id), DbValue::Int(key.revision)],
+        ).await?;
+        let row = rows.rows.first().ok_or_else(|| {
+            StorageError::Conflict("Queued prompt changed or was removed.".into())
+        })?;
+        row.get_text_opt(0)
+            .map(|draft| decode::<TaskDraft>(draft).map(|draft| draft.model))
+            .transpose()
+            .map(Option::flatten)
     }
     async fn cancel_scheduled_pending(&self, task: i64) -> Result<(), StorageError> {
         self.db.execute("UPDATE scheduled_runs SET status = 'cancelled', detail = 'Task changed before delivery' WHERE task_id = ? AND queued_id IS NOT NULL", &[DbValue::Int(task)]).await?;
@@ -258,11 +282,17 @@ impl<D: Db> Store<D> {
         &self,
         host: &str,
         run: i64,
-    ) -> Result<Option<(UserId, i64)>, StorageError> {
-        let rows = self.db.execute("SELECT t.user_id,m.session_id FROM scheduled_runs r JOIN scheduled_tasks t ON t.id=r.task_id JOIN messages m ON m.id=r.message_id WHERE r.id=? AND t.host_id=? AND r.status IN ('claimed','running','blocked')", &[DbValue::Int(run), DbValue::Text(host.into())]).await?;
+    ) -> Result<Option<(UserId, i64, i64)>, StorageError> {
+        let rows = self.db.execute("SELECT t.user_id,m.session_id,m.id FROM scheduled_runs r JOIN scheduled_tasks t ON t.id=r.task_id JOIN messages m ON m.id=r.message_id WHERE r.id=? AND t.host_id=? AND r.status IN ('claimed','running','blocked')", &[DbValue::Int(run), DbValue::Text(host.into())]).await?;
         rows.rows
             .first()
-            .map(|row| Ok((UserId::new(row.get_int(0)?), row.get_int(1)?)))
+            .map(|row| {
+                Ok((
+                    UserId::new(row.get_int(0)?),
+                    row.get_int(1)?,
+                    row.get_int(2)?,
+                ))
+            })
             .transpose()
     }
     pub async fn scheduled_result(
@@ -359,6 +389,7 @@ mod tests {
                 .unwrap()
                 .id;
             let draft = TaskDraft {
+                model: None,
                 auto_title: false,
                 session_target: SessionTarget::Existing,
                 session_id: session,
@@ -503,6 +534,7 @@ mod tests {
                         path: "project".into(),
                     };
                     let draft = TaskDraft {
+                        model: None,
                         auto_title: false,
                         session_target: target,
                         session_id: 0,
@@ -692,6 +724,7 @@ mod tests {
                     path: "project".into(),
                 };
                 let draft = TaskDraft {
+                    model: None,
                     session_target: SessionTarget::Existing,
                     auto_title: false,
                     title: "Review".into(),
@@ -848,6 +881,7 @@ mod tests {
                 .unwrap()
                 .id;
             let draft = TaskDraft {
+                model: None,
                 session_target: SessionTarget::Existing,
                 auto_title: false,
                 title: "Recurring".into(),
@@ -949,6 +983,7 @@ mod tests {
                 .unwrap()
                 .id;
             let draft = TaskDraft {
+                model: None,
                 session_target: SessionTarget::Existing,
                 auto_title: false,
                 title: "One".into(),

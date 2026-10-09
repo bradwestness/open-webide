@@ -100,9 +100,12 @@ pub async fn serve(config: ServerConfig) {
                         Ok(run) => loop {
                             let (finished, permission) = run.scheduled_status();
                             let (status, detail) = match finished.as_ref() {
-                                Some(openwebide_core::RunEvent::Done { .. }) => {
-                                    ("complete", String::new())
-                                }
+                                Some(openwebide_core::RunEvent::Done { message }) => (
+                                    "complete",
+                                    openwebide_core::assistance::completion_excerpt(
+                                        &message.content,
+                                    ),
+                                ),
                                 Some(openwebide_core::RunEvent::Cancelled) => {
                                     ("cancelled", "Run cancelled".into())
                                 }

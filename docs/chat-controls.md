@@ -11,6 +11,11 @@ command. Clicking an entry also completes it. Escape dismisses the suggestions
 without changing the draft. Image attachments keep the prompt on the normal send
 path rather than executing a slash command.
 
+Attachments appear as a compact paperclip and count beside the send controls.
+Expand it to preview or remove images and detach editor context. File mentions
+remain inline in your prompt. Chat actions return focus to the composer so you
+can type a follow-up.
+
 Use `/help` for commands and shortcuts, or `/help goal` to search the command list.
 `/model` lists models; `/tokens` and `/context` show context accounting.
 

@@ -104,9 +104,9 @@ async fn context_assistance_rejects_invented_ids_and_attaches_only_after_selecti
 async fn assistance_shows_grounded_recaps_and_at_most_two_suggestions() {
     let fake = Rc::new(FakeBackend::default());
     for result in [
-        "Fixed menu icons; tests passed.",
+        "Fixed menu icons; compilation failed.",
         "Review changes\nDraft a commit\nIgnored third suggestion",
-        "Fixed menu icons; tests passed.",
+        "Fixed menu icons; compilation failed.",
     ] {
         let (send, receive) = futures::channel::oneshot::channel();
         send.send(Ok(Some(result.into()))).unwrap();
@@ -117,19 +117,33 @@ async fn assistance_shows_grounded_recaps_and_at_most_two_suggestions() {
     let mounted = mount_test_with_backend(fake, move |state| {
         state.seed_project();
         state.seed_session();
-        state
-            .chat
-            .messages
-            .set(vec![ConversationItem::Message(ChatMessage {
+        state.chat.messages.set(vec![
+            ConversationItem::ToolStep {
+                timing: None,
+                key: 1,
+                id: "call".into(),
+                name: "run_command".into(),
+                summary: "cargo test".into(),
+                result: Some(openwebide_frontend::conversation::ToolStepResult {
+                    ok: false,
+                    summary: "Compilation failed".into(),
+                    diff: None,
+                }),
+                diff: None,
+                note: None,
+                awaiting_permission: false,
+            },
+            ConversationItem::Message(ChatMessage {
                 id: 1,
                 session_id: 1,
                 role: Role::Assistant,
-                content: "<think>private reasoning</think>Fixed icons; tests passed".into(),
+                content: "<think>private reasoning</think>Fixed icons; compilation failed".into(),
                 created_at: 0,
                 tool_calls: None,
                 tool_call_id: None,
                 usage: None,
-            })]);
+            }),
+        ]);
         slot.set(Some(ChatAssistance::new(
             state.api,
             state.auth,
@@ -146,7 +160,7 @@ async fn assistance_shows_grounded_recaps_and_at_most_two_suggestions() {
     let assistance = captured.get().unwrap();
     assert_eq!(
         assistance.recap.get_untracked().as_deref(),
-        Some("Fixed menu icons; tests passed.")
+        Some("Fixed menu icons; compilation failed.")
     );
     assert_eq!(
         assistance.next_actions.get_untracked(),
@@ -160,6 +174,15 @@ async fn assistance_shows_grounded_recaps_and_at_most_two_suggestions() {
             .borrow()
             .iter()
             .all(|request| !request.input.contains("private reasoning"))
+    );
+    assert!(
+        mounted
+            .state
+            .fake
+            .assistance_requests
+            .borrow()
+            .iter()
+            .all(|request| request.input.contains("success=false: Compilation failed"))
     );
     mounted.state.chat.streaming.set(true);
     settle().await;
@@ -440,6 +463,7 @@ async fn assistance_context_files_and_memories_require_selection_and_reject_chan
             mounted.state.chat.draft.get_untracked().contains("@file:")
         })
         .await;
+        settle().await;
         wait_until("refreshed memory candidate", || {
             actions
                 .suggestions
@@ -465,5 +489,378 @@ async fn assistance_context_files_and_memories_require_selection_and_reject_chan
         actions.attach.run(ContextCandidate::Memory(entry));
         settle().await;
         assert_eq!(mounted.state.chat.draft.get_untracked(), original);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn inline_chat_hints_accept_only_at_the_caret_end_in_every_scope() {
+    use super::support::chat_view;
+    use wasm_bindgen::JsCast;
+    for mode in [
+        None,
+        Some(WorkspaceMode::Local),
+        Some(WorkspaceMode::Remote),
+    ] {
+        let fake = Rc::new(FakeBackend::default());
+        for result in [
+            "Recent work",
+            "😀 Review changes\nDraft a commit",
+            "Finished",
+        ] {
+            let (send, receive) = futures::channel::oneshot::channel();
+            send.send(Ok(Some(result.into()))).unwrap();
+            fake.assistance_results.borrow_mut().push_back(receive);
+        }
+        let mounted = mount_test_with_backend(fake, move |state| {
+            state.seed_connection();
+            state.seed_project();
+            state.seed_session();
+            if let Some(mode) = mode {
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+            } else {
+                state.projects.active_project.set(None);
+                state
+                    .chat
+                    .sessions
+                    .update(|sessions| sessions[0].project_id = None);
+            }
+            state.fake.messages.borrow_mut().insert(
+                1,
+                vec![openwebide_core::ConversationEntry::Message(ChatMessage {
+                    id: 1,
+                    session_id: 1,
+                    role: Role::Assistant,
+                    content: "Finished the work".into(),
+                    created_at: 0,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    usage: None,
+                })],
+            );
+            view! { <style>{include_str!("../../styles.css")}".chat-pane .messages { flex: none; height: 40px; }"</style>{chat_view(state)} }
+        });
+        wait_until("inline prompt hint", || {
+            mounted
+                .root
+                .query_selector(".tui-inline-hint")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".messages [aria-label='Suggested next actions']")
+                .unwrap()
+                .is_some()
+        );
+        let history = mounted
+            .element(".messages")
+            .unchecked_into::<web_sys::HtmlElement>();
+        wait_until("history suggestions visible after arrival", || {
+            f64::from(history.scroll_height() - history.client_height()) - history.scroll_top()
+                <= 1.0
+        })
+        .await;
+        let input = mounted
+            .element(".composer-input")
+            .unchecked_into::<web_sys::HtmlTextAreaElement>();
+        assert!(
+            input.value().is_empty(),
+            "Hints must not become input until accepted"
+        );
+        assert!(
+            mounted
+                .element(".tui-inline-hint")
+                .text_content()
+                .unwrap()
+                .contains("😀 Review changes")
+        );
+        let key = |shift, ctrl, alt, meta, composing| {
+            let init = web_sys::KeyboardEventInit::new();
+            init.set_key("ArrowRight");
+            init.set_code("ArrowRight");
+            init.set_shift_key(shift);
+            init.set_ctrl_key(ctrl);
+            init.set_alt_key(alt);
+            init.set_meta_key(meta);
+            init.set_is_composing(composing);
+            init.set_bubbles(true);
+            init.set_cancelable(true);
+            input
+                .dispatch_event(
+                    &web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
+                        .unwrap(),
+                )
+                .unwrap()
+        };
+        for (shift, ctrl, alt, meta, composing) in [
+            (true, false, false, false, false),
+            (false, true, false, false, false),
+            (false, false, true, false, false),
+            (false, false, false, true, false),
+            (false, false, false, false, true),
+        ] {
+            assert!(key(shift, ctrl, alt, meta, composing));
+            assert!(mounted.state.chat.draft.get_untracked().is_empty());
+        }
+        assert!(!key(false, false, false, false, false));
+        settle().await;
+        assert_eq!(
+            mounted.state.chat.draft.get_untracked(),
+            "😀 Review changes"
+        );
+        assert_eq!(input.selection_start().unwrap(), Some(17));
+        assert_eq!(input.selection_end().unwrap(), Some(17));
+        assert!(
+            mounted
+                .root
+                .query_selector(".tui-inline-hint")
+                .unwrap()
+                .is_none()
+        );
+        mounted.input("😀 Rev");
+        settle().await;
+        input.set_selection_range(2, 2).unwrap();
+        assert!(
+            key(false, false, false, false, false),
+            "Right moves normally inside the input"
+        );
+        input.set_selection_range(2, 6).unwrap();
+        assert!(
+            key(false, false, false, false, false),
+            "Right must not overwrite selected text"
+        );
+        input.set_selection_range(6, 6).unwrap();
+        assert!(!key(false, false, false, false, false));
+        settle().await;
+        assert_eq!(
+            mounted.state.chat.draft.get_untracked(),
+            "😀 Review changes"
+        );
+        mounted.input("Draft");
+        settle().await;
+        input.set_selection_range(5, 5).unwrap();
+        assert!(!key(false, false, false, false, false));
+        settle().await;
+        assert_eq!(mounted.state.chat.draft.get_untracked(), "Draft a commit");
+        mounted.input("Different question");
+        settle().await;
+        assert!(key(false, false, false, false, false));
+        assert_eq!(
+            mounted.state.chat.draft.get_untracked(),
+            "Different question"
+        );
+        let (send, receive) = futures::channel::oneshot::channel();
+        send.send(Ok(Some("session:2".into()))).unwrap();
+        mounted
+            .state
+            .fake
+            .assistance_results
+            .borrow_mut()
+            .push_back(receive);
+        mounted.state.chat.sessions.update(|sessions| {
+            let mut other = sessions[0].clone();
+            other.id = 2;
+            other.name = "Related chat".into();
+            sessions.push(other);
+        });
+        wait_until("context hints in history", || {
+            mounted
+                .root
+                .query_selector(".messages [aria-label='Suggested context']")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".chat-pane > .chat-context-suggestions")
+                .unwrap()
+                .is_none()
+        );
+        mounted.input("");
+        settle().await;
+        mounted.state.chat.streaming.set(true);
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".tui-inline-hint")
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+async fn chat_actions_send_followups_immediately_and_restore_composer_focus() {
+    use openwebide_frontend::components::ChatPane;
+    use openwebide_frontend::state_actions::prompt_queue::PromptQueueActions;
+    use wasm_bindgen::JsCast;
+    for mode in [
+        None,
+        Some(WorkspaceMode::Local),
+        Some(WorkspaceMode::Remote),
+    ] {
+        let fake = Rc::new(FakeBackend::default());
+        for result in ["Recent work", "Review changes\nDraft a commit", "Finished"] {
+            let (send, receive) = futures::channel::oneshot::channel();
+            send.send(Ok(Some(result.into()))).unwrap();
+            fake.assistance_results.borrow_mut().push_back(receive);
+        }
+        let sent = RwSignal::new(Vec::<String>::new());
+        let queued = RwSignal::new(Vec::<String>::new());
+        let steered = RwSignal::new(Vec::<String>::new());
+        let stopped = RwSignal::new(0);
+        let mounted = mount_test_with_backend(fake, move |state| {
+            state.seed_connection();
+            state.seed_project();
+            state.seed_session();
+            if let Some(mode) = mode {
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+            } else {
+                state.projects.active_project.set(None);
+                state
+                    .chat
+                    .sessions
+                    .update(|sessions| sessions[0].project_id = None);
+            }
+            let chat = state.chat;
+            chat.messages.update(|messages| {
+                messages.push(ConversationItem::Message(ChatMessage {
+                    id: 1,
+                    session_id: 1,
+                    role: Role::Assistant,
+                    content: "Finished".into(),
+                    created_at: 0,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    usage: None,
+                }));
+            });
+            let queue = PromptQueueActions {
+                enqueue: Callback::new(move |()| {
+                    queued.update(|values| values.push(chat.draft.get_untracked()));
+                    chat.draft.set(String::new());
+                }),
+                steer: Callback::new(move |()| {
+                    steered.update(|values| values.push(chat.draft.get_untracked()));
+                    chat.draft.set(String::new());
+                    chat.streaming.set(false);
+                }),
+                edit: Callback::new(|_| ()),
+                remove: Callback::new(|_| ()),
+                toggle: Callback::new(|()| ()),
+                cancel_edit: Callback::new(|()| ()),
+            };
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <ChatPane on_select_connection_model=Callback::new(|_|()) on_send=Callback::new(move |()| {
+                    sent.update(|values| values.push(chat.draft.get_untracked())); chat.draft.set(String::new()); chat.streaming.set(true);
+                }) on_resume_run=Callback::new(|()|()) on_stop=Callback::new(move |()| { stopped.update(|count| *count += 1); chat.streaming.set(false); })
+                    on_permission=Callback::new(|_|()) on_permission_always=Callback::new(|_|()) on_slash_command=Callback::new(|_|()) queue_actions=queue/>
+            }
+        });
+        wait_until("clickable history followups", || {
+            mounted
+                .root
+                .query_selector(".messages .chat-followups button")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let input = mounted.element(".composer-input");
+        let focused = || {
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .active_element()
+                .is_some_and(|active| active.is_same_node(Some(input.as_ref())))
+        };
+        let click = |selector: &str| {
+            mounted
+                .element(selector)
+                .unchecked_into::<web_sys::HtmlElement>()
+                .focus()
+                .unwrap();
+            mounted.click(selector);
+        };
+        input
+            .clone()
+            .unchecked_into::<web_sys::HtmlTextAreaElement>()
+            .blur()
+            .unwrap();
+        assert!(!focused());
+        mounted.click_text("Draft a commit");
+        settle().await;
+        assert_eq!(sent.get_untracked(), ["Draft a commit"]);
+        wait_until("focus after suggested prompt", focused).await;
+        assert!(mounted.state.chat.draft.get_untracked().is_empty());
+        mounted.input("Change direction");
+        settle().await;
+        click("button[aria-label='Steer']");
+        settle().await;
+        assert_eq!(steered.get_untracked(), ["Change direction"]);
+        wait_until("focus after steer", focused).await;
+        mounted.state.chat.streaming.set(true);
+        mounted.input("Follow up");
+        settle().await;
+        click("button[aria-label='Queue follow-up']");
+        settle().await;
+        assert_eq!(queued.get_untracked(), ["Follow up"]);
+        wait_until("focus after queue", focused).await;
+        click("button[aria-label='Stop']");
+        settle().await;
+        assert_eq!(stopped.get_untracked(), 1);
+        wait_until("focus after stop", focused).await;
+        mounted
+            .state
+            .chat
+            .active_editor_context
+            .set(Some(openwebide_core::EditorContext {
+                file_path: "src/main.rs".into(),
+                cursor_line: 1,
+                cursor_col: 1,
+                selection: None,
+            }));
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".tui-active-context-pill")
+                .unwrap()
+                .is_none()
+        );
+        click(".composer button[aria-label='Prompt attachments']");
+        settle().await;
+        click("button[aria-label='Detach editor context']");
+        settle().await;
+        assert!(
+            mounted
+                .state
+                .chat
+                .active_editor_context
+                .get_untracked()
+                .is_none()
+        );
+        wait_until("focus after detaching context", focused).await;
+        mounted.input("Another prompt");
+        settle().await;
+        click("button[aria-label='Send']");
+        settle().await;
+        assert_eq!(sent.get_untracked(), ["Draft a commit", "Another prompt"]);
+        wait_until("focus after send", focused).await;
+        // IME and keyboard tests elsewhere retain the native textarea as the typing target.
+        let textarea = input.unchecked_into::<web_sys::HtmlTextAreaElement>();
+        assert_eq!(textarea.value(), "");
     }
 }

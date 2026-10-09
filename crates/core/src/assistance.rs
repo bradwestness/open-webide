@@ -138,3 +138,26 @@ pub fn completion_excerpt(content: &str) -> String {
         .take(240)
         .collect()
 }
+
+/// Bound optional model inputs by bytes without splitting Unicode text.
+pub fn input_excerpt(content: &str) -> String {
+    let mut end = content.len().min(24 * 1024);
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    content[..end].to_owned()
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn excerpts_keep_unicode_boundaries_and_remove_hidden_completion_details() {
+        let source = "🦀".repeat(10000);
+        let excerpt = super::input_excerpt(&source);
+        assert!(excerpt.len() <= 24 * 1024);
+        assert!(source.starts_with(&excerpt));
+        assert_eq!(
+            super::completion_excerpt("<think>private</think>Tests failed\0\nRetry needed"),
+            "Tests failed Retry needed"
+        );
+    }
+}

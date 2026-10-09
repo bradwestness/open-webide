@@ -249,3 +249,93 @@ async fn cron_fields_support_full_paste_and_preserve_empty_segments() {
     assert_eq!(input("Cron hour").value(), "12");
     assert_eq!(input("Cron day of week").value(), "1-5");
 }
+
+#[wasm_bindgen_test]
+async fn task_model_dropdown_saves_reopens_and_clears_override_in_every_scope() {
+    use openwebide_core::{ModelInfo, ModelSelection, WorkspaceMode};
+    for mode in [
+        None,
+        Some(WorkspaceMode::Local),
+        Some(WorkspaceMode::Remote),
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.seed_session();
+            state.seed_connection();
+            if let Some(mode) = mode {
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+            } else {
+                state.projects.active_project.set(None);
+                state
+                    .chat
+                    .sessions
+                    .update(|sessions| sessions[0].project_id = None);
+            }
+            *state.fake.models.borrow_mut() = vec![ModelInfo {
+                name: "task-model".into(),
+            }];
+            view! {<openwebide_frontend::components::scheduled::ScheduledTasks on_select=Callback::new(|_|())/>}
+        });
+        settle().await;
+        mounted.click("[aria-label='New task']");
+        settle().await;
+        assert!(mounted.root.query_selector("select").unwrap().is_none());
+        assert!(
+            mounted
+                .element("[aria-label='Task model']")
+                .text_content()
+                .unwrap()
+                .contains("Current session model")
+        );
+        mounted.click("[aria-label='Task model']");
+        settle().await;
+        mounted.click_text("task-model @ Ollama");
+        let selected = ModelSelection {
+            server_id: 1,
+            model: "task-model".into(),
+        };
+        assert_eq!(
+            mounted.state.scheduled.model.get_untracked(),
+            Some(selected.clone())
+        );
+        mounted.state.scheduled.title.set("Task".into());
+        mounted.state.scheduled.prompt.set("Do work".into());
+        mounted.click_text("Save task");
+        settle().await;
+        if mode == Some(WorkspaceMode::Local) {
+            // Unpaired local folders retain the editor choice and require a host before saving.
+            assert!(mounted.state.fake.scheduled.borrow().is_empty());
+            assert!(mounted.state.scheduled.error.get_untracked().is_some());
+            assert_eq!(
+                mounted.state.scheduled.model.get_untracked(),
+                Some(selected)
+            );
+            continue;
+        }
+        assert_eq!(
+            mounted.state.fake.scheduled.borrow()[0].draft.model,
+            Some(selected.clone())
+        );
+        mounted.click(".scheduled-tasks .ui-disclosure-toggle");
+        mounted.click_text("Edit");
+        settle().await;
+        assert_eq!(
+            mounted.state.scheduled.model.get_untracked(),
+            Some(selected)
+        );
+        mounted.click("[aria-label='Task model']");
+        settle().await;
+        mounted.click_text("Current session model");
+        mounted.click_text("Save task");
+        settle().await;
+        assert!(
+            mounted.state.fake.scheduled.borrow()[0]
+                .draft
+                .model
+                .is_none()
+        );
+    }
+}

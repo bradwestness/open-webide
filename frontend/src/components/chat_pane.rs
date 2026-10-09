@@ -724,8 +724,6 @@ pub fn ChatPane(
     let draft = chat.draft.read_only();
     let set_draft = chat.draft.write_only();
     let models = chat.models.read_only();
-    let active_context = chat.active_editor_context.read_only();
-    let set_active_context = chat.active_editor_context.write_only();
     let session_telemetry = chat.session_telemetry.read_only();
     let has_session = chat.has_session;
     let local_mode = Signal::from(projects.local_mode);
@@ -733,6 +731,36 @@ pub fn ChatPane(
     let input_ref = NodeRef::<leptos::html::Textarea>::new();
     crate::viewport::install_composer(input_ref);
     let prompt_composer = crate::prompt::Composer::new(input_ref);
+    provide_context(prompt_composer);
+    let on_send = prompt_composer.after(on_send);
+    let on_stop = prompt_composer.after(on_stop);
+    let on_resume_run = prompt_composer.after(on_resume_run);
+    let on_permission = prompt_composer.after(on_permission);
+    let on_permission_always = prompt_composer.after(on_permission_always);
+    let on_select_connection_model = prompt_composer.after(on_select_connection_model);
+    let on_rewind = on_rewind.map(|action| prompt_composer.after(action));
+    let context_assistance = crate::state_actions::context_assistance::ContextAssistance {
+        attach: prompt_composer.after(context_assistance.attach),
+        ..context_assistance
+    };
+    let queue_actions =
+        queue_actions.map(
+            |actions| crate::state_actions::prompt_queue::PromptQueueActions {
+                enqueue: prompt_composer.after(actions.enqueue),
+                steer: prompt_composer.after(actions.steer),
+                edit: prompt_composer.after(actions.edit),
+                remove: prompt_composer.after(actions.remove),
+                toggle: prompt_composer.after(actions.toggle),
+                cancel_edit: prompt_composer.after(actions.cancel_edit),
+            },
+        );
+    let conversation_actions = conversation_actions.map(|actions| {
+        crate::state_actions::conversation::ConversationActions {
+            edit: prompt_composer.after(actions.edit),
+            fork: prompt_composer.after(actions.fork),
+            cancel_edit: prompt_composer.after(actions.cancel_edit),
+        }
+    });
     let slash_index = RwSignal::new(0usize);
     let slash_dismissed = RwSignal::new(None::<String>);
     let slash_options = Memo::new(move |_| {
@@ -764,6 +792,37 @@ pub fn ChatPane(
             .copied()
     });
 
+    let composing = RwSignal::new(false);
+    let caret_at_end = RwSignal::new(true);
+    let input_scroll = RwSignal::new((0.0_f64, 0.0_f64));
+    let update_caret = move || {
+        if let Some(input) = input_ref.get_untracked() {
+            let end = u32::try_from(input.value().encode_utf16().count()).ok();
+            caret_at_end.set(
+                input.selection_start().ok().flatten() == end
+                    && input.selection_end().ok().flatten() == end,
+            );
+        }
+    };
+    let inline_hint = Memo::new(move |_| {
+        if streaming.get()
+            || composing.get()
+            || chat.awaiting_step_id.get().is_some()
+            || chat.prompt_edit.get().is_some()
+            || chat.queue_edit.get().is_some()
+            || !slash_options.with(Vec::is_empty)
+        {
+            return None;
+        }
+        let prefix = draft.get();
+        assistance.next_actions.with(|prompts| {
+            prompts
+                .iter()
+                .find(|prompt| prompt.starts_with(&prefix) && prompt.len() > prefix.len())
+                .cloned()
+        })
+    });
+
     // Readline prompt history state
     let prompt_history = chat.prompt_history;
     let history_index = RwSignal::new(Option::<usize>::None);
@@ -785,9 +844,13 @@ pub fn ChatPane(
     // Keep the newest message in view as tokens arrive.
     Effect::new(move || {
         messages.changed.get();
-        if let Some(el) = scroll_ref.get() {
-            el.set_scroll_top(f64::from(el.scroll_height()));
-        }
+        assistance.next_actions.track();
+        context_assistance.suggestions.track();
+        leptos::leptos_dom::helpers::request_animation_frame(move || {
+            if let Some(Some(el)) = scroll_ref.try_get_untracked() {
+                el.set_scroll_top(f64::from(el.scroll_height()));
+            }
+        });
     });
 
     // Mirror the draft signal into the textarea so it clears after a send.
@@ -801,6 +864,16 @@ pub fn ChatPane(
         }
     });
 
+    let submission_blocked = Memo::new(move |_| {
+        chat.compacting.get()
+            || chat.goal_busy.get()
+            || chat.branching.get()
+            || chat.queue_busy.get()
+            || chat.rewinding.get()
+            || reviews.is_some_and(|state| state.busy.get().is_some())
+            || chat.creating_session.get()
+            || chat.reading_images.get()
+    });
     let submit_or_command = {
         move || {
             let current = draft.get().trim().to_string();
@@ -833,10 +906,17 @@ pub fn ChatPane(
     view! {
         <main
             class="chat-pane tui-pane"
+            on:click=move |event: web_sys::MouseEvent| {
+                if let Some(target) = event.target().and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    && let Ok(Some(button)) = target.closest("button")
+                    && !button.has_attribute("aria-haspopup")
+                { prompt_composer.focus(); }
+            }
                 on:dragover=move |event: web_sys::DragEvent| { if event.data_transfer().is_some_and(|transfer| transfer.types().includes(&wasm_bindgen::JsValue::from_str("Files"), 0)) { event.prevent_default(); } }
                 on:drop=move |event: web_sys::DragEvent| { if let Some(files) = event.data_transfer().and_then(|transfer| transfer.files()) && files.length() > 0 { event.prevent_default(); prompt_composer.import(files); } }
             style=move || format!("width: {}px; flex: none;", layout.chat_width.get())
         >
+            <div class="messages tui-stream" node_ref=scroll_ref>
             <Show
                 when=move || !messages.handles.with(Vec::is_empty)
                 fallback=move || {
@@ -856,7 +936,6 @@ pub fn ChatPane(
                     }
                 }
             >
-                <div class="messages tui-stream" node_ref=scroll_ref>
                     <div class="tui-stream-spacer"></div>
                     <Show when=move || assistance.recap.get().is_some() && !streaming.get()>
                         <details class="chat-recap"><summary>"Where you left off"</summary><p class="form-hint">{move || assistance.recap.get().unwrap_or_default()}</p></details>
@@ -931,8 +1010,32 @@ pub fn ChatPane(
                             <button class="btn" on:click=move |_| chat.dismiss_interrupted_run()>"Dismiss"</button>
                         </div>
                     </Show>
+            </Show>
+            <Show when=move || !assistance.next_actions.with(Vec::is_empty) && !streaming.get() && draft.get().is_empty() && chat.prompt_images.with(Vec::is_empty) && chat.prompt_edit.get().is_none() && chat.queue_edit.get().is_none()>
+                <div class="chat-followups" aria-label="Suggested next actions">
+                    {move || assistance.next_actions.get().into_iter().map(|prompt| {
+                        let label = prompt.clone();
+                        view! { <button class="btn ghost" type="button" disabled=move || submission_blocked.get() on:click=move |_| {
+                            if !submission_blocked.get_untracked() && !streaming.get_untracked() && chat.draft.get_untracked().is_empty() && chat.prompt_images.with_untracked(Vec::is_empty) {
+                                history_index.set(None);
+                                prompt_history.update(|history| crate::history::push_history(history, prompt.clone()));
+                                chat.draft.set(prompt.clone());
+                                on_send.run(());
+                            }
+                        }>{label}</button> }
+                    }).collect::<Vec<_>>()}
                 </div>
             </Show>
+            <Show when=move || !context_assistance.suggestions.with(Vec::is_empty)>
+                <div class="chat-context-suggestions" aria-label="Suggested context">
+                    {move || context_assistance.suggestions.get().into_iter().map(|candidate| {
+                        let label = candidate.label();
+                        view! { <button class="btn ghost" title="Attach this context" on:click=move |_| context_assistance.attach.run(candidate.clone())><super::ui::Icon name=super::ui::IconName::Paperclip/>{label}</button> }
+                    }).collect::<Vec<_>>()}
+                </div>
+            </Show>
+            <Show when=move || context_assistance.error.get().is_some()><p class="form-hint" role="alert">{move || context_assistance.error.get().unwrap_or_default()}</p></Show>
+            </div>
 
             <TuiStatusLine
                 streaming=streaming
@@ -943,35 +1046,9 @@ pub fn ChatPane(
                 on_select_connection_model=on_select_connection_model
             />
 
-            <Show when=move || active_context.get().is_some() fallback=|| ()>
-                <div class="tui-active-context-pill">
-                    <span class="pill-icon"><crate::components::ui::Icon name=crate::components::ui::IconName::Paperclip /></span>
-                    <span class="pill-text">
-                        {move || active_context.get().as_ref().map(openwebide_core::EditorContext::pill_label).unwrap_or_default()}
-                    </span>
-                    <button
-                        class="pill-dismiss"
-                        title="Detach editor context (Esc)"
-                        on:click=move |_| set_active_context.set(None)
-                    >
-                        <crate::components::ui::Icon name=crate::components::ui::IconName::X />
-                    </button>
-                </div>
-            </Show>
-
             <Show when=move || chat.compacting.get()><p class="form-hint" role="status">"Compacting conversation…" <button class="btn stop" on:click=move |_| on_stop.run(())>"Stop"</button></p></Show>
             <super::goal::GoalNotice />
             <super::todo_plan::TodoPlanPanel />
-            <Show when=move || !context_assistance.suggestions.with(Vec::is_empty)>
-                <div class="chat-next-actions" aria-label="Suggested context">
-                    {move || context_assistance.suggestions.get().into_iter().map(|candidate| {
-                        let label = candidate.label();
-                        view! { <button class="btn ghost" title="Attach this context" on:click=move |_| context_assistance.attach.run(candidate.clone())><super::ui::Icon name=super::ui::IconName::Paperclip/>{label}</button> }
-                    }).collect::<Vec<_>>()}
-                </div>
-            </Show>
-            <Show when=move || context_assistance.error.get().is_some()><p class="form-hint" role="alert">{move || context_assistance.error.get().unwrap_or_default()}</p></Show>
-            <crate::prompt::PromptControls composer=prompt_composer />
             <Show when=move || chat.prompt_edit.get().is_some()>
                 <div class="tui-prompt-edit"><span>"Editing an earlier prompt. Send starts a new branch."</span>
                     {conversation_actions.map(|actions| view! { <button class="btn ghost" disabled=move || streaming.get() on:click=move |_| actions.cancel_edit.run(())>"Cancel edit"</button> })}
@@ -989,30 +1066,25 @@ pub fn ChatPane(
                 </div>
             </Show>
             <Show when=move || slash_hint.get().is_some()><p class="form-hint slash-hint">{move || slash_hint.get().map(|info| format!("{} {} · {}", info.command, info.arguments, info.description))}</p></Show>
-            <Show when=move || !assistance.next_actions.with(Vec::is_empty) && !streaming.get() && draft.get().is_empty()>
-                <div class="chat-next-actions" aria-label="Suggested next actions">
-                    {move || assistance.next_actions.get().into_iter().map(|prompt| {
-                        let label = prompt.clone();
-                        view! { <button class="btn" type="button" on:click=move |_| {
-                            if chat.draft.get_untracked().is_empty() { chat.draft.set(prompt.clone()); }
-                        }>{label}</button> }
-                    }).collect::<Vec<_>>()}
-                </div>
-            </Show>
             <div class="composer tui-composer" class:is-streaming=move || streaming.get()>
                 <span class="tui-prompt-glyph">"❯"</span>
+                <div class="tui-input-shell">
+                <crate::prompt::MentionSuggestions composer=prompt_composer/>
                 <textarea
                     class="composer-input tui-input"
                     rows="1"
                     aria-label="Chat message"
-                    aria-autocomplete="list"
+                    aria-autocomplete=move || if inline_hint.get().is_some() {"both"} else {"list"}
+                    aria-describedby=move || (inline_hint.get().is_some() && caret_at_end.get()).then_some("composer-inline-hint")
                     aria-controls="slash-suggestions"
                     aria-expanded=move || (!slash_options.with(Vec::is_empty)).to_string()
                     aria-activedescendant=move || (!slash_options.with(Vec::is_empty)).then(|| format!("slash-option-{}", slash_index.get()))
-                    title="Enter to send or queue; Ctrl/⌘+Enter to steer; Escape to stop; Shift/Alt+Enter for a newline; Up/Down for history; paste/drop images; @ for file references"
+                    title="Enter to send or queue; Ctrl/⌘+Enter to steer; Escape to stop; Shift/Alt+Enter for a newline; Up/Down for history; Right Arrow accepts a hint at the end of the input; paste/drop images; @ for file references"
                     node_ref=input_ref
                     placeholder=move || {
-                        if let Some((_, name)) = awaiting_step.get() {
+                        if inline_hint.get().is_some() && caret_at_end.get() {
+                            ""
+                        } else if let Some((_, name)) = awaiting_step.get() {
                             if name == "write_file" {
                                 "? Tool awaiting approval: press [Alt+Y]es, [Alt+N]o, or [Alt+A]uto-accept edits..."
                             } else {
@@ -1027,13 +1099,18 @@ pub fn ChatPane(
                         }
                     }
                     on:paste=move |event: web_sys::ClipboardEvent| { if let Some(files) = event.clipboard_data().and_then(|data| data.files()) && files.length() > 0 { event.prevent_default(); prompt_composer.import(files); } }
-                    on:click=move |_| prompt_composer.update()
-                    on:keyup=move |event: web_sys::KeyboardEvent| { if !["ArrowUp", "ArrowDown", "Escape", "Enter", "Tab"].contains(&event.key().as_str()) { prompt_composer.update(); } }
+                    on:compositionstart=move |_| composing.set(true)
+                    on:compositionend=move |_| { composing.set(false); update_caret(); }
+                    on:select=move |_| update_caret()
+                    on:scroll=move |_| { if let Some(input) = input_ref.get_untracked() { input_scroll.set((input.scroll_left(), input.scroll_top())); } }
+                    on:click=move |_| { update_caret(); prompt_composer.update(); }
+                    on:keyup=move |event: web_sys::KeyboardEvent| { update_caret(); if !["ArrowUp", "ArrowDown", "Escape", "Enter", "Tab"].contains(&event.key().as_str()) { prompt_composer.update(); } }
                     on:input=move |e: web_sys::Event| {
                         if let Some(target) = e.target()
                             && let Some(textarea) = target.dyn_ref::<web_sys::HtmlTextAreaElement>()
                         {
                             set_draft.set(textarea.value());
+                            update_caret();
                             slash_index.set(0);
                             slash_dismissed.set(None);
                             prompt_composer.update();
@@ -1059,6 +1136,27 @@ pub fn ChatPane(
                             }
                             if prompt_composer.key(&e) { return; }
                             let key = e.key();
+                            if key == "ArrowRight" && !e.ctrl_key() && !e.meta_key() && !e.alt_key() && !e.shift_key()
+                                && let Some(hint) = inline_hint.get_untracked()
+                                && let Some(input) = input_ref.get_untracked()
+                            {
+                                let value = input.value();
+                                let end = u32::try_from(value.encode_utf16().count()).ok();
+                                if value == draft.get_untracked()
+                                    && input.selection_start().ok().flatten() == end
+                                    && input.selection_end().ok().flatten() == end
+                                {
+                                    e.prevent_default();
+                                    set_draft.set(hint.clone());
+                                    history_index.set(None);
+                                    input.set_value(&hint);
+                                    let end = u32::try_from(hint.encode_utf16().count()).unwrap_or(u32::MAX);
+                                    let _ = input.set_selection_range(end, end);
+                                    update_caret();
+                                    prompt_composer.update();
+                                    return;
+                                }
+                            }
                             // Intercept permission handshake if waiting for approval
                             if let Some((id, name)) = awaiting_step.get()
                                 && e.alt_key() && !e.ctrl_key() && !e.meta_key()
@@ -1140,9 +1238,9 @@ pub fn ChatPane(
 
                             // Esc detaches context pill if draft is empty, or cancels run if streaming
                             if key == "Escape" {
-                                if active_context.get().is_some() && draft.get().trim().is_empty() {
+                                if chat.active_editor_context.get().is_some() && draft.get().trim().is_empty() {
                                     e.prevent_default();
-                                    set_active_context.set(None);
+                                    chat.active_editor_context.set(None);
                                     return;
                                 }
                                 if streaming.get() {
@@ -1169,7 +1267,14 @@ pub fn ChatPane(
                         }
                     }
                 />
+                <Show when=move || inline_hint.get().is_some() && caret_at_end.get()>
+                    <div class="tui-inline-hint" aria-hidden="true"><div style=move || { let (left, top) = input_scroll.get(); format!("transform:translate({}px,{}px)",-left,-top) }><span class="tui-hint-prefix">{move || draft.get()}</span>{move || inline_hint.get().and_then(|hint| hint.strip_prefix(&draft.get()).map(str::to_owned))}</div></div>
+                    <span class="sr-only" id="composer-inline-hint">{move || inline_hint.get().map(|hint| format!("Suggestion: {hint}. Press Right Arrow to accept."))}</span>
+                </Show>
+                </div>
 
+                <div class="tui-composer-actions">
+                <crate::prompt::PromptControls composer=prompt_composer/>
                 <Show
                     when=move || streaming.get()
                     fallback=move || {
@@ -1179,7 +1284,7 @@ pub fn ChatPane(
                                 class="btn send tui-btn-send ui-icon"
                                 title="Send (Enter)"
                                 aria-label=move || if chat.queue_edit.get().is_some() { "Save queued prompt" } else if chat.prompt_edit.get().is_some() { "Send edit" } else { "Send" }
-                                disabled=move || chat.compacting.get() || chat.goal_busy.get() || chat.branching.get() || chat.queue_busy.get() || chat.rewinding.get() || reviews.is_some_and(|state| state.busy.get().is_some()) || chat.creating_session.get() || chat.reading_images.get() || (draft.with(|d| d.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty))
+                                disabled=move || submission_blocked.get() || (draft.with(|d| d.trim().is_empty()) && chat.prompt_images.with(Vec::is_empty))
                                 on:click=move |_| submit()
                             >
                                 <super::ui::Icon name=super::ui::IconName::ArrowUp /><span class="sr-only">{move || if chat.queue_edit.get().is_some() { "Save queued prompt" } else if chat.prompt_edit.get().is_some() { "Send edit" } else { "Send" }}</span>
@@ -1193,6 +1298,7 @@ pub fn ChatPane(
                     })}
                     <button class="btn stop tui-btn-stop ui-icon" title="Stop (Escape)" aria-label="Stop" on:click=move |_| on_stop.run(())><super::ui::Icon name=super::ui::IconName::Square /><span class="sr-only">"Stop"</span></button>
                 </Show>
+                </div>
             </div>
         </main>
     }

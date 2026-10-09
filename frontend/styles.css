@@ -2796,8 +2796,12 @@ button.browser-item {
 .context-breakdown-list > div { display: flex; justify-content: space-between; gap: 12px; margin: 8px 0; }
 .context-breakdown-list dd { font-family: var(--mono); margin: 0; }
 
-.prompt-attachments { position: relative; padding: 6px 10px; border-top: 1px solid var(--border); background: var(--bg-panel); }
-.prompt-attachments > .muted { margin-left: 8px; font-size: 11px; }
+.prompt-attachments { display: contents; }
+.prompt-attachment-menu .ui-dropdown-trigger { min-height: 44px; }
+.prompt-attachment-count { font-size: var(--font-caption); color: var(--accent); }
+.prompt-attachment-menu .ui-dropdown-menu { padding: var(--space-2); min-width: 220px; max-width: min(360px, calc(100vw - 24px)); }
+.prompt-editor-context { display: flex; align-items: center; gap: var(--space-2); font-family: var(--mono); font-size: var(--font-caption); }
+.prompt-editor-context > span { flex: 1; overflow-wrap: anywhere; }
 .prompt-image-list { display: flex; flex-wrap: wrap; gap: 8px; }
 .prompt-image { display: flex; align-items: center; gap: 6px; margin-top: 6px; border: 1px solid var(--border); padding: 4px; max-width: 100%; }
 .prompt-image img { width: 56px; height: 56px; object-fit: contain; }
@@ -2805,7 +2809,7 @@ button.browser-item {
 .prompt-history-image { max-width: 240px; max-height: 180px; object-fit: contain; border: 1px solid var(--border); }
 .prompt-reference { margin: 6px 0; color: var(--text-muted); }
 .prompt-reference pre { max-height: 180px; overflow: auto; white-space: pre-wrap; font-family: var(--mono); background: var(--bg-panel); padding: 8px; }
-.mention-choices { position: absolute; bottom: 100%; left: 10px; right: 10px; max-height: 240px; overflow: auto; z-index: 20; background: var(--bg-panel); border: 1px solid var(--border); padding: 4px; }
+.mention-choices { position: absolute; bottom: 100%; left: 0; right: 0; max-height: 240px; overflow: auto; z-index: 20; background: var(--bg-panel); border: 1px solid var(--border); padding: 4px; }
 .mention-choices .btn { display: block; width: 100%; text-align: left; }
 .mention-choices .active { background: var(--bg-hover); color: var(--accent); }
 .tui-prompt-queue { border-top: 1px solid var(--border); background: var(--bg-panel); padding: 8px; max-height: 180px; overflow-y: auto; }
@@ -3056,13 +3060,15 @@ button.browser-item {
 .search-file-views { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .search-file-views[hidden], .search-results[hidden] { display: none; }
 
-.tab.active { background: var(--bg-hover); color: var(--accent); border-color: var(--border); box-shadow: inset 0 -2px var(--accent); }
+.tab.active, .btn.chat-tab.active { background: var(--bg-hover); color: var(--accent); border-color: var(--border); box-shadow: inset 0 -2px var(--accent); }
 .tui-composer { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: end; flex: none; }
 .tui-composer .tui-input { height: 44px; min-height: 44px; max-height: none; box-sizing: border-box; resize: none; overflow-y: auto; line-height: 20px; padding: 11px 10px; }
-.tui-composer > .btn { height: 44px; min-height: 44px; box-sizing: border-box; font-family: var(--mono); font-size: var(--font-caption); }
-.tui-composer.is-streaming { grid-template-columns: 12px minmax(0, 1fr) repeat(3, auto); }
-.tui-composer.is-streaming .tui-input { grid-column: 2; }
-.tui-composer.is-streaming > .btn:first-of-type { grid-column: 3; }
+.tui-input-shell { position: relative; min-width: 0; }
+.tui-input-shell .tui-input { display: block; width: 100%; }
+.tui-inline-hint { position: absolute; inset: 0; overflow: hidden; pointer-events: none; padding: 11px 10px; border: 1px solid transparent; font-family: var(--mono); font-size: 13px; line-height: 20px; white-space: pre-wrap; overflow-wrap: break-word; color: var(--text-muted); }
+.tui-hint-prefix { visibility: hidden; }
+.tui-composer-actions > .btn { height: 44px; min-height: 44px; box-sizing: border-box; font-family: var(--mono); font-size: var(--font-caption); }
+.tui-composer-actions { display: flex; align-items: flex-end; gap: var(--space-2); }
 .panel-resizer:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 .ui-icon-glyph { display: inline-flex; vertical-align: middle; flex: none; align-items: center; justify-content: center; pointer-events: none; }
@@ -3216,8 +3222,8 @@ button.browser-item {
 .tui-statusline .tui-model-picker { flex: 1; min-width: 40px; max-width: 160px; }
 .tui-statusline .tui-model-name { min-width: 0; width: 100%; }
 .prompt-attachments { padding: 0; border: none; }
-.prompt-image-list:not(:empty), .prompt-attachments > .muted { padding: 6px 10px; }
-.tui-composer > .btn.ui-icon { width: 44px; padding: 0; display: inline-flex; justify-content: center; align-items: center; }
+
+.tui-composer-actions > .btn.ui-icon { width: 44px; padding: 0; display: inline-flex; justify-content: center; align-items: center; }
 @container (max-width: 600px) { .tui-statusline .tui-workspace-mode, .tui-statusline .tui-tools-count, .tui-statusline .tui-run-state { display: none; } }
 @container (max-width: 420px) { .tui-statusline .tui-speed { display: none; } }
 
@@ -3432,7 +3438,7 @@ button.browser-item {
 .editor-footer .editor-indentation-options { flex-wrap: wrap; padding: var(--space-2); }
 .editor-footer .editor-rules-source { display: block; padding: var(--space-2); }
 .compact-tree .tree-item { min-height: 24px; padding-block: 2px; }
-.tab.active, .ui-seg-btn.active, .panel-tab.is-open { color: var(--accent); background: var(--bg-hover); }
+.tab.active, .btn.chat-tab.active, .ui-seg-btn.active, .panel-tab.is-open { color: var(--accent); background: var(--bg-hover); }
 .tab-select:focus-visible, .ui-seg-btn:focus-visible, .panel-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 @media (max-width: 900px) {
     .editor-view-desktop { display: none; }
@@ -3489,7 +3495,7 @@ button.browser-item {
 
 .chat-recap { margin: 0 0 12px; color: var(--text-muted); }
 .chat-recap summary { cursor: pointer; }
-.chat-next-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 12px; }
+.chat-followups, .chat-context-suggestions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
 .git-draft-actions { padding: 6px 12px; border-bottom: 1px solid var(--border); }
 

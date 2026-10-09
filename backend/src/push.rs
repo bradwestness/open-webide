@@ -130,8 +130,7 @@ pub async fn dispatch<D: Db>(
             serde_json::from_str::<openwebide_core::push::PushPayload>(&payload)
             && let Some(message) = notification
                 .tag
-                .rsplit("done:")
-                .next()
+                .strip_prefix(&format!("openwebide-{}-done:", notification.session_id))
                 .and_then(|id| id.parse::<i64>().ok())
             && let Some(summary) = transport
                 .summary(delivery.user_id, notification.session_id, message)

@@ -96,7 +96,10 @@ preserving validation and project/session/account guards.
 
 Chat uses compact labeled icon controls beside the composer. Enter sends or queues,
 Ctrl/⌘+Enter steers an active run, and Escape stops it. Attach images lives in the
-Chat menu; paste/drop use the same import path. Telemetry stays on one line, hiding
+Chat menu; paste/drop use the same import path. Attachments use a compact
+composer indicator with expandable previews. Inline prompt hints and clickable
+history suggestions keep the area between the status line and input clear. Chat
+actions restore composer focus after menus settle, respecting open dialogs. Telemetry stays on one line, hiding
 secondary fields in narrow panes. The context gauge opens the context details;
 phones show the percentage while preserving model and approval controls.
 

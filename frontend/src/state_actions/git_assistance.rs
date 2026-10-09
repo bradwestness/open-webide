@@ -97,7 +97,7 @@ impl GitAssistance {
                     for (path, status) in status.files.iter().filter(|(_, status)| **status == GitFileStatus::Untracked).take(8) {
                         let _ = status;
                         if let Ok(content) = workspace.read(path).await {
-                            new_files.push((path.clone(), content.chars().take(1500).collect::<String>()));
+                            new_files.push((path.clone(), fingerprint(&content)));
                             changes.push_str(&format!("\nNew file {path}:\n{}\n", content.chars().take(1500).collect::<String>()));
                         }
                     }
@@ -111,10 +111,11 @@ impl GitAssistance {
                     let fresh_status = repo.status().await?;
                     if repo.diff(None).await? != tracked_diff || fresh_status.files != status.files || fresh_status.branch != status.branch { return Err("Changes moved while drafting. Try again.".into()); }
                     for (path, content) in new_files {
-                        if workspace.read(&path).await.map_err(|error| error.to_string())?.chars().take(1500).collect::<String>() != content {
+                        if fingerprint(&workspace.read(&path).await.map_err(|error| error.to_string())?) != content {
                             return Err("Files changed while drafting. Try again.".into());
                         }
                     }
+                    if workspace.read("AGENTS.md").await.unwrap_or_default() != guidance { return Err("Repository conventions changed while drafting. Try again.".into()); }
                     Ok(generated)
                 }.await;
                 if !current() {
@@ -144,4 +145,11 @@ impl GitAssistance {
             generate,
         }
     }
+}
+
+fn fingerprint(content: &str) -> u64 {
+    use std::hash::Hasher;
+    let mut hash = std::hash::DefaultHasher::new();
+    hash.write(content.as_bytes());
+    hash.finish()
 }

@@ -117,6 +117,30 @@ impl Composer {
         });
         composer
     }
+    /// Restore typing after actions, once dropdown and reactive focus updates settle.
+    pub fn focus(self) {
+        let account = self.auth.generation.get_untracked();
+        let project = self.projects.active_project.get_untracked();
+        let session = self.chat.active_session.get_untracked();
+        let restore = move || {
+            if self.auth.generation.try_get_untracked() == Some(account)
+                && self.projects.active_project.try_get_untracked() == Some(project)
+                && self.chat.active_session.try_get_untracked() == Some(session)
+                && let Some(Some(input)) = self.input.try_get_untracked()
+                && crate::components::modal::allows_focus(input.as_ref())
+            {
+                let _ = input.focus();
+            }
+        };
+        restore();
+        leptos::leptos_dom::helpers::request_animation_frame(restore);
+    }
+    pub fn after<T: Send + 'static>(self, action: Callback<T>) -> Callback<T> {
+        Callback::new(move |value| {
+            action.run(value);
+            self.focus();
+        })
+    }
     pub fn dismiss(self) {
         self.choices.set(Vec::new());
         self.query.set(None);
@@ -255,6 +279,7 @@ impl Composer {
                     Ok(images) => self.chat.prompt_images.set(images),
                     Err(error) => self.chat.error.set(Some(error)),
                 }
+                self.focus();
             }
         });
     }
@@ -322,6 +347,7 @@ async fn read_image(file: &web_sys::File) -> Result<PromptImage, String> {
 #[component]
 pub fn PromptControls(composer: Composer) -> impl IntoView {
     let file_input = NodeRef::<leptos::html::Input>::new();
+    let menu_open = RwSignal::new(false);
     Effect::new(move || {
         if composer.chat.image_picker_requested.get()
             && let Some(input) = file_input.get()
@@ -330,27 +356,47 @@ pub fn PromptControls(composer: Composer) -> impl IntoView {
             input.click();
         }
     });
+    let count = Memo::new(move |_| {
+        composer.chat.prompt_images.with(Vec::len)
+            + usize::from(composer.chat.active_editor_context.get().is_some())
+    });
     view! {
         <div class="prompt-attachments">
             <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple=true node_ref=file_input style="display:none" on:change=move |event| {
                 let target = event_target::<web_sys::HtmlInputElement>(&event);
                 if let Some(files) = target.files() { composer.import(files); }
                 target.set_value("");
-            } />
-            <Show when=move || composer.chat.reading_images.get()><span class="muted">"Reading images…"</span></Show>
-            <div class="prompt-image-list">
-                <For each={move || composer.chat.prompt_images.get().into_iter().enumerate().collect::<Vec<_>>()} key=|(index, image)| (*index, image.data.clone()) children=move |(index, image)| {
-                    view! { <div class="prompt-image"><img src=image.url() alt=image.name.clone() /><span>{image.name}</span><button class="btn ghost" title="Remove image" disabled=move || composer.chat.reading_images.get() on:click=move |_| composer.chat.prompt_images.update(|images| { if index < images.len() { images.remove(index); } })>"×"</button></div> }
-                } />
-            </div>
-            <Show when=move || !composer.choices.with(Vec::is_empty)>
-                <div class="mention-choices" role="listbox" aria-label="Mention suggestions">
-                    <For each={move || composer.choices.get().into_iter().enumerate().collect::<Vec<_>>() } key=|(index, choice)| (*index, choice.insertion.clone()) children=move |(index, choice)| view! {
-                        <button class="btn ghost" role="option" aria-selected=move || composer.selected.get() == index class:active=move || composer.selected.get() == index on:click=move |_| composer.choose(index)>{choice.label}</button>
-                    } />
-                </div>
+            } on:cancel=move |_: web_sys::Event| composer.focus() />
+            <Show when=move || count.get() != 0 || composer.chat.reading_images.get()>
+                <crate::components::dropdown::Dropdown aria_label="Prompt attachments" menu_role="dialog" class="prompt-attachment-menu" open=menu_open trigger_class="btn ghost ui-icon" hide_caret=true above=true
+                    disabled=Signal::derive(move || composer.chat.reading_images.get())
+                    label=move || view! { <crate::components::ui::Icon name=crate::components::ui::IconName::Paperclip/><span class="prompt-attachment-count">{move || if composer.chat.reading_images.get() { "…".to_string() } else { count.get().to_string() }}</span><span class="sr-only">{move || if composer.chat.reading_images.get() {"Reading images"} else {"attachments"}}</span> }>
+                    <Show when=move || composer.chat.active_editor_context.get().is_some()>
+                        <div class="prompt-editor-context"><span>{move || composer.chat.active_editor_context.get().map(|context| context.pill_label())}</span><button class="btn ghost ui-icon" title="Detach editor context (Esc)" aria-label="Detach editor context" on:click=move |_| { menu_open.set(false); composer.chat.active_editor_context.set(None); composer.focus(); }><crate::components::ui::Icon name=crate::components::ui::IconName::X/></button></div>
+                    </Show>
+                    <div class="prompt-image-list">
+                        <For each={move || composer.chat.prompt_images.get().into_iter().enumerate().collect::<Vec<_>>()} key=|(index, image)| (*index, image.data.clone()) children=move |(index, image)| {
+                            let remove_label = format!("Remove image {}", image.name);
+                            view! { <div class="prompt-image"><img src=image.url() alt=image.name.clone() /><span>{image.name}</span><button class="btn ghost ui-icon" title="Remove image" aria-label=remove_label disabled=move || composer.chat.reading_images.get() on:click=move |_| { menu_open.set(false); composer.chat.prompt_images.update(|images| { if index < images.len() { images.remove(index); } }); composer.focus(); }><crate::components::ui::Icon name=crate::components::ui::IconName::X/></button></div> }
+                        } />
+                    </div>
+                    <button class="btn ghost" on:click=move |_| { menu_open.set(false); if let Some(input) = file_input.get_untracked() { input.click(); } }><crate::components::ui::Icon name=crate::components::ui::IconName::Paperclip/>"Add images"</button>
+                </crate::components::dropdown::Dropdown>
             </Show>
         </div>
+    }
+}
+
+#[component]
+pub fn MentionSuggestions(composer: Composer) -> impl IntoView {
+    view! {
+        <Show when=move || !composer.choices.with(Vec::is_empty)>
+            <div class="mention-choices" role="listbox" aria-label="Mention suggestions">
+                <For each={move || composer.choices.get().into_iter().enumerate().collect::<Vec<_>>() } key=|(index, choice)| (*index, choice.insertion.clone()) children=move |(index, choice)| view! {
+                    <button class="btn ghost" role="option" aria-selected=move || composer.selected.get() == index class:active=move || composer.selected.get() == index on:click=move |_| composer.choose(index)>{choice.label}</button>
+                } />
+            </div>
+        </Show>
     }
 }
 

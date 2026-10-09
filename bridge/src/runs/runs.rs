@@ -307,16 +307,32 @@ impl RunRegistry {
             return Ok(run);
         }
         let prepared = async {
-            let mut plan = backend
-                .run_plan(
-                    user_id,
-                    start.session_id,
-                    &start.content,
-                    start.model.as_deref(),
-                    start.editor_context.as_ref(),
-                )
-                .await
-                .map_err(|e| (RunRejectCode::PlanFailed, e))?;
+            let mut plan = match start.queued_prompt {
+                Some(key) => {
+                    backend
+                        .queued_run_plan(
+                            user_id,
+                            start.session_id,
+                            &start.content,
+                            start.model.as_deref(),
+                            start.editor_context.as_ref(),
+                            key,
+                        )
+                        .await
+                }
+                None => {
+                    backend
+                        .run_plan(
+                            user_id,
+                            start.session_id,
+                            &start.content,
+                            start.model.as_deref(),
+                            start.editor_context.as_ref(),
+                        )
+                        .await
+                }
+            }
+            .map_err(|e| (RunRejectCode::PlanFailed, e))?;
             plan.environment.browser_preferences = start.browser_preferences.clone();
             if let Some(path) = &start.host_path {
                 openwebide_agent::scheduled::authorize_host_plan(&mut plan, path);

@@ -398,8 +398,19 @@ pub(super) async fn build_run_plan(
 ) -> Result<RunPlan, ApiError> {
     state.store.ensure_not_rewinding(session_id).await?;
     let session = state.store.get_session(session_id, user_id).await?;
-    let connection_id = session
-        .connection_id
+    let task_model = match send.queued_prompt {
+        Some(key) => {
+            state
+                .store
+                .scheduled_prompt_model(user_id, session_id, key)
+                .await?
+        }
+        None => None,
+    };
+    let connection_id = task_model
+        .as_ref()
+        .map(|model| model.server_id)
+        .or(session.connection_id)
         .ok_or_else(|| ApiError::bad_request("session has no connection; pick one first"))?;
     let saved = state
         .store
@@ -414,7 +425,11 @@ pub(super) async fn build_run_plan(
         state,
         user_id,
         connection_id,
-        send.model.as_deref().or(saved_model),
+        task_model
+            .as_ref()
+            .map(|model| model.model.as_str())
+            .or(send.model.as_deref())
+            .or(saved_model),
     )
     .await?;
     let system_prompt = match session.system_prompt_id {
