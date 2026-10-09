@@ -35,7 +35,12 @@ pub fn configure(
     // If there is no catalog space, skill_list still provides discovery on demand.
     let budget = (limit.saturating_mul(3) / 10).min(
         limit
-            .saturating_sub(fixed.saturating_add(limit / 4).saturating_add(limit / 8).saturating_add(512))
+            .saturating_sub(
+                fixed
+                    .saturating_add(limit / 4)
+                    .saturating_add(limit / 8)
+                    .saturating_add(512),
+            )
             .saturating_mul(3),
     );
     if let Some(context) = openwebide_core::skills::skills_context(data, budget) {
@@ -458,16 +463,30 @@ mod tests {
         configure(&mut tools, &mut prompt, &fixture().store.0, Some(8192));
         tools.push(crate::tasks::executor::definition());
         let request = openwebide_core::ChatRequest {
-            connection_id: 1, model: None, system_prompt: prompt,
+            connection_id: 1,
+            model: None,
+            system_prompt: prompt,
             messages: vec![openwebide_core::ChatMessage {
-                id: 1, session_id: 1, role: openwebide_core::Role::User,
+                id: 1,
+                session_id: 1,
+                role: openwebide_core::Role::User,
                 content: "Inspect the project and explain the next steps.".into(),
-                tool_calls: None, tool_call_id: None, created_at: 0, usage: None,
+                tool_calls: None,
+                tool_call_id: None,
+                created_at: 0,
+                usage: None,
             }],
-            tools, model_settings: Default::default(),
+            tools,
+            model_settings: Default::default(),
         };
         assert!(openwebide_core::context::conservative_tokens(&request) < 8192 - 2048 - 1024);
-        for name in ["ask_user_question", "monitor", "schedule_create", "skill_read", "task"] {
+        for name in [
+            "ask_user_question",
+            "monitor",
+            "schedule_create",
+            "skill_read",
+            "task",
+        ] {
             assert!(request.tools.iter().any(|tool| tool.name == name));
         }
     }

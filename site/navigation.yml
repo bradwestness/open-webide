@@ -8,12 +8,14 @@
 - Using Open WebIDE:
     - Overview: docs/using.md
     - Editor: docs/editor.md
+    - Git changes and history: docs/git.md
     - Chat commands and goals: docs/chat-controls.md
     - Agent questions: docs/agent-questions.md
     - Assistance model: docs/assistance-model.md
     - Project memory: docs/project-memory.md
     - Agent skills: docs/agent-skills.md
     - Scheduled tasks: docs/scheduled-tasks.md
+    - Monitors: docs/monitors.md
     - Browser notifications: docs/web-push.md
     - Files and context menus: docs/file-tree-menus.md
     - About and notices: docs/about.md
