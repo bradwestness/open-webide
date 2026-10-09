@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Include plugin documentation in the project site navigation and repair roadmap links to the plugin section.
+
 - Yield between bounded batches of retained paragraph-prefix probes in wrapped and unwrapped editor preparation, rechecking source ownership between batches and measuring terminal dimensions freshly.
 
 - Make cold-editor queued-arrow and native-input browser checks deterministic by holding paint frames while testing pending layout, including composition and clipboard operations in local and remote projects.

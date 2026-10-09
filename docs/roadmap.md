@@ -240,7 +240,7 @@ autocomplete) into the editor while keeping the core diagnostics engine
   resource use on a small homelab before claiming prefetching improves performance.
 
 Expose language features through the shared contribution contracts described in
-[Plugins & Git marketplaces](#plugins--git-marketplaces), so existing
+[Plugins & Git marketplaces](#plugins-git-marketplaces), so existing
 languages can become bundled plugins and community packages can add languages.
 Defer the language-plugin migration until the ongoing Full code editor work is
 complete; preserve the shared document/selection/extension APIs as its foundation.
@@ -249,7 +249,7 @@ complete; preserve the shared document/selection/extension APIs as its foundatio
 
 - Deliver GitLens-style line authorship, commit details and history as a bundled
   first-party plugin and reference implementation of
-  [editor contributions](#plugins--git-marketplaces), after the shared editor APIs
+  [editor contributions](#plugins-git-marketplaces), after the shared editor APIs
   and relevant plugin contracts are available. Navigate to the relevant commit
   or diff through existing [Git pane](git.md) actions.
 - Use typed, declarative editor annotations for inline/gutter labels and hover
