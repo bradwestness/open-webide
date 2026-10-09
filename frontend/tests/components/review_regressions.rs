@@ -15,11 +15,34 @@ use openwebide_frontend::{
     },
     util::sleep_ms,
 };
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_test::*;
 
 #[wasm_bindgen(inline_js = r#"
+export function reviewErrors() {
+    const errors = [];
+    const original = console.error;
+    console.error = (...args) => { errors.push(args.map(String).join(' ')); original.apply(console, args); };
+    const error = event => errors.push(String(event.error || event.message));
+    const rejection = event => errors.push(String(event.reason));
+    window.addEventListener('error', error);
+    window.addEventListener('unhandledrejection', rejection);
+    return {errors, restore: () => {
+        console.error = original;
+        window.removeEventListener('error', error);
+        window.removeEventListener('unhandledrejection', rejection);
+    }};
+}
+export function reviewErrorMessages(guard) { return guard.errors.join('\n'); }
+export function reviewRestoreErrors(guard) { guard.restore(); }
 export function reviewFolder() {
     const gate = {list:false, read:false};
     const file = name => Object.defineProperties(Object.create(FileSystemFileHandle.prototype), {name:{value:name},kind:{value:'file'},getFile:{value:async()=>{if(gate.read){gate.readStarted=true;await new Promise(resolve=>(gate.readResolvers??=[]).push(resolve));}return new File(['loaded'],name);}}});
@@ -32,11 +55,22 @@ export function reviewStarted(mock, field) {return !!mock.gate[field+'Started'];
 export function reviewRelease(mock, field) {mock.gate[field]=false;for(const resolve of mock.gate[field+'Resolvers']||[]) resolve();mock.gate[field+'Resolvers']=[];}
 "#)]
 extern "C" {
+    fn reviewErrors() -> JsValue;
+    fn reviewErrorMessages(guard: &JsValue) -> String;
+    fn reviewRestoreErrors(guard: &JsValue);
     fn reviewFolder() -> JsValue;
     fn reviewHandle(mock: &JsValue) -> JsValue;
     fn reviewHold(mock: &JsValue, field: &str);
     fn reviewStarted(mock: &JsValue, field: &str) -> bool;
     fn reviewRelease(mock: &JsValue, field: &str);
+}
+
+// Keep the runner's console forwarding intact, and restore listeners on teardown.
+struct AsyncErrors(JsValue);
+impl Drop for AsyncErrors {
+    fn drop(&mut self) {
+        reviewRestoreErrors(&self.0);
+    }
 }
 
 fn entry() -> Vec<FileEntry> {
@@ -52,12 +86,25 @@ fn entry() -> Vec<FileEntry> {
 async fn review_open_completion_survives_disposal_and_rejects_newer_selections_in_both_modes() {
     for mode in [WorkspaceMode::Remote, WorkspaceMode::Local] {
         for disposed in [true, false] {
+            let errors = AsyncErrors(reviewErrors());
+            let completions = Arc::new(AtomicUsize::new(0));
+            let observed = completions.clone();
             let folder = reviewFolder();
             let handle = reviewHandle(&folder);
             let slot = Rc::new(Cell::new(None));
             let output = slot.clone();
             let mounted = mount_test(move |state| {
                 state.seed_project();
+                state
+                    .fake
+                    .files
+                    .borrow_mut()
+                    .insert((1, "old.rs".into()), "loaded".into());
+                state
+                    .fake
+                    .files
+                    .borrow_mut()
+                    .insert((1, "new.rs".into()), "loaded".into());
                 state.projects.projects.update(|p| p[0].mode = mode);
                 state.projects.local_handles.update(|h| {
                     h.insert(1, handle.unchecked_into());
@@ -89,7 +136,11 @@ async fn review_open_completion_survives_disposal_and_rejects_newer_selections_i
             let owner = Owner::new();
             let done = owner.with(|| {
                 let signal = RwSignal::new(false);
-                Callback::new(move |_: Result<(), String>| signal.set(true))
+                Callback::new(move |result: Result<(), String>| {
+                    result.unwrap();
+                    signal.set(true);
+                    observed.fetch_add(1, Ordering::Relaxed);
+                })
             });
             actions.open_with_completion.run(("old.rs".into(), done));
             wait_until("held open listing", || {
@@ -110,14 +161,27 @@ async fn review_open_completion_survives_disposal_and_rejects_newer_selections_i
             } else {
                 reviewRelease(&folder, "list");
             }
+            let expected = if disposed { "old.rs" } else { "new.rs" };
+            wait_until("open finishes after listing release", || {
+                mounted.state.workspace.open_file.get_untracked().as_deref() == Some(expected)
+                    && !mounted.state.workspace.editor_loading.get_untracked()
+                    && mounted.state.workspace.content.get_untracked().as_str() == "loaded"
+            })
+            .await;
+            // Flush promise rejections/error events after the observable read completion.
             sleep_ms(20).await;
             settle().await;
-            if !disposed {
-                assert_eq!(
-                    mounted.state.workspace.open_file.get_untracked().as_deref(),
-                    Some("new.rs")
-                );
-            }
+            assert_eq!(
+                completions.load(Ordering::Relaxed),
+                0,
+                "disposed or superseded callback ran"
+            );
+            assert!(mounted.state.ui.toast.get_untracked().is_none());
+            let messages = reviewErrorMessages(&errors.0);
+            assert!(
+                messages.is_empty(),
+                "{mode:?}, disposed={disposed}: async errors: {messages}"
+            );
         }
     }
 }
@@ -291,15 +355,17 @@ async fn review_empty_query_invalidates_pending_selection_and_stops_spinner_in_b
 }
 
 #[wasm_bindgen_test]
-async fn history_pagination_preserves_pending_selection_in_both_modes() {
+async fn review_append_preserves_pending_selection_and_spinner_in_both_modes() {
     let old = token().await;
     for mode in [WorkspaceMode::Remote, WorkspaceMode::Local] {
         let http = Http(gitHttp());
         let mut initial = page();
+        initial.commits.truncate(1);
         initial.has_more = true;
+        let initial_json = serde_json::to_string(&initial).unwrap();
         gitHistoryFixture(
             &http.0,
-            &serde_json::to_string(&initial).unwrap(),
+            &initial_json,
             &serde_json::to_string(&diff()).unwrap(),
         );
         let handle = super::local_bridge::probe_folder();
@@ -312,8 +378,6 @@ async fn history_pagination_preserves_pending_selection_in_both_modes() {
                 h.insert(1, handle.unchecked_into());
             });
             state.settings.bridge_url.set("ws://git.test:3001".into());
-            let mut initial = page();
-            initial.has_more = true;
             *state.fake.git_history.borrow_mut() = initial;
             *state.fake.git_commit_diff.borrow_mut() = Some(diff());
             output.set(Some(GitHistoryActions::new()));
@@ -321,7 +385,7 @@ async fn history_pagination_preserves_pending_selection_in_both_modes() {
         });
         let actions = slot.get().unwrap();
         wait_until("initial page", || {
-            actions.commits.get_untracked().len() == 2
+            actions.commits.get_untracked().len() == 1
         })
         .await;
         let (send, receive) = futures::channel::oneshot::channel();
@@ -350,24 +414,18 @@ async fn history_pagination_preserves_pending_selection_in_both_modes() {
             }
         })
         .await;
-        *mounted.state.fake.git_history.borrow_mut() = GitHistoryPage {
-            commits: vec![],
-            refs: vec![],
-            has_more: false,
-        };
+        let mut older = page();
+        older.commits.remove(0);
+        *mounted.state.fake.git_history.borrow_mut() = older.clone();
         gitHistoryFixture(
             &http.0,
-            &serde_json::to_string(&GitHistoryPage {
-                commits: vec![],
-                refs: vec![],
-                has_more: false,
-            })
-            .unwrap(),
+            &serde_json::to_string(&older).unwrap(),
             &serde_json::to_string(&diff()).unwrap(),
         );
+        assert!(actions.has_more.get_untracked());
         actions.load.run(true);
-        wait_until("final history page appended", || {
-            !actions.loading.get_untracked() && !actions.has_more.get_untracked()
+        wait_until("older commits appended", || {
+            actions.commits.get_untracked().len() == 2 && !actions.loading.get_untracked()
         })
         .await;
         assert!(actions.diff_loading.get_untracked());
@@ -376,15 +434,16 @@ async fn history_pagination_preserves_pending_selection_in_both_modes() {
         } else {
             gitRelease(&http.0, "deferDiff");
         }
-        wait_until("pending selection published after pagination", || {
-            !actions.diff_loading.get_untracked() && actions.selected.get_untracked().is_some()
+        wait_until("selected detail after pagination", || {
+            actions.selected.get_untracked().is_some() && !actions.diff_loading.get_untracked()
         })
         .await;
         assert_eq!(
-            actions.selected.get_untracked().unwrap().hash,
-            page().commits[0].hash
+            actions.selected.get_untracked(),
+            Some(page().commits.remove(0))
         );
         assert_eq!(actions.diff.get_untracked(), Some(diff()));
+        assert!(actions.diff_error.get_untracked().is_none());
     }
     restore_token(old).await;
 }
@@ -571,4 +630,103 @@ async fn review_timeline_edge_popovers_and_buttons_stay_inside_ci_viewport() {
             cluster.remove_attribute("open").unwrap();
         }
     }
+}
+
+#[wasm_bindgen_test]
+async fn history_pagination_preserves_pending_selection_in_both_modes() {
+    let old = token().await;
+    for mode in [WorkspaceMode::Remote, WorkspaceMode::Local] {
+        let http = Http(gitHttp());
+        let mut initial = page();
+        initial.has_more = true;
+        gitHistoryFixture(
+            &http.0,
+            &serde_json::to_string(&initial).unwrap(),
+            &serde_json::to_string(&diff()).unwrap(),
+        );
+        let handle = super::local_bridge::probe_folder();
+        let slot = Rc::new(Cell::new(None));
+        let output = slot.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state.projects.projects.update(|p| p[0].mode = mode);
+            state.projects.local_handles.update(|h| {
+                h.insert(1, handle.unchecked_into());
+            });
+            state.settings.bridge_url.set("ws://git.test:3001".into());
+            let mut initial = page();
+            initial.has_more = true;
+            *state.fake.git_history.borrow_mut() = initial;
+            *state.fake.git_commit_diff.borrow_mut() = Some(diff());
+            output.set(Some(GitHistoryActions::new()));
+            view! {<div/>}
+        });
+        let actions = slot.get().unwrap();
+        wait_until("initial page", || {
+            actions.commits.get_untracked().len() == 2
+        })
+        .await;
+        let (send, receive) = futures::channel::oneshot::channel();
+        if mode == WorkspaceMode::Remote {
+            mounted
+                .state
+                .fake
+                .git_commit_diff_results
+                .borrow_mut()
+                .push_back(receive);
+        } else {
+            drop(receive);
+            gitChange(&http.0, "deferDiff", true);
+        }
+        actions.select.run((page().commits.remove(0), None, None));
+        wait_until("held selection", || {
+            if mode == WorkspaceMode::Remote {
+                !mounted
+                    .state
+                    .fake
+                    .git_commit_diff_requests
+                    .borrow()
+                    .is_empty()
+            } else {
+                gitCalls(&http.0).contains("/git/commit-diff")
+            }
+        })
+        .await;
+        *mounted.state.fake.git_history.borrow_mut() = GitHistoryPage {
+            commits: vec![],
+            refs: vec![],
+            has_more: false,
+        };
+        gitHistoryFixture(
+            &http.0,
+            &serde_json::to_string(&GitHistoryPage {
+                commits: vec![],
+                refs: vec![],
+                has_more: false,
+            })
+            .unwrap(),
+            &serde_json::to_string(&diff()).unwrap(),
+        );
+        actions.load.run(true);
+        wait_until("final history page appended", || {
+            !actions.loading.get_untracked() && !actions.has_more.get_untracked()
+        })
+        .await;
+        assert!(actions.diff_loading.get_untracked());
+        if mode == WorkspaceMode::Remote {
+            send.send(Ok(diff())).unwrap();
+        } else {
+            gitRelease(&http.0, "deferDiff");
+        }
+        wait_until("pending selection published after pagination", || {
+            !actions.diff_loading.get_untracked() && actions.selected.get_untracked().is_some()
+        })
+        .await;
+        assert_eq!(
+            actions.selected.get_untracked().unwrap().hash,
+            page().commits[0].hash
+        );
+        assert_eq!(actions.diff.get_untracked(), Some(diff()));
+    }
+    restore_token(old).await;
 }
