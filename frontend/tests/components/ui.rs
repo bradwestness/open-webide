@@ -16,6 +16,22 @@ use wasm_bindgen_test::*;
 
 use super::support::{mount_test, settle};
 
+async fn prepare_tooltip_fixture(mounted: &super::support::Mounted) {
+    // Harness output can put ordinary fixtures below the viewport. Keep the
+    // tooltip target visible and finish stylesheet/layout-induced scrolling
+    // before testing focus or hover. Explicit scroll dismissal stays covered.
+    mounted
+        .root
+        .style()
+        .set_property("position", "fixed")
+        .unwrap();
+    mounted.root.style().set_property("top", "8px").unwrap();
+    mounted.root.style().set_property("left", "8px").unwrap();
+    let _ = mounted.root.get_bounding_client_rect();
+    openwebide_frontend::util::yield_frame().await;
+    settle().await;
+}
+
 #[wasm_bindgen_test]
 async fn button_variants_sizes_and_disabled_callbacks_share_the_base() {
     let clicks = RwSignal::new(0);
@@ -255,7 +271,7 @@ async fn shared_icons_and_tooltips_are_labeled_themeable_and_cleaned_up() {
             <IconButton label="Settings" on_click=Callback::new(|_| ())><Icon name=IconName::Settings /></IconButton>
         }
     });
-    settle().await;
+    prepare_tooltip_fixture(&mounted).await;
     let button = mounted.element("button");
     assert_eq!(
         button.get_attribute("aria-label").as_deref(),
@@ -274,7 +290,9 @@ async fn shared_icons_and_tooltips_are_labeled_themeable_and_cleaned_up() {
             .as_deref(),
         Some("true")
     );
-    button.focus().unwrap();
+    let focus = web_sys::FocusOptions::new();
+    focus.set_prevent_scroll(true);
+    button.focus_with_options(&focus).unwrap();
     button
         .dispatch_event(&web_sys::Event::new("focus").unwrap())
         .unwrap();
@@ -950,7 +968,7 @@ async fn pointer_tab_focus_and_editor_scroll_do_not_reopen_tooltips() {
         // unstyled popup changes page layout and can dismiss itself on scroll.
         view! { <style>{include_str!("../../styles.css")}</style><button title="File path">"File"</button><div class="scroll-source"></div> }
     });
-    settle().await;
+    prepare_tooltip_fixture(&mounted).await;
     let button = mounted.element("button");
     let event = |name| {
         let init = web_sys::MouseEventInit::new();

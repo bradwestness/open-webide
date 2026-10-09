@@ -91,8 +91,10 @@ tracks the remaining work rather than every optimization already shipped.
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   final context assembly and bounded metadata publication,
   larger fenced-code workloads and changed-source plain row-table
-  reconstruction/validation. Parser source-change comparison still traverses retained
-  text; resolved worker parser replacements now reuse their validated spans only
+  reconstruction/validation. Cooperative parser source-change comparison now
+  shares the resumable UTF-8 comparison used by plain-row preparation; admission
+  and changed row/index assembly still need bounded work. Resolved worker parser
+  replacements reuse their validated spans only
   for the exact retained base allocation. Intersecting plain fallback rows retain
   raw-byte boundary validation. Fallback range/opaque-point checks now use ordered
   embedded-scope lookup. Unchanged embedded bodies retain relative fallback contexts;
@@ -109,7 +111,9 @@ tracks the remaining work rather than every optimization already shipped.
   regions and languages without brackets while preserving scope boundaries.
 - [ ] **Source ownership and storage:** finish remaining external parser snapshots,
   changed-revision source comparisons, transport serialization, diff shaping and
-  native-text materialization. Folded/bounded projection tables still assemble
+  native-text materialization. Parser-free entry equality and paint/transport
+  comparisons still sit outside the resumable source-comparison jobs.
+  Folded/bounded projection tables still assemble
   independently; retained row/coordinate tables copy on edits, changed guide values
   copy retained columns, and storage shifts suffix bytes/coordinates. Long boundary
   rows still scan for admission. Revisit measured storage candidates when the

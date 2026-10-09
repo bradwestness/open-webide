@@ -2,13 +2,6 @@
 use super::{LexicalPreparation, LexicalRow, Token, TokenKind};
 use std::sync::Arc;
 
-#[derive(Default)]
-pub(super) struct LexicalSourceComparison {
-    prefix: usize,
-    suffix: usize,
-    prefix_complete: bool,
-}
-
 pub(super) struct LexicalRowPreparation {
     scan: usize,
     extent: Option<(usize, bool)>,
@@ -142,63 +135,15 @@ impl LexicalPreparation {
             .expect("retained comparison source")
             .source;
         let new = &self.source;
-        let mut remaining = budget;
-        if !comparison.prefix_complete {
-            let limit = old.len().min(new.len());
-            let end = limit.min(comparison.prefix.saturating_add(remaining));
-            let equal = old.as_bytes()[comparison.prefix..end]
-                .iter()
-                .zip(&new.as_bytes()[comparison.prefix..end])
-                .take_while(|(a, b)| a == b)
-                .count();
-            remaining =
-                remaining.saturating_sub(equal + usize::from(equal < end - comparison.prefix));
-            comparison.prefix += equal;
-            if comparison.prefix < end || end == limit {
-                comparison.prefix_complete = true;
-                while !old.is_char_boundary(comparison.prefix)
-                    || !new.is_char_boundary(comparison.prefix)
-                {
-                    comparison.prefix -= 1;
-                }
-                if comparison.prefix == old.len() && old.len() == new.len() {
-                    self.complete = true;
-                    self.unchanged = true;
-                    return budget - remaining;
-                }
-            }
+        let cost = comparison.advance(old, new, budget);
+        if comparison.is_complete() {
+            self.source_change = comparison.change().cloned();
+            self.unchanged = self.source_change.is_none();
+            self.complete = self.unchanged;
+        } else {
+            self.pending_change = Some(comparison);
         }
-        if comparison.prefix_complete {
-            let limit = old.len().min(new.len()) - comparison.prefix;
-            let end = limit.min(comparison.suffix.saturating_add(remaining));
-            let equal = old.as_bytes()[old.len() - end..old.len() - comparison.suffix]
-                .iter()
-                .rev()
-                .zip(
-                    new.as_bytes()[new.len() - end..new.len() - comparison.suffix]
-                        .iter()
-                        .rev(),
-                )
-                .take_while(|(a, b)| a == b)
-                .count();
-            remaining =
-                remaining.saturating_sub(equal + usize::from(equal < end - comparison.suffix));
-            comparison.suffix += equal;
-            if comparison.suffix < end || end == limit {
-                while !old.is_char_boundary(old.len() - comparison.suffix)
-                    || !new.is_char_boundary(new.len() - comparison.suffix)
-                {
-                    comparison.suffix -= 1;
-                }
-                self.source_change = Some(crate::editor::TextChange {
-                    range: comparison.prefix..old.len() - comparison.suffix,
-                    new_end: new.len() - comparison.suffix,
-                });
-                return budget - remaining;
-            }
-        }
-        self.pending_change = Some(comparison);
-        budget - remaining
+        cost
     }
 
     fn bounded_reuse_candidates(&self, end: usize) -> [Option<usize>; 2] {

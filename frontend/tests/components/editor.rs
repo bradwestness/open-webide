@@ -8890,6 +8890,100 @@ async fn cooperative_worker_plain_rows_publish_complete_sql_in_both_modes() {
     }
 }
 
+#[wasm_bindgen_test]
+async fn cooperative_worker_parser_source_comparison_preserves_warm_paint_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::SyntaxWorker};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for ending in ["\n", "\r\n"] {
+            let source = format!(
+                "/*{}*/{ending}fn main() {{ let value = 1; }}",
+                "words 文😀 ".repeat(60_000)
+            );
+            assert!(source.len() > 8 * openwebide_core::highlight::LEXICAL_BATCH_BYTES);
+            let revised = source.replacen("words", "changed", 1);
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let initial = source.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("warm.rs".into()));
+                state.workspace.content.set(initial.into());
+                let actions = EditorActions::new(state.workspace);
+                actions.install_syntax_transport(installed);
+                view! { <span>{move || actions.syntax_is_pending().to_string()}</span> }
+            });
+            let actions = EditorActions::new(mounted.state.workspace);
+            let mut worker = SyntaxWorker::default();
+            for (index, expected) in [&source, &revised].into_iter().enumerate() {
+                if index > 0 {
+                    mounted.state.workspace.content.set(expected.clone().into());
+                }
+                wait_until("parser source request", || {
+                    !transport.pending.borrow().is_empty()
+                })
+                .await;
+                let DeferredSyntaxReply { message, sender } =
+                    transport.pending.borrow_mut().pop_front().unwrap();
+                assert!(worker.enqueue(&message).is_none());
+                let mut batches = 0;
+                let reply = loop {
+                    batches += 1;
+                    assert!(batches < 2_000);
+                    let mut checks = 0;
+                    if let Some(reply) = worker.advance(
+                        || true,
+                        || {
+                            checks += 1;
+                            checks >= 8
+                        },
+                    ) {
+                        break reply;
+                    }
+                    assert!(worker.has_work());
+                    assert!(actions.syntax_is_pending());
+                    if batches % 32 == 0 {
+                        openwebide_frontend::util::yield_task().await;
+                    }
+                };
+                assert!(batches > 2, "{mode:?}: parser preparation must yield");
+                sender.send(Ok(reply)).unwrap();
+                wait_until("parser source paint published", || {
+                    !actions.syntax_is_pending()
+                })
+                .await;
+                let prepared = mounted
+                    .state
+                    .workspace
+                    .editor_preparation
+                    .get_untracked()
+                    .unwrap();
+                let analysis = prepared.analysis.unwrap();
+                assert_eq!(analysis.source(), expected);
+                assert!(std::sync::Arc::ptr_eq(
+                    &prepared.scope.source,
+                    analysis.source_snapshot()
+                ));
+                let (ready, rows) = actions.syntax_paint();
+                assert!(ready);
+                assert_eq!(
+                    rows.iter()
+                        .map(|row| row
+                            .iter()
+                            .map(|token| token.text.as_str())
+                            .collect::<String>())
+                        .collect::<Vec<_>>(),
+                    expected.split('\n').map(str::to_owned).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+}
+
 struct DeferredSyntaxReply {
     message: String,
     sender: futures::channel::oneshot::Sender<

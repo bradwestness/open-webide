@@ -117,6 +117,7 @@ pub struct SyntaxDocument {
     embedded: Vec<EmbeddedSyntax>,
     embedded_parsers: Vec<(Language, Parser)>,
     pending: Option<preparation::SyntaxWork>,
+    source_comparison: Option<preparation::SourceComparison>,
     outer_fallback: Option<Arc<FallbackContexts>>,
     #[cfg(test)]
     embedded_parses: usize,
@@ -151,6 +152,7 @@ impl SyntaxDocument {
             embedded: Vec::new(),
             embedded_parsers: Vec::new(),
             pending: None,
+            source_comparison: None,
             outer_fallback: None,
             #[cfg(test)]
             embedded_parses: 0,
@@ -285,7 +287,7 @@ impl SyntaxDocument {
 
     /// Insertions at the end of an embedded body still belong to that body.
     pub fn language_at(&self, position: usize) -> Language {
-        if self.ready && self.text.is_char_boundary(position) {
+        if self.ready && self.source_comparison.is_none() && self.text.is_char_boundary(position) {
             for embedded in &self.embedded {
                 if embedded.range.start_byte <= position && position <= embedded.range.end_byte {
                     return embedded.provider.language;
@@ -297,7 +299,7 @@ impl SyntaxDocument {
 
     /// Immutable editing contexts from the current tree; failed/stale parses publish nothing.
     pub fn structure(&self) -> Option<Structure> {
-        if !self.ready || self.provider.is_none() {
+        if !self.ready || self.source_comparison.is_some() || self.provider.is_none() {
             return None;
         }
         let fallback = self
@@ -440,6 +442,7 @@ impl SyntaxDocument {
         }
         self.embedded_parsers.clear();
         self.pending = None;
+        self.source_comparison = None;
         self.outer_fallback = None;
         self.ready = false;
         self.tree = None;
@@ -462,7 +465,7 @@ impl SyntaxDocument {
         self.folds_with_tab_width(4)
     }
     pub fn folds_with_tab_width(&self, tab_width: usize) -> Vec<FoldRange> {
-        if !self.ready {
+        if !self.ready || self.source_comparison.is_some() {
             return Vec::new();
         }
         let parsed = self.tree.as_ref().map(|_| self.parser_folds());

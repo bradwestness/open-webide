@@ -9,6 +9,14 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Resume retained-source comparison before parser-backed syntax updates, using
+  the same bounded UTF-8 comparison as plain fallback preparation. Cancel or
+  replace unfinished comparisons without publishing stale contexts or folds.
+- Partition optimized browser CI into editor and other UI contracts, keeping
+  all tests and readiness deadlines while avoiding a single growing suite's
+  browser deadline. Keep the keyboard-tooltip fixture in view and prevent its
+  focus operation from triggering unrelated scroll dismissal.
+
 - Compare retained plain sources across cooperative preparation batches in the
   syntax worker and browser fallback, preserving exact Unicode boundaries,
   complete publication and cancellation during warm edits.
