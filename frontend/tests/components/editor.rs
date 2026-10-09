@@ -9180,6 +9180,15 @@ async fn cooperative_worker_parser_source_comparison_preserves_warm_paint_in_bot
                 .await;
                 let DeferredSyntaxReply { message, sender } =
                     transport.pending.borrow_mut().pop_front().unwrap();
+                let request: openwebide_core::editor::SyntaxRequest =
+                    serde_json::from_str(&message).unwrap();
+                if index > 0 {
+                    assert!(matches!(
+                        request.source,
+                        openwebide_core::editor::SyntaxSource::Replace { .. }
+                    ));
+                    assert!(request.base_ticket.is_some());
+                }
                 assert!(worker.enqueue(&message).is_none());
                 let mut batches = 0;
                 let reply = loop {

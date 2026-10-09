@@ -10,6 +10,9 @@ for what's still ahead.
 ## [Unreleased]
 
 - Keep combined skill, question and scheduling tool discovery within an 8K context budget in both execution modes, with full skill content read on demand.
+- Reconstruct warm syntax-worker sources in bounded UTF-8 batches, retaining the
+  validated base until completion and discarding cancelled partial sources in
+  both workspace modes.
 
 - Yield while publishing parser line indexes after large-file edits, preserving
   the previous coordinates until the complete replacement is ready. Cancelled
