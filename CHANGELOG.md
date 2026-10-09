@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Show Update all with the available update count beside the Installed plugin heading, including when the section is collapsed.
+
 - Show active conversation monitors in the status line with a compact flyout for status, host authorization and cancellation; hide the indicator when no monitor is active.
 
 - Enable installed plugins across existing and new projects by default, with persisted project opt-outs that survive updates. Store verified contributions atomically and preserve personal content on conflicts.

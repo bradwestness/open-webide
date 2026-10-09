@@ -49,7 +49,6 @@ pub fn Plugins() -> impl IntoView {
                 <ActionMenu aria_label="Plugin actions">
                     <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||state.busy.get() on:click=move |_|actions.refresh.run(())><Icon name=IconName::ListChecks/><span>"Refresh installations"</span></button>
                     <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||state.busy.get() on:click=move |_|actions.refresh_catalogs.run(())><Icon name=IconName::RefreshCw/><span>"Refresh marketplaces"</span></button>
-                    <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||state.busy.get()||state.updates().is_empty() on:click=move |_|actions.update_all.run(())><Icon name=IconName::ArrowDownToLine/><span>"Update All"</span></button>
                     <button type="button" role="menuitem" class="ui-dropdown-item recent-item" on:click=move |_|manual.update(|open| *open = !*open)><Icon name=IconName::Plus/><span>"Install a pinned plugin manually"</span></button>
                     <button type="button" role="menuitem" class="ui-dropdown-item recent-item" on:click=move |_| {
                         ui.plugins_open.set(false);
@@ -62,7 +61,13 @@ pub fn Plugins() -> impl IntoView {
             <Show when=move ||state.error.get().is_some()><p class="error" role="alert">{move ||state.error.get().unwrap_or_default()}</p></Show>
             <For each=move ||state.failures.get() key=|f|(f.source.repository.clone(),f.source.reference.clone(),f.source.path.clone()) children=move |failure|view!{<p class="error" role="alert">{format!("{}: {} Previously cached releases remain available.",failure.source.repository,failure.message)}</p>}/>
             <Show when=move ||projects.active_project.get().is_none()><p class="form-hint">"Install plugins on the server host. They are enabled by default in your projects."</p></Show>
-            <PluginSection title="Installed" count=Signal::derive(move ||filtered_installations(state).len())>
+            <PluginSection title="Installed" count=Signal::derive(move ||filtered_installations(state).len()) header_actions=move || view! {
+                <Show when=move ||!state.updates().is_empty()>
+                    <Button size=ButtonSize::Sm disabled=state.busy.read_only() on_click=Callback::new(move |_|actions.update_all.run(()))>
+                        <Icon name=IconName::ArrowDownToLine/>{move ||format!("Update all ({})",state.updates().len())}
+                    </Button>
+                </Show>
+            }>
                 <For each=move ||filtered_installations(state) key=|e|(e.prepared.source.repository.clone(),e.prepared.source.path.clone(),e.revision) children=move |entry|view!{<InstalledPackage entry=entry/>}/>
                 <Show when=move ||state.loaded.get() && !state.busy.get() && filtered_installations(state).is_empty()><p class="form-hint plugin-empty">{move ||if state.search.get().is_empty(){"No plugins installed yet."}else{"No installed plugins match your search."}}</p></Show>
             </PluginSection>
@@ -190,9 +195,10 @@ fn marketplace_name(catalog: &CachedMarketplace) -> String {
 fn PluginSection(
     title: &'static str,
     #[prop(into)] count: Signal<usize>,
+    #[prop(into, optional)] header_actions: Option<ViewFn>,
     children: Children,
 ) -> impl IntoView {
-    view! {<DisclosurePanel initially_open=true class="plugin-section" summary=move ||view!{<span class="plugin-section-title">{title}</span><span class="plugin-count">{move ||count.get()}</span>}>
+    view! {<DisclosurePanel initially_open=true class="plugin-section" header_actions=header_actions summary=move ||view!{<span class="plugin-section-title">{title}</span><span class="plugin-count">{move ||count.get()}</span>}>
         {children()}
     </DisclosurePanel>}
 }

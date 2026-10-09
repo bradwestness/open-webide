@@ -3698,7 +3698,7 @@ button.browser-item {
 
 /* Compact plugin discovery uses the shared controls and theme tokens. */
 .plugin-section.ui-disclosure-panel { border: 0; background: transparent; }
-.plugin-section > .ui-disclosure-toggle { background: transparent; padding: var(--space-2) 0; color: var(--text); }
+.plugin-section > .ui-disclosure-toggle, .plugin-section > .ui-disclosure-header > .ui-disclosure-toggle { background: transparent; padding: var(--space-2) 0; color: var(--text); }
 .plugin-section-title { font-weight: 600; }
 .plugin-count { margin-inline-start: auto; padding: 0 var(--space-2); border-radius: var(--radius-sm); background: var(--bg-hover); color: var(--text-muted); }
 .plugin-row { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; padding: var(--space-3) 0; min-width: 0; }
@@ -3723,3 +3723,7 @@ button.browser-item {
 .tui-monitors { padding: var(--space-3); overflow-wrap: anywhere; }
 .tui-monitors p { margin: var(--space-2) 0; }
 .tui-monitor-entry { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+
+.ui-disclosure-header { display: flex; align-items: center; gap: var(--space-2); }
+.ui-disclosure-header > .ui-disclosure-toggle { flex: 1; min-width: 0; width: auto; }
+.ui-disclosure-header > .btn { flex: none; }

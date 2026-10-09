@@ -378,7 +378,7 @@ capability.
   per-project opt-outs, applies version changes/rollback and removes plugins.
   Web, Project Memory, Scheduling and Skill Authoring are first-party plugins;
   core workspace tools remain built in. Notify is the default update policy,
-  with a status-bar count, individual updates and Update All; Automatic supports
+  with a status-bar count, individual updates and Update all beside the Installed heading; Automatic supports
   compatible updates during idle app checks, and Off suppresses updates. Settings configures marketplace sources;
   the official source is always available. Sources, caches and installation records
   are user-scoped database data, and runs pin their package skill content. Remaining

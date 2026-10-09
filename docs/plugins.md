@@ -34,7 +34,8 @@ releases and reports the failed source. Removing a custom source stops discovery
 without uninstalling its packages. Sources and caches are user-scoped database settings.
 
 The Plugins status-bar button shows a count when updates are available. The
-hamburger menu offers **Update All**; each installed plugin's gear menu offers an
+Installed heading shows **Update all (N)** when updates are available, even
+when the section is collapsed; each installed plugin's gear menu offers an
 individual update, release selection and update preferences. **Notify** is the
 default: checking a catalog does not install its newer releases. **Automatic**
 applies compatible updates; major version changes, and minor changes before 1.0,

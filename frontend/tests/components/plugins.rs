@@ -854,16 +854,44 @@ async fn plugins_notify_updates_in_status_bar_and_update_all_from_the_same_facad
         );
         mounted.click("button[title='Browse and manage plugins']");
         settle().await;
-        mounted.click("button[aria-label='Plugin actions']");
+        mounted.click(".plugin-section .ui-disclosure-header .ui-disclosure-toggle");
         settle().await;
+        assert_eq!(
+            mounted
+                .root
+                .query_selector(".plugin-section .ui-disclosure-header .ui-disclosure-toggle")
+                .unwrap()
+                .unwrap()
+                .get_attribute("aria-expanded")
+                .as_deref(),
+            Some("false")
+        );
         let (send, receive) = futures::channel::oneshot::channel();
         send.send(Ok(updated.prepared.clone())).unwrap();
         fake.plugin_preparations.borrow_mut().push_back(receive);
         let (send, receive) = futures::channel::oneshot::channel();
         send.send(Ok(updated)).unwrap();
         fake.plugin_packages.borrow_mut().push_back(receive);
-        mounted.click_text("Update All");
+        mounted.click_text("Update all (1)");
         settle().await;
+        assert!(
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .find("Update all (")
+                .is_none()
+        );
+        assert_eq!(
+            mounted
+                .root
+                .query_selector(".plugin-section .ui-disclosure-header .ui-disclosure-toggle")
+                .unwrap()
+                .unwrap()
+                .get_attribute("aria-expanded")
+                .as_deref(),
+            Some("false")
+        );
         assert_eq!(fake.plugins.borrow()[0].prepared.manifest.version, "0.1.1");
         assert_eq!(
             fake.plugin_requests.borrow()[0].0,
