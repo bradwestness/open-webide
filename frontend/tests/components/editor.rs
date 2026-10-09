@@ -17368,3 +17368,66 @@ async fn shifted_styled_suffix_matches_complete_browser_geometry_in_both_modes()
         }
     }
 }
+
+#[wasm_bindgen_test]
+async fn editor_tab_focus_accessibility_contract() {
+    use openwebide_core::WorkspaceMode;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("fixture.rs".into()));
+            state.workspace.content.set("let value = 1;\n".into());
+            editor_view(state)
+        });
+        settle().await;
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let before = input.value();
+        assert_eq!(
+            input.get_attribute("aria-label").as_deref(),
+            Some("Code editor: fixture.rs")
+        );
+        let announcement = mounted.element("[data-editor-tab-announcement]");
+        assert_eq!(announcement.text_content().as_deref(), Some(""));
+        assert!(editor_key(&input, "m", true, false).default_prevented());
+        settle().await;
+        assert_eq!(
+            announcement.text_content().as_deref(),
+            Some("Tab now moves keyboard focus.")
+        );
+        assert!(
+            input
+                .get_attribute("aria-description")
+                .unwrap()
+                .starts_with("Tab and Shift+Tab move")
+        );
+        for shift in [false, true] {
+            assert!(!editor_key(&input, "Tab", false, shift).default_prevented());
+            assert_eq!(input.value(), before);
+        }
+        editor_key(&input, "m", true, false);
+        settle().await;
+        assert!(
+            announcement
+                .text_content()
+                .unwrap()
+                .starts_with("Tab now indents.")
+        );
+        assert!(editor_key(&input, "Tab", false, false).default_prevented());
+        assert_ne!(input.value(), before);
+        mounted
+            .state
+            .workspace
+            .open_file
+            .set(Some("second.py".into()));
+        settle().await;
+        assert_eq!(
+            input.get_attribute("aria-label").as_deref(),
+            Some("Code editor: second.py")
+        );
+    }
+}

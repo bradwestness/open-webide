@@ -2184,6 +2184,7 @@ pub fn Editor(
     let paint_indentation = Memo::new(move |_| editor_actions.rules().indentation);
     let paint_whitespace = Memo::new(move |_| editor_actions.preferences().show_whitespace);
     let tab_moves_focus = RwSignal::new(false);
+    let tab_focus_announcement = RwSignal::new("");
     let paste_matches_indentation = RwSignal::new(false);
     let column_anchor =
         StoredValue::new(None::<crate::state_actions::editor::EditorColumnSelection>);
@@ -3418,6 +3419,11 @@ pub fn Editor(
                                             }).collect_view()
                                         }}</div></div>
                                         <textarea
+                                            {..view! { <{..}
+                                                aria-label=move || open_file.get().map_or_else(|| "Code editor".into(), |path| format!("Code editor: {path}"))
+                                                aria-description=move || if read_only.get() || tab_moves_focus.get() { "Tab and Shift+Tab move keyboard focus. Ctrl+M toggles Tab navigation." } else { "Tab indents and Shift+Tab outdents. Press Ctrl+M to let Tab move keyboard focus." }
+                                                title=move || if read_only.get() { "Read-only editor; Tab moves focus" } else if tab_moves_focus.get() { "Tab moves focus; Ctrl+M restores indentation" } else { "Tab indents; Ctrl+M enables focus navigation" }
+                                            /> }}
                                             data-editor-project=editor_project.map(|project| project.to_string())
                                             data-editor-path=open_file.get()
                                             data-editor-scope=move || editor_actions.projection_revision().to_string()
@@ -3425,7 +3431,6 @@ pub fn Editor(
                                             wrap=move || if editor_actions.preferences().word_wrap { "soft" } else { "off" }
                                             spellcheck="false"
                                             readonly=read_only
-                                            title="Tab indents; Ctrl+M toggles Tab moving focus"
                                             node_ref=ta
                                             on:select=move |event: web_sys::Event| {
                                                 if let Some(textarea) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) && current_editor_target(editor_actions, &textarea) { let _ = editor_actions.record_native_selection(projected_selection(editor_actions, &textarea)); }
@@ -3564,7 +3569,8 @@ pub fn Editor(
                                                 if modified && event.shift_key() && !event.alt_key() && event.key().eq_ignore_ascii_case("v") && !read_only.get_untracked() { paste_matches_indentation.set(true); return; }
 
                                                 if modified && event.key().eq_ignore_ascii_case("m") {
-                                                    event.prevent_default(); event.stop_propagation(); tab_moves_focus.update(|value| *value = !*value); return;
+                                                    event.prevent_default(); event.stop_propagation(); tab_moves_focus.update(|value| *value = !*value);
+                                                    tab_focus_announcement.set(if read_only.get_untracked() { "Read-only editor. Tab moves keyboard focus." } else if tab_moves_focus.get_untracked() { "Tab now moves keyboard focus." } else { "Tab now indents. Press Ctrl+M to move keyboard focus." }); return;
                                                 }
                                                 if read_only.get_untracked() { return; }
                                                 let command = match event.key().as_str() {
@@ -3642,6 +3648,7 @@ pub fn Editor(
                                                     && current_editor_target(editor_actions, &textarea) { crate::viewport::forward_editor_wheel(&textarea, &event); }
                                             }
                                         />
+                                        <span class="sr-only" data-editor-tab-announcement="" aria-live="polite" aria-atomic="true">{move || tab_focus_announcement.get()}</span>
                                     </div>
                                 }.into_any()
                             }

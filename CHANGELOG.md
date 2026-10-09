@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Name the editor input for its file and announce Ctrl+M Tab-navigation changes
+  to assistive technology, with current keyboard guidance on the native input.
+
 - Share exact Unicode coordinate traversal across ordered glyph queries when
   validating shifted paragraph replay, preserving every source-byte and browser
   overlap check while avoiding repeated grapheme-prefix scans.

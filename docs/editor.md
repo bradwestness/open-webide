@@ -33,6 +33,8 @@ open. The persistent project-less Chat tab remains available.
   strings retain ordinary typing behavior.
 - Ctrl+Z / Cmd+Z undo; Ctrl+Shift+Z / Cmd+Shift+Z redo (Ctrl+Y also works).
 - Ctrl+M toggles whether Tab indents or moves keyboard focus out of the editor.
+  The native input is named for its file, describes the current Tab behavior,
+  and politely announces changes to this keyboard mode.
 
 The editing menu provides line and comment commands and **Reindent selected
 lines**. Keyboard equivalents:
@@ -886,6 +888,9 @@ first command holds production-worker results until the first composition commit
 so syntax is pending during input. The second requires bounded native surrounding
 text. Both run local and remote drafts with LF and CRLF, compare the full recovered
 source with the expected bytes, and verify cancellation adds no undo step.
+They also inspect the native input’s accessible name and keyboard description,
+then use trusted Ctrl+M, Tab and Shift+Tab to verify focus escapes in both
+directions without changing text or selection.
 Composition starts/updates, beforeinput/input and keyboard events are trusted;
 Chromium's CDP-generated composition-end events are untrusted. These engine checks
 run in CI but do not prove physical input devices, installed Chrome/Edge PWAs,
