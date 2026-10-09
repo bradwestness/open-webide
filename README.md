@@ -83,6 +83,14 @@ For Linux services, see the [Podman quadlet guide](docs/podman-quadlet.md).
 For private HTTPS access from phones and other devices, the recommended approach
 is [Tailscale Serve in a separate container](docs/tailscale.md).
 
+## Host administration
+
+Host administration is included by default. Configure **Settings → Host** with an
+SSH destination, operating system and verified public host keys. Project-less chat
+can inspect that machine and propose changes for approval, with private terminal
+replies for interactive prompts. Container deployments use the same SSH agent
+setup as Git below. See [host administration](docs/host-administration.md).
+
 ## Git authentication
 
 Native bridges use the host SSH agent and configuration. Docker can forward the

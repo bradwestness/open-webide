@@ -17,6 +17,8 @@ pub mod conversation;
 pub mod editor_worker;
 pub mod history;
 #[cfg(target_arch = "wasm32")]
+pub mod host_admin;
+#[cfg(target_arch = "wasm32")]
 pub mod idb;
 #[cfg(target_arch = "wasm32")]
 pub mod local_agent;

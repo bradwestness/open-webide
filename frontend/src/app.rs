@@ -55,6 +55,12 @@ pub fn App() -> impl IntoView {
     provide_context(workspace_state);
     provide_context(git_state);
     provide_context(chat_state);
+    provide_context(crate::host_admin::HostState::new(
+        api,
+        auth,
+        chat_state,
+        projects_state,
+    ));
     let memories = crate::state::memories::MemoriesState::new();
     provide_context(memories);
     provide_context(crate::project_memory::ProjectMemoryActions::new(

@@ -222,6 +222,9 @@ pub async fn run_server_until(
     config: ServerConfig,
     shutdown: impl std::future::Future<Output = ()>,
 ) {
+    config
+        .runs
+        .configure_host_administration(config.pairing_token.is_none());
     let session_manager = SessionManager::new();
 
     let reap_sessions = session_manager.clone();
@@ -253,6 +256,7 @@ pub async fn run_server_until(
         }
     });
     let scheduled = tokio::spawn(crate::scheduled::serve(config.clone()));
+    let host_operations = tokio::spawn(crate::host_admin::serve(config.clone()));
     let runs = config.runs.clone();
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let accept = tokio::spawn(run_accept_loop(
@@ -267,6 +271,7 @@ pub async fn run_server_until(
     reaper.abort();
     push_dispatcher.abort();
     scheduled.abort();
+    host_operations.abort();
     let _ = stop.send(());
     let _ = accept.await;
     runs.shutdown().await;

@@ -21,6 +21,7 @@
     - Releases, configuration and backups: docs/releases.md
     - Podman services: docs/podman-quadlet.md
     - HTTPS with Tailscale: docs/tailscale.md
+    - Host administration: docs/host-administration.md
     - Git authentication: docs/git-ssh.md
     - Execution bridge: docs/execution-bridge.md
 - Development:

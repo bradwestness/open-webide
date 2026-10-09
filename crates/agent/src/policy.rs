@@ -46,6 +46,9 @@ pub const BRIDGE_TOOLS: &[&str] = &[
 /// Derived from [`ToolName::requires_approval`]; an unknown tool name
 /// requires approval (default-deny).
 pub fn requires_approval(call: &ToolCall) -> bool {
+    if crate::host_admin::is_host_tool(&call.name) {
+        return call.name == "host_apply";
+    }
     match ToolName::from_str(&call.name) {
         Ok(name) => name.requires_approval(),
         Err(_) => true,
@@ -59,6 +62,9 @@ pub const NEVER_ALWAYS_APPROVED: &[&str] = &["run_command"];
 /// Derived from [`ToolName::always_approvable`]; an unknown tool name is
 /// approvable (only known tools can opt out).
 pub fn always_approvable(name: &str) -> bool {
+    if name == "host_apply" {
+        return false;
+    }
     match ToolName::from_str(name) {
         Ok(tool) => tool.always_approvable(),
         Err(_) => true,
@@ -88,7 +94,9 @@ impl<G: crate::PermissionGate, S: ApprovalSource> crate::PermissionGate for Poli
         &self,
         call: &ToolCall,
     ) -> impl std::future::Future<Output = bool> + Send {
-        self.source.check(call)
+        let allowed = call.name != "host_apply";
+        let check = self.source.check(call);
+        async move { allowed && check.await }
     }
     fn approve(&self, call: &ToolCall) -> impl std::future::Future<Output = bool> + Send {
         self.manual.approve(call)

@@ -1839,3 +1839,135 @@ fn scheduled_model_overrides_are_run_scoped_in_every_workspace() {
         }
     });
 }
+
+#[test]
+fn host_tools_require_configured_ssh_admin_and_projectless_scope_in_both_modes() {
+    futures::executor::block_on(async {
+        use openwebide_core::{NewProject, UserRole, WorkspaceMode};
+        let store = openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
+        store.migrate().await.unwrap();
+        let admin = store
+            .insert_user("host-admin", "hash", UserRole::Admin, 1)
+            .await
+            .unwrap();
+        let member = store
+            .insert_user("host-member", "hash", UserRole::User, 1)
+            .await
+            .unwrap();
+        let connection = store
+            .insert_connection(&NewConnection {
+                name: "model".into(),
+                kind: openwebide_core::ProviderKind::LlamaCpp,
+                base_url: "http://server".into(),
+                model: Some("model".into()),
+                context_limit: Some(32768),
+            })
+            .await
+            .unwrap();
+        let state = AppState { store };
+        let session = state
+            .store
+            .create_session("Host", Some(connection.id), None, None, admin.id, 1)
+            .await
+            .unwrap();
+        let body = || SendMessageBody {
+            content: "Inspect host".into(),
+            model: None,
+            editor_context: None,
+            browser_preferences: None,
+            queued_prompt: None,
+        };
+        let host_tool = |tool: &openwebide_core::ToolDefinition| {
+            openwebide_agent::host_admin::is_host_tool(&tool.name)
+        };
+        assert!(
+            !build_run_plan(&state, admin.id, session.id, body())
+                .await
+                .unwrap()
+                .request
+                .tools
+                .iter()
+                .any(host_tool)
+        );
+        state
+            .store
+            .save_host_connection(&openwebide_core::host_admin::HostConnection {
+                destination: "admin@host".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let plan = build_run_plan(&state, admin.id, session.id, body())
+            .await
+            .unwrap();
+        assert!(plan.request.tools.iter().any(host_tool));
+        assert_eq!(plan.kind, RunKind::WebChat);
+        let member_session = state
+            .store
+            .create_session("Host", Some(connection.id), None, None, member.id, 1)
+            .await
+            .unwrap();
+        assert!(
+            !build_run_plan(&state, member.id, member_session.id, body())
+                .await
+                .unwrap()
+                .request
+                .tools
+                .iter()
+                .any(host_tool)
+        );
+        for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+            let project = state
+                .store
+                .create_project(
+                    &NewProject {
+                        name: format!("{mode:?}"),
+                        path: Some(format!("/tmp/host-test-{mode:?}")),
+                        mode,
+                    },
+                    admin.id,
+                    1,
+                )
+                .await
+                .unwrap();
+            let project_session = state
+                .store
+                .create_session(
+                    "Project",
+                    Some(connection.id),
+                    None,
+                    Some(project.id),
+                    admin.id,
+                    1,
+                )
+                .await
+                .unwrap();
+            assert!(
+                !build_run_plan(&state, admin.id, project_session.id, body())
+                    .await
+                    .unwrap()
+                    .request
+                    .tools
+                    .iter()
+                    .any(host_tool)
+            );
+        }
+        let mut selected = state.store.get_connection(connection.id).await.unwrap();
+        selected.tool_selection =
+            openwebide_core::ToolSelection::Selected(vec!["host_inspect".into()]);
+        state.store.update_connection(&selected).await.unwrap();
+        let selected_plan = build_run_plan(&state, admin.id, session.id, body())
+            .await
+            .unwrap();
+        assert_eq!(
+            selected_plan
+                .request
+                .tools
+                .iter()
+                .filter(|tool| host_tool(tool))
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["host_inspect"]
+        );
+    });
+}

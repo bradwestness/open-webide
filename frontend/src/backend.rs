@@ -436,6 +436,36 @@ pub trait Backend {
         session: i64,
         model: Option<&'a str>,
     ) -> LocalBoxFuture<'a, Result<ChatMessage, String>>;
+    fn host_connection(
+        &self,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::host_admin::HostConnection, String>> {
+        Box::pin(async { Err("Host administration unavailable".into()) })
+    }
+    fn save_host_connection<'a>(
+        &'a self,
+        _connection: &'a openwebide_core::host_admin::HostConnection,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::host_admin::HostConnection, String>> {
+        Box::pin(async { Err("Host administration unavailable".into()) })
+    }
+    fn probe_host_connection(
+        &self,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::host_admin::HostEnvironment, String>> {
+        Box::pin(async { Err("Host administration unavailable".into()) })
+    }
+    fn host_view<'a>(
+        &'a self,
+        _session: i64,
+        _request: &'a openwebide_core::host_admin::HostRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::host_admin::HostResponse, String>> {
+        Box::pin(async { Err("Host administration unavailable".into()) })
+    }
+    fn host_input<'a>(
+        &'a self,
+        _session: i64,
+        _input: &'a openwebide_core::host_admin::HostInput,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("Host administration unavailable".into()) })
+    }
     fn scheduled_tasks(
         &self,
         _project: Option<i64>,
@@ -616,6 +646,37 @@ pub trait Backend {
 }
 
 impl Backend for BackendApi {
+    fn host_connection(
+        &self,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::host_admin::HostConnection, String>> {
+        Box::pin(BackendApi::host_connection(self))
+    }
+    fn save_host_connection<'a>(
+        &'a self,
+        connection: &'a openwebide_core::host_admin::HostConnection,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::host_admin::HostConnection, String>> {
+        Box::pin(BackendApi::save_host_connection(self, connection))
+    }
+    fn probe_host_connection(
+        &self,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::host_admin::HostEnvironment, String>> {
+        Box::pin(BackendApi::probe_host_connection(self))
+    }
+    fn host_view<'a>(
+        &'a self,
+        session: i64,
+        request: &'a openwebide_core::host_admin::HostRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::host_admin::HostResponse, String>> {
+        Box::pin(BackendApi::host_view(self, session, request))
+    }
+    fn host_input<'a>(
+        &'a self,
+        session: i64,
+        input: &'a openwebide_core::host_admin::HostInput,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(BackendApi::host_input(self, session, input))
+    }
+
     fn session_expired(&self) -> RwSignal<bool> {
         self.session_expired
     }

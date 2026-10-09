@@ -117,7 +117,7 @@ pub(super) async fn execute_command_direct(spec: SpawnSpec) -> Result<CommandOut
 
     let timeout_duration = spec
         .timeout
-        .clamp(Duration::from_secs(1), Duration::from_secs(300));
+        .clamp(Duration::from_secs(1), Duration::from_secs(3600));
 
     // Waits for the leader AND drains both pipes as one future, so the timeout/cancel branches
     // below actually race it: a backgrounded job that outlives the leader but still holds a pipe

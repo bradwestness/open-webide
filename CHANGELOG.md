@@ -9,6 +9,14 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Configure SSH host administration in Settings and inspect a live homelab
+  environment map from project-less chat. Approve immutable host plans, reply
+  privately to interactive prompts, and retain operation results across browser
+  disconnects, with reboot verification that never replays changes. Linux/macOS
+  support per-command sudo; Windows uses the SSH account's privileges. Included
+  by default in standard deployments; SSH credentials and a configured connection
+  are required. Project sessions and paired companion bridges cannot use these tools.
+
 - Yield within long plain rows while scanning, validating retained rows and
   copying fallback text, preserving complete publication and cancellation in
   the syntax worker and browser fallback.

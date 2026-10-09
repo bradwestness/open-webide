@@ -22,7 +22,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 38;
+pub const SCHEMA_VERSION: i64 = 39;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -113,6 +113,20 @@ async fn apply_step<D: Db>(
     probe: &(dyn Fn(&str) -> bool + Send + Sync),
 ) -> Result<(), StorageError> {
     match step {
+        39 => {
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS host_operations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                request_id TEXT NOT NULL, target TEXT NOT NULL, state TEXT NOT NULL,
+                data TEXT NOT NULL, UNIQUE(user_id, session_id, request_id))",
+                &[],
+            )
+            .await?;
+            db.execute("CREATE INDEX IF NOT EXISTS idx_host_operations_target ON host_operations(target, state)", &[]).await?;
+            Ok(())
+        }
         32 => {
             db.execute(
                 "CREATE TABLE IF NOT EXISTS push_subscriptions (

@@ -40,10 +40,11 @@ rand = { workspace = true }
 base64 = { workspace = true }
 openwebide-auth = { workspace = true }
 
+tempfile = "3"
+
 [dev-dependencies]
 openwebide-core = { workspace = true, features = ["test-support"] }
 tokio = { version = "1", features = ["test-util"] }
-tempfile = "3"
 
 
 [lints]

@@ -2,6 +2,8 @@
 name: openwebide
 services:
   openwebide:
+    # SSH host administration is included; configure its connection in Settings → Host.
+    # Credentials use the optional docker-compose.ssh.yml agent-forwarding overlay.
     image: ${OPENWEBIDE_IMAGE:-ghcr.io/openwebide/openwebide:latest}
     ports:
       - "8080:3000"

@@ -13,6 +13,13 @@ use serde_json::{Value, json};
 use crate::runs::http_client::ReqwestHttpClient;
 
 pub trait RunBackend: Send + Sync {
+    fn host_journal(
+        &self,
+        _command: &openwebide_core::host_admin::HostJournalCommand,
+    ) -> impl Future<Output = Result<openwebide_core::host_admin::HostJournalResult, String>> + Send
+    {
+        async { Err("Host operation journal unavailable".into()) }
+    }
     fn scheduled_command(
         &self,
         _user: i64,
@@ -341,6 +348,12 @@ pub fn encode_query(s: &str) -> String {
 }
 
 impl RunBackend for BackendClient {
+    async fn host_journal(
+        &self,
+        command: &openwebide_core::host_admin::HostJournalCommand,
+    ) -> Result<openwebide_core::host_admin::HostJournalResult, String> {
+        self.call(0, "POST", "/host/journal", json!(command)).await
+    }
     async fn scheduled_command(
         &self,
         user: i64,

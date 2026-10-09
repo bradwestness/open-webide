@@ -3538,3 +3538,11 @@ button.browser-item {
 }
 
 .editor-header .panel-minimize { order: 6; flex: none; margin-inline-start: auto; }
+
+/* Host administration uses the shared form/button system and theme tokens. */
+.host-panel { border-bottom: 1px solid var(--border); padding: 8px 12px; background: var(--bg-panel); max-height: 45vh; overflow: auto; flex-shrink: 0; }
+.host-resources { max-height: 24vh; overflow: auto; }
+.host-resource, .host-operation { border-top: 1px solid var(--border); padding: 6px 0; }
+.host-resource summary, .host-operation summary { cursor: pointer; color: var(--text); }
+.host-panel pre { font-family: var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-muted); max-height: 24vh; overflow: auto; }
+.host-output { background: var(--bg); padding: 8px; }
