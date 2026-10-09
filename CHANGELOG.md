@@ -9,6 +9,7 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Keep the official plugin marketplace permanently available, restore it in older account settings, and allow removal only for custom sources.
 - Browse the official and custom public Git marketplaces in Settings → Plugins,
   with searchable cached releases and repository inheritance. Install pinned
   skills packages on local or remote execution hosts, enable/disable them per

@@ -481,7 +481,7 @@ capability.
   and persist user preferences/dismissals in the database. A cached catalog is
   only a discovery hint; installation still verifies the pinned package release.
 - Extend the configured public Git catalog sources with recognized forge file URL
-  normalization, source disabling and private Git/forge credential adapters.
+  normalization, custom source disabling and private Git/forge credential adapters.
   Keep one repository/ref/catalog-path record and the same catalog contract for
   every source; credentials stay out of manifests and agent context. Add user
   defaults and project-specific configuration alongside existing per-project

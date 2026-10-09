@@ -13,12 +13,12 @@ Personal skills remain independent, and a duplicate skill name aborts activation
 without overwriting it. The project's global Skills switch still applies.
 
 The official source is `https://github.com/openwebide/plugins.git`, using its
-default branch and root `marketplace.json`. Additional sources accept a public
+default branch and root `marketplace.json`. It is built in and cannot be removed. Additional sources accept a public
 Git repository URL, optional branch/tag/commit reference, and catalog file path.
 Releases declare only their immutable commit and package directory; every package
 inherits its marketplace's repository. Refreshing catalogs updates discovery,
 while installed versions remain pinned. A failed refresh preserves cached
-releases and reports the failed source. Removing a source stops discovery without
+releases and reports the failed source. Removing a custom source stops discovery without
 uninstalling its packages. Sources and caches are user-scoped database settings.
 
 Select another catalog release to update or roll back an installation, then

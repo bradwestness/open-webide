@@ -397,3 +397,33 @@ async fn plugins_custom_marketplace_cache_failure_and_account_guard() {
     assert!(plugins.failures.get_untracked().is_empty());
     assert!(!plugins.busy.get_untracked());
 }
+
+#[wasm_bindgen_test]
+async fn plugins_only_custom_marketplaces_can_be_removed_in_both_modes() {
+    use openwebide_core::plugins::marketplace::*;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let fake = Rc::new(FakeBackend::default());
+        let custom = openwebide_core::plugins::testing::catalog().source;
+        fake.marketplaces.borrow_mut().sources.push(custom);
+        let mounted = mount_test_with_backend(fake, move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.auth.set_user(User {
+                id: UserId::new(1),
+                username: "test".into(),
+                role: UserRole::User,
+                created_at: 0,
+            });
+            view! {<openwebide_frontend::components::Plugins/>}
+        });
+        settle().await;
+        let text = mounted.root.text_content().unwrap();
+        assert!(text.contains("Official marketplace · always available"));
+        assert_eq!(text.matches("Remove marketplace").count(), 1);
+        assert!(!text.contains("Restore official marketplace"));
+        assert!(text.contains(&MarketplaceSource::official().repository));
+    }
+}

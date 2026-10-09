@@ -111,7 +111,8 @@ impl<D: Db> Store<D> {
             .map_or_else(
                 || Ok(MarketplaceSettings::default()),
                 |value| {
-                    serde_json::from_str(&value)
+                    serde_json::from_str::<MarketplaceSettings>(&value)
+                        .map(MarketplaceSettings::ensure_official)
                         .map_err(|error| StorageError::Db(error.to_string()))
                 },
             )
@@ -657,13 +658,50 @@ mod lifecycle_tests {
                     .plugin
                     .is_none()
             );
+            let legacy = MarketplaceSettings {
+                revision: 7,
+                sources: Vec::new(),
+                catalogs: Vec::new(),
+            };
+            store
+                .set_user_setting(
+                    other,
+                    "plugin_marketplaces",
+                    &serde_json::to_string(&legacy).unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                store.plugin_marketplaces(other).await.unwrap(),
+                legacy.ensure_official()
+            );
+            store
+                .set_user_setting(
+                    other,
+                    "plugin_marketplaces",
+                    &serde_json::to_string(&MarketplaceSettings::default()).unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                store
+                    .save_plugin_marketplaces(
+                        user,
+                        &SaveMarketplaces {
+                            revision: 0,
+                            sources: Vec::new()
+                        }
+                    )
+                    .await,
+                Err(StorageError::InvalidRequest(_))
+            ));
             let cache = catalog();
             let settings = store
                 .save_plugin_marketplaces(
                     user,
                     &SaveMarketplaces {
                         revision: 0,
-                        sources: vec![cache.source.clone()],
+                        sources: vec![MarketplaceSource::official(), cache.source.clone()],
                     },
                 )
                 .await

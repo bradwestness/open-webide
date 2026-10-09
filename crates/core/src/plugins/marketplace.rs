@@ -211,6 +211,16 @@ pub struct MarketplaceSettings {
     pub sources: Vec<MarketplaceSource>,
     pub catalogs: Vec<CachedMarketplace>,
 }
+impl MarketplaceSettings {
+    /// Restore the built-in source when reading settings saved by older versions.
+    pub fn ensure_official(mut self) -> Self {
+        let official = MarketplaceSource::official();
+        if !self.sources.contains(&official) {
+            self.sources.insert(0, official);
+        }
+        self
+    }
+}
 impl Default for MarketplaceSettings {
     fn default() -> Self {
         Self {
@@ -245,6 +255,9 @@ pub fn save_sources(
         return Err(PluginError::Conflict(
             "Marketplace settings changed. Refresh before editing.".into(),
         ));
+    }
+    if !request.sources.contains(&MarketplaceSource::official()) {
+        return Err(invalid("The official marketplace cannot be removed."));
     }
     if request.sources.len() > MAX_MARKETPLACES {
         return Err(invalid("At most 16 marketplaces can be configured."));
@@ -294,6 +307,39 @@ mod tests {
     use super::*;
     use crate::plugins::testing::catalog;
     #[test]
+    fn official_marketplace_is_required_and_restored_for_legacy_settings() {
+        let legacy = MarketplaceSettings {
+            revision: 7,
+            sources: vec![catalog().source],
+            catalogs: vec![catalog()],
+        };
+        let restored = legacy.clone().ensure_official();
+        assert_eq!(restored.revision, legacy.revision);
+        assert_eq!(restored.catalogs, legacy.catalogs);
+        assert_eq!(restored.sources[0], MarketplaceSource::official());
+        assert_eq!(restored.clone().ensure_official(), restored);
+        assert!(matches!(
+            save_sources(
+                restored.clone(),
+                &SaveMarketplaces {
+                    revision: restored.revision,
+                    sources: legacy.sources,
+                }
+            ),
+            Err(PluginError::Invalid(_))
+        ));
+        let saved = save_sources(
+            restored.clone(),
+            &SaveMarketplaces {
+                revision: restored.revision,
+                sources: vec![MarketplaceSource::official()],
+            },
+        )
+        .unwrap();
+        assert_eq!(saved.sources, vec![MarketplaceSource::official()]);
+        assert!(saved.catalogs.is_empty());
+    }
+    #[test]
     fn releases_inherit_the_catalog_repository_and_reject_overrides_and_mutable_pins() {
         let cache = catalog();
         let plugin = &cache.catalog.plugins[0];
@@ -334,7 +380,7 @@ mod tests {
         let cache = catalog();
         let settings = MarketplaceSettings {
             revision: 0,
-            sources: vec![cache.source.clone()],
+            sources: vec![MarketplaceSource::official(), cache.source.clone()],
             catalogs: vec![cache.clone()],
         };
         let retained = cache_catalogs(settings.clone(), 0, Vec::new()).unwrap();
@@ -343,7 +389,7 @@ mod tests {
             settings,
             &SaveMarketplaces {
                 revision: 0,
-                sources: Vec::new(),
+                sources: vec![MarketplaceSource::official()],
             },
         )
         .unwrap();
