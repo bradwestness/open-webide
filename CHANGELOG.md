@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Use production tooltip styling in browser regressions, avoiding layout-induced
+  dismissal and cascading menu/composer focus failures.
+
 - Reuse immutable long-row tab metadata during cold native-input admission,
   avoiding repeated source scans while preserving complete-layout fallbacks.
 

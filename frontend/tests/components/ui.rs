@@ -946,7 +946,9 @@ async fn pointer_tab_focus_and_editor_scroll_do_not_reopen_tooltips() {
     use super::support::wait_until;
     let mounted = mount_test(|_| {
         openwebide_frontend::viewport::install_action_tooltips();
-        view! { <button title="File path">"File"</button><div class="scroll-source"></div> }
+        // The fixed tooltip overlay must use the production stylesheet; an
+        // unstyled popup changes page layout and can dismiss itself on scroll.
+        view! { <style>{include_str!("../../styles.css")}</style><button title="File path">"File"</button><div class="scroll-source"></div> }
     });
     settle().await;
     let button = mounted.element("button");
