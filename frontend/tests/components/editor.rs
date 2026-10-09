@@ -8741,6 +8741,96 @@ async fn syntax_preparation_cannot_publish_after_scope_changes_in_both_modes() {
     }
 }
 
+#[wasm_bindgen_test]
+async fn cooperative_worker_plain_rows_publish_complete_sql_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::SyntaxWorker, highlight::TokenKind};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for ending in ["\n", "\r\n"] {
+            let source = format!("SELECT '文😀';{ending}").repeat(1_000);
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let initial = source.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("query.sql".into()));
+                state.workspace.content.set(initial.into());
+                EditorActions::new(state.workspace).install_syntax_transport(installed);
+                editor_view(state)
+            });
+            let actions = EditorActions::new(mounted.state.workspace);
+            wait_until("SQL worker request", || {
+                !transport.pending.borrow().is_empty()
+            })
+            .await;
+            let DeferredSyntaxReply { message, sender } =
+                transport.pending.borrow_mut().pop_front().unwrap();
+            let mut worker = SyntaxWorker::default();
+            assert!(worker.enqueue(&message).is_none());
+            let mut batches = 0;
+            let reply = loop {
+                batches += 1;
+                assert!(batches < 2_000);
+                let mut checks = 0;
+                if let Some(reply) = worker.advance(
+                    || true,
+                    || {
+                        checks += 1;
+                        checks >= 4
+                    },
+                ) {
+                    break reply;
+                }
+                assert!(worker.has_work());
+                assert!(
+                    actions.syntax_is_pending(),
+                    "{mode:?}: unfinished rows must remain pending"
+                );
+                assert!(
+                    mounted
+                        .state
+                        .workspace
+                        .editor_preparation
+                        .get_untracked()
+                        .is_none()
+                );
+                if batches % 32 == 0 {
+                    openwebide_frontend::util::yield_task().await;
+                }
+            };
+            assert!(batches > 100, "{mode:?}: plain SQL rows must yield");
+            sender.send(Ok(reply)).unwrap();
+            wait_until("complete SQL rows published", || {
+                !actions.syntax_is_pending()
+            })
+            .await;
+            let (prepared, rows) = actions.syntax_paint();
+            assert!(prepared);
+            assert!(
+                rows.iter()
+                    .flat_map(|row| row.iter())
+                    .all(|token| token.kind == TokenKind::Plain)
+            );
+            assert_eq!(
+                rows.iter()
+                    .map(|row| row
+                        .iter()
+                        .map(|token| token.text.as_str())
+                        .collect::<String>())
+                    .collect::<Vec<_>>(),
+                source.split('\n').map(str::to_owned).collect::<Vec<_>>()
+            );
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            assert_editor_native_source(&input, mounted.state.workspace, &source);
+        }
+    }
+}
+
 struct DeferredSyntaxReply {
     message: String,
     sender: futures::channel::oneshot::Sender<

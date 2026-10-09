@@ -98,7 +98,10 @@ tracks the remaining work rather than every optimization already shipped.
   embedded-scope lookup. Unchanged embedded bodies retain relative fallback contexts;
   outer/new-body scanning now resumes across worker tasks, including long literal
   and comment bodies, YAML headers/scalars and speculative row replay. Final
-  context/selection-list assembly remains. The final bracket pass skips opaque
+  context/selection-list assembly remains. Grammar-free SQL plain-row preparation
+  now yields between rows and retains exact unchanged-row tokens; oversized-row
+  tokenization and final publication still need bounded work. The final bracket pass
+  skips opaque
   regions and languages without brackets while preserving scope boundaries.
 - [ ] **Source ownership and storage:** finish remaining external parser snapshots,
   changed-revision source comparisons, transport serialization, diff shaping and
