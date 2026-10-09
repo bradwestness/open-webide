@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share exact Unicode coordinate traversal across ordered glyph queries when
+  validating shifted paragraph replay, preserving every source-byte and browser
+  overlap check while avoiding repeated grapheme-prefix scans.
+
 - Organize Settings and keyboard shortcuts into accessible tabs with keyboard navigation, stable dialog sizes and automatic model-default saving with retry after errors. Restore header minimize controls for Files, Editor and Terminal, preserving open files, unsaved edits and running shells.
 
 - Reuse unchanged styled paragraph suffix measurements across insertions and

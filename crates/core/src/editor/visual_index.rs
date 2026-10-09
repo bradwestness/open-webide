@@ -138,6 +138,46 @@ impl VisualLineIndex {
             point.native + suffix[..byte].encode_utf16().count(),
         ))
     }
+    /// Exact coordinates for ordered glyph queries, sharing traversal between
+    /// nearby positions and skipping sparse gaps through retained checkpoints.
+    /// Duplicates and EOF are valid; unordered or over-budget queries are rejected.
+    pub fn positions(&self, body: &str, glyphs: &[usize]) -> Option<Vec<(usize, usize)>> {
+        if !self.valid_body(body)
+            || glyphs.len() > super::MAX_VISUAL_CARETS
+            || glyphs.last().is_some_and(|glyph| *glyph >= self.len())
+            || glyphs.windows(2).any(|pair| pair[0] > pair[1])
+        {
+            return None;
+        }
+        let mut cursor = Position::default();
+        let mut result = Vec::with_capacity(glyphs.len());
+        for &target in glyphs {
+            let checkpoint = self
+                .0
+                .points
+                .partition_point(|point| point.glyph <= target)
+                .checked_sub(1)?;
+            let point = self.0.points[checkpoint];
+            if point.glyph > cursor.glyph {
+                cursor = point;
+            }
+            for cluster in body
+                .get(cursor.byte..)?
+                .graphemes(true)
+                .take(target - cursor.glyph)
+            {
+                cursor.byte += cluster.len();
+                cursor.native += cluster.encode_utf16().count();
+                cursor.glyph += 1;
+            }
+            if cursor.glyph != target {
+                return None;
+            }
+            result.push((cursor.byte, cursor.native));
+        }
+        Some(result)
+    }
+
     pub fn index_at_byte(&self, body: &str, byte: usize) -> Option<usize> {
         if !self.valid_body(body) || byte > body.len() {
             return None;
@@ -204,6 +244,42 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn ordered_positions_match_complete_unicode_coordinates() {
+        for body in [
+            "文😀e\u{301}\t words ".repeat(2000),
+            "🇺🇸🇫🇷🇦🇺👩‍👩‍👧‍👦क्ष abc ".repeat(2000),
+            format!("{}e{}tail", "x".repeat(513), "\u{301}".repeat(1000)),
+            "\r literal ".repeat(2000),
+            String::new(),
+        ] {
+            let index = VisualLineIndex::new(&body).unwrap();
+            let expected = crate::editor::visual_line_offsets(&body).unwrap();
+            for mut targets in [
+                (0..expected.len()).collect::<Vec<_>>(),
+                (0..expected.len()).step_by(97).collect(),
+                vec![0, 0, expected.len() - 1, expected.len() - 1],
+                Vec::new(),
+            ] {
+                targets.sort_unstable();
+                assert_eq!(
+                    index.positions(&body, &targets),
+                    Some(targets.iter().map(|target| expected[*target]).collect())
+                );
+            }
+            assert!(index.positions(&body, &[expected.len()]).is_none());
+            if !body.is_empty() {
+                assert!(index.positions(&body, &[1, 0]).is_none());
+            }
+            assert!(index.positions("mismatched length", &[0]).is_none());
+            assert!(
+                index
+                    .positions(&body, &vec![0; super::super::MAX_VISUAL_CARETS + 1])
+                    .is_none()
+            );
+        }
+    }
+
     #[test]
     fn sparse_glyph_queries_match_complete_cluster_coordinates() {
         for body in [

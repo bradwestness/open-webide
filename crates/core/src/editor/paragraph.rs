@@ -231,15 +231,13 @@ impl<'a> ParagraphMeasurementPlan<'a> {
             else {
                 break;
             };
-            let Some(old_start) = old
-                .index
-                .index_at_byte(old_body, bytes.start)
-                .and_then(|glyph| {
-                    record
-                        .rectangles
-                        .binary_search_by_key(&glyph, |rect| rect.glyph)
-                        .ok()
-                })
+            let Some(old_start_glyph) = old.index.index_at_byte(old_body, bytes.start) else {
+                break;
+            };
+            let Some(old_start) = record
+                .rectangles
+                .binary_search_by_key(&old_start_glyph, |rect| rect.glyph)
+                .ok()
                 .map(|at| record.rectangles[at].left)
             else {
                 break;
@@ -272,12 +270,27 @@ impl<'a> ParagraphMeasurementPlan<'a> {
             let Some(targets) = self.targets() else {
                 break;
             };
+            let old_targets = targets
+                .iter()
+                .map(|glyph| old_start_glyph.checked_add(glyph.checked_sub(probe.glyph_start)?))
+                .collect::<Option<Vec<_>>>();
+            let Some(old_targets) = old_targets else {
+                break;
+            };
+            let Some(positions) = self.index.positions(self.body, &targets) else {
+                break;
+            };
+            let Some(old_positions) = old.index.positions(old_body, &old_targets) else {
+                break;
+            };
             let translated = targets
                 .iter()
-                .map(|&glyph| {
-                    let byte = old_byte(self.index.at(self.body, glyph)?.0)?;
-                    let old_glyph = old.index.index_at_byte(old_body, byte)?;
-                    if old.index.at(old_body, old_glyph)?.0 != byte {
+                .zip(old_targets)
+                .zip(positions.iter().zip(old_positions))
+                .map(|((&glyph, old_glyph), ((byte, _), (old_position, _)))| {
+                    // Relative glyph numbering is only a candidate. Every exact
+                    // old/new byte position must still agree with the source shift.
+                    if old_byte(*byte) != Some(old_position) {
                         return None;
                     }
                     let at = record
