@@ -10746,12 +10746,12 @@ async fn pending_wheel_intent_reaches_complete_measured_width_in_both_modes() {
         );
         let slot = mounted.element(".status-preparation");
         assert!(
-            output.next_element_sibling().as_ref() == Some(&slot),
-            "Output immediately precedes syntax progress"
+            slot.next_element_sibling().as_ref() == Some(&output),
+            "Syntax progress immediately precedes Output"
         );
         assert!(
-            slot.next_element_sibling().is_none(),
-            "Syntax progress is last"
+            output.next_element_sibling().is_none(),
+            "Output is last"
         );
         let complete = fullNativeDimensions(&input, &source);
         let complete_width = fullSourcePaintWidth(&input, &source);
