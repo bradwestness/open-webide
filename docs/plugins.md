@@ -11,6 +11,26 @@ and use the gear menu to choose a release. Install it on the open project's
 execution host, or on the server host when no project is open. Plugins currently
 contribute agent skills and optional platform tool groups.
 
+Execution hosts bundle a commit-pinned subset of the official marketplace: Web,
+Project Memory, Scheduling and Skill Authoring. Account initialization installs
+missing defaults once through the normal validated host installation flow, with
+Notify updates. Existing accounts receive this baseline too. PR Review stays optional.
+The database remembers installation/removal by plugin identity; later sign-ins,
+refreshes and app upgrades do not reinstall removed defaults, reset project
+opt-outs or replace a selected version. Host unavailability defers initialization;
+sign-in and existing installations remain available, and refresh retries it.
+
+The selection is locked in `plugins/bundled.json`. `tools/bundle_plugins.py`
+materializes only those package directories from the pinned public Git commit,
+along with its MIT license. Docker builds regenerate the host snapshots; CI
+checks the committed snapshots against upstream. Native builds embed the checked-in
+snapshots so development builds and first installation need no network. Browsers
+receive manifests and managed skills through the existing APIs; plugin files are
+prepared and published on execution hosts. Updates still use the marketplace.
+To change the baseline, edit the lock, run `python3 tools/bundle_plugins.py`, and
+commit the regenerated host snapshots. Use `--repository <upstream-clone>` to
+regenerate or check without network access.
+
 Installation enables a plugin across your existing projects by default. New
 projects inherit installed plugins too. **Disable for project** saves an opt-out;
 updates preserve it. **Enable for project** removes that opt-out by loading the

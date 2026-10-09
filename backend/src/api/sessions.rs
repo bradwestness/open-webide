@@ -473,6 +473,7 @@ pub(super) async fn build_run_plan(
         content: send.content,
         editor: send.editor_context,
     };
+    super::plugins::ensure_bundled_plugins(state, user_id).await;
     let skills = state.store.session_skills(user_id, session_id).await?;
     let plugin_bindings = if let Some(project) = session.project_id {
         state.store.project_plugins(user_id, project).await?

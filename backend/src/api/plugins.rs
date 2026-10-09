@@ -3,6 +3,7 @@ use super::*;
 use openwebide_core::plugins::{PluginSource, PreparedPlugin, RecordPlugin};
 
 pub(crate) async fn list(state: &AppState, user: AuthedUser) -> Result<JsonResp, ApiError> {
+    ensure_bundled_plugins(state, user.id).await;
     Ok(json_response(
         200,
         &state.store.plugin_installations(user.id).await?,
@@ -135,6 +136,7 @@ pub(crate) async fn project_list(
     path: &str,
     user: AuthedUser,
 ) -> Result<JsonResp, ApiError> {
+    ensure_bundled_plugins(state, user.id).await;
     Ok(json_response(
         200,
         &state
@@ -209,4 +211,62 @@ pub(crate) async fn package(
         ));
     }
     Ok(json_response(200, &package))
+}
+
+/// Account initialization uses the normal server-host primitives and shared storage lifecycle.
+/// Host downtime does not prevent sign-in or viewing existing installations; refresh retries it.
+pub(super) async fn ensure_bundled_plugins(state: &AppState, user: UserId) {
+    let result: Result<(), ApiError> = async {
+        let pending = state.store.pending_bundled_plugins(user).await?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let mut packages = Vec::new();
+        for source in pending {
+            let (status, body) = crate::bridge::send(
+                &state.store,
+                "/plugins/prepare",
+                json!({"source":source,"user":user.get()}).to_string(),
+            )
+            .await?;
+            if status != 200 {
+                return Err(ApiError::bad_gateway("Bundled plugin host unavailable"));
+            }
+            let prepared: PreparedPlugin = serde_json::from_slice(&body)
+                .map_err(|error| ApiError::internal(error.to_string()))?;
+            prepared
+                .validate()
+                .map_err(|error| ApiError::internal(error.to_string()))?;
+            if prepared.source != source {
+                return Err(ApiError::bad_gateway("Bundled plugin source mismatch"));
+            }
+            let (status, body) = crate::bridge::send(
+                &state.store,
+                "/plugins/package",
+                json!({"prepared":prepared,"user":user.get()}).to_string(),
+            )
+            .await?;
+            if status != 200 {
+                return Err(ApiError::bad_gateway("Bundled plugin host unavailable"));
+            }
+            let package: PluginPackage = serde_json::from_slice(&body)
+                .map_err(|error| ApiError::internal(error.to_string()))?;
+            package
+                .validate()
+                .map_err(|error| ApiError::internal(error.to_string()))?;
+            if package.prepared != prepared {
+                return Err(ApiError::bad_gateway("Bundled plugin receipt mismatch"));
+            }
+            packages.push(package);
+        }
+        state
+            .store
+            .initialize_bundled_plugins(user, &packages, now())
+            .await?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        eprintln!("Bundled plugin initialization deferred: {error:?}");
+    }
 }

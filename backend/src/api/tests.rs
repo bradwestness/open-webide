@@ -2222,3 +2222,57 @@ async fn install_tool_group(
         .await
         .unwrap();
 }
+
+#[test]
+fn unavailable_bundle_host_preserves_account_access_existing_plugins_and_pending_defaults() {
+    futures::executor::block_on(async {
+        let store = openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
+        store.migrate().await.unwrap();
+        let user = store
+            .insert_user("bundle-owner", "hash", openwebide_core::UserRole::Admin, 0)
+            .await
+            .unwrap();
+        let prepared = openwebide_core::plugins::testing::receipt();
+        store
+            .record_plugin(
+                user.id,
+                &openwebide_core::plugins::RecordPlugin {
+                    prepared,
+                    package: None,
+                    revision: None,
+                    update_policy: None,
+                },
+                0,
+            )
+            .await
+            .unwrap();
+        let state = AppState { store };
+        let authed = AuthedUser {
+            id: user.id,
+            role: user.role,
+        };
+        assert_eq!(super::auth::me(&state, authed).await.unwrap().status(), 200);
+        assert_eq!(
+            super::plugins::list(&state, authed).await.unwrap().status(),
+            200
+        );
+        assert_eq!(
+            state
+                .store
+                .plugin_installations(user.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            state
+                .store
+                .pending_bundled_plugins(user.id)
+                .await
+                .unwrap()
+                .len(),
+            4
+        );
+    });
+}

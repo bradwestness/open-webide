@@ -4,7 +4,7 @@
 FROM ghcr.io/spinframework/spin:v4.1.0 AS builder
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates build-essential clang python3 && \
+    apt-get install -y --no-install-recommends curl ca-certificates build-essential clang python3 git && \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/root/.cargo/bin:${PATH}"
@@ -28,6 +28,8 @@ ENV OPENWEBIDE_BUILD_COMMIT=${OPENWEBIDE_BUILD_COMMIT}
 
 WORKDIR /src
 COPY . .
+# Regenerate only the locked subset from its immutable upstream Git commit.
+RUN python3 tools/bundle_plugins.py
 # Runs the [component.x.build] commands from spin.toml:
 #   backend  -> cargo build -p openwebide-backend --target wasm32-wasip2 --release
 #   frontend -> cd frontend && trunk build --release
@@ -51,6 +53,7 @@ COPY --from=builder /src/spin.toml ./
 COPY --from=builder /src/target/wasm32-wasip2/release/openwebide_backend.wasm \
      ./target/wasm32-wasip2/release/
 COPY --from=builder /src/frontend/dist ./frontend/dist
+COPY --from=builder /src/bridge/bundled/LICENSE ./licenses/core-plugins-MIT.txt
 
 # Frontend and API share one port; the bridge uses its own.
 EXPOSE 3000 3001

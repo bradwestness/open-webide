@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Bundle pinned official Web, Project Memory, Scheduling and Skill Authoring plugins on execution hosts and install them once per account, including offline setup. Preserve uninstalls, selected versions, update preferences and project opt-outs. PR Review remains optional.
+
 - Show Update all with the available update count beside the Installed plugin heading, before the fixed count pill, including when the section is collapsed.
 
 - Show active conversation monitors in the status line with a compact flyout for status, host authorization and cancellation; hide the indicator when no monitor is active.

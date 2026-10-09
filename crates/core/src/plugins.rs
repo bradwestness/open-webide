@@ -8,6 +8,27 @@ use sha2::{Digest, Sha256};
 
 use crate::skills::archive::{ImportFile, import_files};
 
+/// The selected core capabilities, pinned independently of marketplace refreshes.
+pub fn bundled_plugin_sources() -> Vec<PluginSource> {
+    #[derive(Deserialize)]
+    struct Selection {
+        repository: String,
+        commit: String,
+        paths: Vec<String>,
+    }
+    let selection: Selection = serde_json::from_str(include_str!("../../../plugins/bundled.json"))
+        .expect("valid bundled plugin selection");
+    selection
+        .paths
+        .into_iter()
+        .map(|path| PluginSource {
+            repository: selection.repository.clone(),
+            commit: selection.commit.clone(),
+            path,
+        })
+        .collect()
+}
+
 pub const MAX_PACKAGE_FILES: usize = 2048;
 pub const MAX_PACKAGE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_PACKAGE_FILE_BYTES: usize = 128 * 1024;

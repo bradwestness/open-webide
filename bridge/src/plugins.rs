@@ -11,6 +11,51 @@ use std::{
 };
 use tokio::{io::AsyncReadExt, process::Command, sync::Mutex};
 
+/// Only host binaries contain the bundled plugin files.
+fn bundled_files(source: &PluginSource) -> Option<Vec<PackageFile>> {
+    #[derive(serde::Deserialize)]
+    struct Bundle {
+        repository: String,
+        commit: String,
+        plugins: Vec<Package>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Package {
+        path: String,
+        files: Vec<File>,
+    }
+    #[derive(serde::Deserialize)]
+    struct File {
+        path: String,
+        content: String,
+        executable: bool,
+    }
+    let bundle: Bundle = serde_json::from_str(include_str!("../bundled/plugins.json"))
+        .expect("valid bundled host plugins");
+    if source.repository != bundle.repository || source.commit != bundle.commit {
+        return None;
+    }
+    bundle
+        .plugins
+        .into_iter()
+        .find(|package| package.path == source.path)
+        .map(|package| {
+            package
+                .files
+                .into_iter()
+                .map(|file| PackageFile {
+                    path: file.path,
+                    content: file.content.into_bytes(),
+                    kind: if file.executable {
+                        PackageFileKind::Executable
+                    } else {
+                        PackageFileKind::File
+                    },
+                })
+                .collect()
+        })
+}
+
 #[derive(Clone)]
 pub struct NativePluginInstaller {
     root: Option<PathBuf>,
@@ -224,6 +269,9 @@ impl PluginHost for ScopedHost {
     }
     fn files<'a>(&'a self, source: &'a PluginSource) -> PluginFuture<'a, Vec<PackageFile>> {
         Box::pin(async move {
+            if let Some(files) = bundled_files(source) {
+                return Ok(files);
+            }
             let repo = self.repository(source);
             create_directory(repo.parent().expect("repository parent"))?;
             if !repo.exists() {
@@ -797,5 +845,45 @@ mod tests {
             installer.prepare("paired", "host".into(), &source).await,
             Err(PluginError::Invalid(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod bundled_tests {
+    use super::*;
+    #[tokio::test]
+    async fn bundled_core_plugins_prepare_offline_on_both_hosts_using_normal_validation() {
+        let sources = openwebide_core::plugins::bundled_plugin_sources();
+        assert_eq!(sources.len(), 4);
+        for host in ["server-host", "paired-local-host"] {
+            let root = tempfile::tempdir().unwrap();
+            let installer = NativePluginInstaller::new(Some(root.path().to_path_buf()));
+            for source in &sources {
+                let prepared = installer
+                    .prepare("owner", host.into(), source)
+                    .await
+                    .unwrap();
+                let package = installer
+                    .package("owner", host.into(), &prepared)
+                    .await
+                    .unwrap();
+                assert_eq!(package.prepared, prepared);
+                assert_eq!(prepared.host_id, host);
+                assert_eq!(prepared.manifest.contributions.tool_groups.len(), 1);
+                assert_eq!(prepared.manifest.version, "0.1.0");
+                if prepared.manifest.name == "skill-authoring" {
+                    assert_eq!(package.skills.len(), 1);
+                } else {
+                    assert!(package.skills.is_empty());
+                }
+            }
+            assert!(!root.path().join(key("owner")).join("repositories").exists());
+        }
+        let mut optional = sources[0].clone();
+        optional.path = "plugins/pr-review".into();
+        assert!(bundled_files(&optional).is_none());
+        let mut future = sources[0].clone();
+        future.commit = "b".repeat(40);
+        assert!(bundled_files(&future).is_none());
     }
 }

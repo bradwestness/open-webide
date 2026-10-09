@@ -377,13 +377,15 @@ capability.
   open project), enables installed plugins across existing/new projects with saved
   per-project opt-outs, applies version changes/rollback and removes plugins.
   Web, Project Memory, Scheduling and Skill Authoring are first-party plugins;
-  core workspace tools remain built in. Notify is the default update policy,
+  core workspace tools remain built in. Execution hosts bundle a pinned baseline
+  of those four plugins and install it once per account, preserving removals,
+  chosen versions and project opt-outs; PR Review remains optional.
+  Notify is the default update policy,
   with a status-bar count, individual updates and Update all beside the Installed heading; Automatic supports
   compatible updates during idle app checks, and Off suppresses updates. Settings configures marketplace sources;
   the official source is always available. Sources, caches and installation records
   are user-scoped database data, and runs pin their package skill content. Remaining
-  work includes choosing fresh-install plugin defaults, checks while all clients
-  are closed, arbitrary tool runtimes/MCP contributions, dependencies/configuration,
+  work includes checks while all clients are closed, arbitrary tool runtimes/MCP contributions, dependencies/configuration,
   file-based suggestions and agent-facing plugin management.
 - Use one package format with typed contributions rather than mutually exclusive
   plugin types. A package can combine skills, MCP servers/tools and language

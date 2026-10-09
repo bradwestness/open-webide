@@ -1,7 +1,7 @@
 //! Database transport for the shared plugin installation policy.
 use super::*;
 use openwebide_core::plugins::{
-    PluginError, PluginInstallation, RecordPlugin, record_installation,
+    PluginError, PluginInstallation, PluginPackage, PluginSource, RecordPlugin, record_installation,
 };
 const KEY: &str = "plugin_installations";
 
@@ -23,31 +23,158 @@ impl<D: Db> Store<D> {
     ) -> Result<Vec<PluginInstallation>, StorageError> {
         self.db
             .transaction(|tx| async move {
+                Store::new(tx)
+                    .record_plugin_in_transaction(user, request, now)
+                    .await
+            })
+            .await
+    }
+    async fn record_plugin_in_transaction(
+        &self,
+        user: UserId,
+        request: &RecordPlugin,
+        now: i64,
+    ) -> Result<Vec<PluginInstallation>, StorageError> {
+        let current = self.plugin_installations(user).await?;
+        let next = record_installation(current, request, now).map_err(|error| match error {
+            PluginError::Conflict(message) => StorageError::Conflict(message),
+            PluginError::Invalid(message) => StorageError::InvalidRequest(message),
+            PluginError::Host(message) => StorageError::Db(message),
+        })?;
+        let json =
+            serde_json::to_string(&next).map_err(|error| StorageError::Db(error.to_string()))?;
+        self.set_user_setting(user, KEY, &json).await?;
+        if let Some(package) = &request.package {
+            self.db.execute("INSERT INTO plugin_defaults(user_id,repository,path,package) VALUES(?,?,?,?) ON CONFLICT(user_id,repository,path) DO UPDATE SET package=excluded.package", &[
+                DbValue::Int(user.get()), DbValue::Text(request.prepared.source.repository.clone()), DbValue::Text(request.prepared.source.path.clone()),
+                DbValue::Text(serde_json::to_string(package).map_err(|error| StorageError::Db(error.to_string()))?),
+            ]).await?;
+            let projects = self
+                .db
+                .execute(
+                    "SELECT id FROM projects WHERE user_id=?",
+                    &[DbValue::Int(user.get())],
+                )
+                .await?;
+            for row in projects.rows {
+                self.apply_plugin_default(user, row.get_int(0)?, package, now)
+                    .await?;
+            }
+        }
+        if !next
+            .iter()
+            .find(|entry| {
+                entry.prepared.source.repository == request.prepared.source.repository
+                    && entry.prepared.source.path == request.prepared.source.path
+            })
+            .is_some_and(|entry| entry.default_enabled)
+        {
+            self.db
+                .execute(
+                    "DELETE FROM plugin_defaults WHERE user_id=? AND repository=? AND path=?",
+                    &[
+                        DbValue::Int(user.get()),
+                        DbValue::Text(request.prepared.source.repository.clone()),
+                        DbValue::Text(request.prepared.source.path.clone()),
+                    ],
+                )
+                .await?;
+        }
+        self.acknowledge_bundled_plugin(user, &request.prepared.source)
+            .await?;
+        Ok(next)
+    }
+    async fn acknowledged_bundled_plugins(
+        &self,
+        user: UserId,
+    ) -> Result<Vec<PluginSource>, StorageError> {
+        self.get_user_setting(user, "bundled_plugins_initialized")
+            .await?
+            .map_or_else(
+                || Ok(Vec::new()),
+                |json| {
+                    serde_json::from_str(&json).map_err(|error| StorageError::Db(error.to_string()))
+                },
+            )
+    }
+    async fn acknowledge_bundled_plugin(
+        &self,
+        user: UserId,
+        source: &PluginSource,
+    ) -> Result<(), StorageError> {
+        if !openwebide_core::plugins::bundled_plugin_sources()
+            .iter()
+            .any(|default| default.repository == source.repository && default.path == source.path)
+        {
+            return Ok(());
+        }
+        let mut applied = self.acknowledged_bundled_plugins(user).await?;
+        if !applied
+            .iter()
+            .any(|entry| entry.repository == source.repository && entry.path == source.path)
+        {
+            applied.push(source.clone());
+            self.set_user_setting(
+                user,
+                "bundled_plugins_initialized",
+                &serde_json::to_string(&applied)
+                    .map_err(|error| StorageError::Db(error.to_string()))?,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+    pub async fn pending_bundled_plugins(
+        &self,
+        user: UserId,
+    ) -> Result<Vec<PluginSource>, StorageError> {
+        let applied = self.acknowledged_bundled_plugins(user).await?;
+        let installed = self.plugin_installations(user).await?;
+        Ok(openwebide_core::plugins::bundled_plugin_sources()
+            .into_iter()
+            .filter(|source| {
+                !applied
+                    .iter()
+                    .any(|entry| entry.repository == source.repository && entry.path == source.path)
+                    && !installed.iter().any(|entry| {
+                        entry.prepared.source.repository == source.repository
+                            && entry.prepared.source.path == source.path
+                    })
+            })
+            .collect())
+    }
+    /// Recheck inside one transaction so concurrent initialization/removal cannot restore opt-outs.
+    pub async fn initialize_bundled_plugins(
+        &self,
+        user: UserId,
+        packages: &[PluginPackage],
+        now: i64,
+    ) -> Result<(), StorageError> {
+        self.db
+            .transaction(|tx| async move {
                 let store = Store::new(tx);
-                let current = store.plugin_installations(user).await?;
-                let next =
-                    record_installation(current, request, now).map_err(|error| match error {
-                        PluginError::Conflict(message) => StorageError::Conflict(message),
-                        PluginError::Invalid(message) => StorageError::InvalidRequest(message),
-                        PluginError::Host(message) => StorageError::Db(message),
-                    })?;
-                let json = serde_json::to_string(&next)
-                    .map_err(|error| StorageError::Db(error.to_string()))?;
-                store.set_user_setting(user, KEY, &json).await?;
-                if let Some(package) = &request.package {
-                    store.db.execute("INSERT INTO plugin_defaults(user_id,repository,path,package) VALUES(?,?,?,?) ON CONFLICT(user_id,repository,path) DO UPDATE SET package=excluded.package", &[
-                        DbValue::Int(user.get()), DbValue::Text(request.prepared.source.repository.clone()), DbValue::Text(request.prepared.source.path.clone()),
-                        DbValue::Text(serde_json::to_string(package).map_err(|error| StorageError::Db(error.to_string()))?),
-                    ]).await?;
-                    let projects = store.db.execute("SELECT id FROM projects WHERE user_id=?", &[DbValue::Int(user.get())]).await?;
-                    for row in projects.rows {
-                        store.apply_plugin_default(user, row.get_int(0)?, package, now).await?;
-                    }
+                let pending = store.pending_bundled_plugins(user).await?;
+                for source in pending {
+                    let package = packages
+                        .iter()
+                        .find(|package| package.prepared.source == source)
+                        .ok_or_else(|| {
+                            StorageError::InvalidRequest("Missing bundled plugin package".into())
+                        })?;
+                    store
+                        .record_plugin_in_transaction(
+                            user,
+                            &RecordPlugin {
+                                prepared: package.prepared.clone(),
+                                package: Some(Box::new(package.clone())),
+                                revision: None,
+                                update_policy: None,
+                            },
+                            now,
+                        )
+                        .await?;
                 }
-                if !next.iter().find(|entry|entry.prepared.source.repository==request.prepared.source.repository && entry.prepared.source.path==request.prepared.source.path).is_some_and(|entry|entry.default_enabled) {
-                    store.db.execute("DELETE FROM plugin_defaults WHERE user_id=? AND repository=? AND path=?", &[DbValue::Int(user.get()), DbValue::Text(request.prepared.source.repository.clone()), DbValue::Text(request.prepared.source.path.clone())]).await?;
-                }
-                Ok(next)
+                Ok(())
             })
             .await
     }
@@ -436,6 +563,7 @@ impl<D: Db> Store<D> {
             store.db.execute("DELETE FROM project_skills WHERE id IN (SELECT s.skill_id FROM project_plugin_skills s JOIN project_plugins p ON p.id=s.plugin_id WHERE p.user_id=? AND p.repository=? AND p.path=?)",&scope).await?;
             store.db.execute("DELETE FROM project_plugins WHERE user_id=? AND repository=? AND path=?",&scope).await?;
             store.db.execute("DELETE FROM plugin_defaults WHERE user_id=? AND repository=? AND path=?",&scope).await?;
+            store.acknowledge_bundled_plugin(user, &request.source).await?;
             entries.retain(|entry|entry.prepared.source.repository!=request.source.repository || entry.prepared.source.path!=request.source.path);
             store.set_user_setting(user,KEY,&serde_json::to_string(&entries).map_err(|error|StorageError::Db(error.to_string()))?).await?;
             Ok(entries)
@@ -1215,6 +1343,209 @@ mod default_conflict_tests {
                     .unwrap()
                     .is_empty()
             );
+        });
+    }
+}
+
+#[cfg(test)]
+mod bundled_tests {
+    use super::*;
+    use crate::rusqlite_db::RusqliteDb;
+    use openwebide_core::{
+        NewProject, WorkspaceMode,
+        plugins::{PluginToolGroup, PluginUpdatePolicy, bundled_plugin_sources, testing::package},
+    };
+    fn packages() -> Vec<PluginPackage> {
+        bundled_plugin_sources()
+            .into_iter()
+            .zip([
+                PluginToolGroup::Web,
+                PluginToolGroup::Memory,
+                PluginToolGroup::Scheduling,
+                PluginToolGroup::SkillAuthoring,
+            ])
+            .map(|(source, group)| {
+                let mut pkg = package();
+                pkg.prepared.manifest.name = source.path.rsplit('/').next().unwrap().into();
+                pkg.prepared.source = source;
+                pkg.prepared.manifest.compatibility.plugin_api = 2;
+                pkg.prepared.manifest.contributions.tool_groups = vec![group];
+                if group != PluginToolGroup::SkillAuthoring {
+                    pkg.prepared.manifest.contributions.skills.clear();
+                    pkg.skills.clear();
+                }
+                pkg
+            })
+            .collect()
+    }
+    #[test]
+    fn bundled_defaults_are_once_per_account_and_preserve_removals_versions_and_project_opt_outs() {
+        futures::executor::block_on(async {
+            for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+                let store = Store::new(RusqliteDb::open_in_memory().unwrap());
+                store.migrate().await.unwrap();
+                let owner = store
+                    .insert_user("owner", "hash", UserRole::Admin, 0)
+                    .await
+                    .unwrap()
+                    .id;
+                let other = store
+                    .insert_user("other", "hash", UserRole::User, 0)
+                    .await
+                    .unwrap()
+                    .id;
+                let project = store
+                    .create_project(
+                        &NewProject {
+                            name: "existing".into(),
+                            mode,
+                            path: None,
+                        },
+                        owner,
+                        0,
+                    )
+                    .await
+                    .unwrap();
+                let packages = packages();
+                // A failed partial batch cannot leave installed defaults or an initialized marker.
+                assert!(
+                    store
+                        .initialize_bundled_plugins(owner, &packages[..3], 1)
+                        .await
+                        .is_err()
+                );
+                assert!(store.plugin_installations(owner).await.unwrap().is_empty());
+                assert_eq!(store.pending_bundled_plugins(owner).await.unwrap().len(), 4);
+                store
+                    .initialize_bundled_plugins(owner, &packages, 1)
+                    .await
+                    .unwrap();
+                let entries = store.plugin_installations(owner).await.unwrap();
+                assert_eq!(entries.len(), 4);
+                assert!(entries.iter().all(|entry| entry.default_enabled
+                    && entry.update_policy == PluginUpdatePolicy::Notify));
+                assert!(
+                    store
+                        .pending_bundled_plugins(owner)
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+                assert_eq!(store.pending_bundled_plugins(other).await.unwrap().len(), 4);
+                assert_eq!(
+                    store
+                        .project_plugins(owner, project.id)
+                        .await
+                        .unwrap()
+                        .len(),
+                    4
+                );
+                let binding = store
+                    .project_plugins(owner, project.id)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|entry| entry.prepared.source != entries[0].prepared.source)
+                    .unwrap();
+                store
+                    .project_plugin_command(
+                        owner,
+                        project.id,
+                        &ProjectPluginCommand::Disable {
+                            id: binding.id,
+                            revision: binding.revision,
+                        },
+                        2,
+                    )
+                    .await
+                    .unwrap();
+                let first = entries[0].clone();
+                store
+                    .remove_plugin(
+                        owner,
+                        &RemovePlugin {
+                            source: first.prepared.source.clone(),
+                            revision: first.revision,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                store
+                    .initialize_bundled_plugins(owner, &[], 3)
+                    .await
+                    .unwrap();
+                assert_eq!(store.plugin_installations(owner).await.unwrap().len(), 3);
+                assert!(
+                    store
+                        .pending_bundled_plugins(owner)
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+                assert!(
+                    store
+                        .project_plugins(owner, project.id)
+                        .await
+                        .unwrap()
+                        .iter()
+                        .all(|entry| entry.prepared.source != first.prepared.source)
+                );
+                assert!(
+                    !store
+                        .project_plugins(owner, project.id)
+                        .await
+                        .unwrap()
+                        .iter()
+                        .find(|entry| entry.id == binding.id)
+                        .unwrap()
+                        .enabled
+                );
+                let future = store
+                    .create_project(
+                        &NewProject {
+                            name: "future".into(),
+                            mode,
+                            path: None,
+                        },
+                        owner,
+                        4,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    store.project_plugins(owner, future.id).await.unwrap().len(),
+                    3
+                );
+                // An explicit newer installation is never replaced by the bundled baseline.
+                let mut newer = packages[0].clone();
+                newer.prepared.source.commit = "b".repeat(40);
+                newer.prepared.manifest.version = "0.1.9".into();
+                store
+                    .record_plugin(
+                        other,
+                        &RecordPlugin {
+                            prepared: newer.prepared.clone(),
+                            package: Some(Box::new(newer)),
+                            revision: None,
+                            update_policy: Some(PluginUpdatePolicy::Off),
+                        },
+                        5,
+                    )
+                    .await
+                    .unwrap();
+                store
+                    .initialize_bundled_plugins(other, &packages, 6)
+                    .await
+                    .unwrap();
+                let installed = store.plugin_installations(other).await.unwrap();
+                assert_eq!(installed.len(), 4);
+                let preserved = installed
+                    .iter()
+                    .find(|entry| entry.prepared.source.path == "plugins/web")
+                    .unwrap();
+                assert_eq!(preserved.prepared.manifest.version, "0.1.9");
+                assert_eq!(preserved.update_policy, PluginUpdatePolicy::Off);
+            }
         });
     }
 }
