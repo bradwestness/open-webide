@@ -17082,6 +17082,29 @@ fn retained_source_carets_are_sparse_and_scope_owned_in_both_modes() {
                     .measured_source_caret(&mut cache, 0, "changed metrics")
                     .is_none()
             );
+            assert_eq!(
+                actions.painted_source_caret(&cache, 0, "metrics"),
+                Some((0, 0))
+            );
+            assert_eq!(
+                actions.painted_source_caret(&cache, 3, "metrics"),
+                Some((0, 2))
+            );
+            assert_eq!(
+                actions.painted_source_caret(&cache, source.len(), "metrics"),
+                Some((0, 48_000))
+            );
+            assert!(actions.painted_source_caret(&cache, 4, "metrics").is_none());
+            assert!(
+                actions
+                    .painted_source_caret(&cache, source.len() + 1, "metrics")
+                    .is_none()
+            );
+            assert!(
+                actions
+                    .painted_source_caret(&cache, 0, "changed metrics")
+                    .is_none()
+            );
             match change {
                 0 => {
                     actions.paste("z", Selection::caret(0)).unwrap();
@@ -17121,6 +17144,118 @@ fn retained_source_carets_are_sparse_and_scope_owned_in_both_modes() {
                     .is_none(),
                 "{mode:?}: stale context {change}"
             );
+            assert!(
+                actions.painted_source_caret(&cache, 0, "metrics").is_none(),
+                "{mode:?}: stale paint {change}"
+            );
         }
+    }
+}
+
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function capture_navigation_row_probes(root) {
+    const observer = new MutationObserver(() => {});
+    observer.observe(root, {childList:true, subtree:true});
+    return () => {
+        const count = observer.takeRecords().reduce((count, mutation) => count +
+            [...mutation.addedNodes].filter(node => node.nodeType === 1 &&
+                node.matches('.editor-row-measure')).length, 0);
+        observer.disconnect();
+        return count;
+    };
+}
+"#)]
+extern "C" {
+    fn capture_navigation_row_probes(root: &web_sys::Element) -> js_sys::Function;
+}
+
+#[wasm_bindgen_test]
+async fn painted_caret_movement_avoids_complete_row_probes_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
+        let source = format!(
+            "const VALUE: &str = \"{}\";",
+            "e\u{301}😀 xyz ".repeat(10_000)
+        );
+        let original = source.clone();
+        let slot = std::rc::Rc::new(std::cell::Cell::new(None::<EditorActions>));
+        let capture_actions = slot.clone();
+        let mounted = mount_test(move |state| {
+            let actions = EditorActions::new(state.workspace);
+            actions.install_syntax_transport(installed);
+            capture_actions.set(Some(actions));
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state
+                .workspace
+                .open_file
+                .set(Some("painted-carets.rs".into()));
+            state.workspace.content.set(source.into());
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:520px;height:280px">{editor_view(state)}</div> }
+        });
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let actions = slot.get().unwrap();
+        let started = js_sys::Date::now();
+        let reported = std::cell::Cell::new(false);
+        super::support::wait_until_with_timeout(
+            "prepared native paint for caret navigation",
+            30_000,
+            || {
+                if !transport.pending.borrow().is_empty() {
+                    transport.respond(true);
+                }
+                if js_sys::Date::now() - started > 5000.0 && !reported.replace(true) {
+                    wasm_bindgen_test::console_log!("caret paint readiness {mode:?}: strings={} rows={} class={} pending={} native={:?}",
+                        mounted.root.query_selector_all(".tok-string").unwrap().length(),
+                        mounted.root.query_selector_all(".editor-source-line").unwrap().length(),
+                        mounted.element(".editor-code").class_name(),
+                        actions.syntax_preparation_pending(), input.get_attribute("data-editor-native-bound"));
+                }
+                mounted
+                    .root
+                    .query_selector(".editor-source-line .tok-string")
+                    .unwrap()
+                    .is_some()
+                    && mounted
+                        .root
+                        .query_selector(".editor-code.highlight-ready")
+                        .unwrap()
+                        .is_some()
+                    && !actions.syntax_preparation_pending()
+            },
+        )
+        .await;
+        settle().await;
+        let capture = capture_navigation_row_probes(&mounted.root);
+        assert!(editor_key(&input, "Home", true, false).default_prevented());
+        assert_eq!(actions.selection(&original), Some(Selection::caret(0)));
+        for _ in 0..30 {
+            assert!(editor_key(&input, "ArrowRight", false, false).default_prevented());
+        }
+        let forward = actions.selection(&original).unwrap();
+        assert!(
+            forward.head > 30,
+            "Unicode source coordinates must survive paint mapping"
+        );
+        for _ in 0..30 {
+            assert!(editor_key(&input, "ArrowLeft", false, false).default_prevented());
+        }
+        assert_eq!(actions.selection(&original), Some(Selection::caret(0)));
+        assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+        assert_eq!(
+            capture
+                .call0(&wasm_bindgen::JsValue::NULL)
+                .unwrap()
+                .as_f64(),
+            Some(0.0),
+            "{mode:?}: current painted carets must not allocate hidden full-row probes"
+        );
     }
 }

@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Resolve carets directly from current source-owned painted coverage before
+  preparing hidden movement layouts, including positions between retained sparse
+  anchors. Reject stale scope/font data and unpainted source gaps.
+
 - Reuse exact retained caret anchors before preparing a complete movement layout.
   Preserve source, account, project, font and layout ownership; sparse gaps and
   unsupported layouts retain the complete-renderer fallback. Verify benchmark

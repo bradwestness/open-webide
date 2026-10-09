@@ -166,6 +166,7 @@ pub struct EditorRowPaint {
     pub guides: std::sync::Arc<[usize]>,
     pub indentation: openwebide_core::editor::Indentation,
     pub whitespace: bool,
+    pub word_wrap: bool,
 }
 #[derive(Clone, Debug)]
 pub struct EditorParagraphCache {

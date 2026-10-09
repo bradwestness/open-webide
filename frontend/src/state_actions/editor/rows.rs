@@ -242,6 +242,7 @@ fn same_measurement_environment(old: &EditorRowPaint, paint: &EditorRowPaint) ->
         && old.metrics == paint.metrics
         && old.indentation == paint.indentation
         && old.whitespace == paint.whitespace
+        && old.word_wrap == paint.word_wrap
 }
 fn same_paint_scope(old: &EditorRowPaint, paint: &EditorRowPaint) -> bool {
     old.view_revision == paint.view_revision
@@ -488,7 +489,8 @@ impl EditorActions {
         )
     }
     pub(super) fn row_paint_current(self, paint: &EditorRowPaint) -> bool {
-        self.workspace.editor_font_epoch.get_untracked() == paint.font_epoch
+        self.preferences().word_wrap == paint.word_wrap
+            && self.workspace.editor_font_epoch.get_untracked() == paint.font_epoch
             && self.workspace.editor_view_revision.get_untracked() == paint.view_revision
             && self.workspace.editor_layout_epoch.get_untracked() == paint.layout_epoch
             && self.key().as_ref() == Some(&paint.key)
@@ -539,6 +541,7 @@ impl EditorActions {
             guides,
             indentation,
             whitespace,
+            word_wrap: self.preferences().word_wrap,
         })
     }
     pub fn prepare_row_measurements(
@@ -712,6 +715,36 @@ impl EditorActions {
         let result = entry.1.clone();
         cache.geometry.push_back(entry);
         Some(result)
+    }
+    /// Map a source caret into current source-owned paint. The DOM adapter must
+    /// additionally prove that this UTF-16 column is present in its paint coverage.
+    pub fn painted_source_caret(
+        self,
+        cache: &EditorFragmentCache,
+        offset: usize,
+        metrics: &str,
+    ) -> Option<(usize, usize)> {
+        let paint = &cache.scope.as_ref()?.0;
+        if paint.metrics != metrics || !self.row_paint_current(paint) {
+            return None;
+        }
+        let projection = &paint.projection;
+        let visible = projection.visible_offset(offset).ok()?;
+        let row = projection
+            .lines()
+            .partition_point(|line| line.visible_start <= visible)
+            .checked_sub(1)?;
+        let line = projection.lines().get(row)?;
+        let local = visible.checked_sub(line.visible_start)?;
+        let body = projection.line_body(row)?;
+        if local > body.len() || !body.is_char_boundary(local) {
+            return None;
+        }
+        let column = projection
+            .byte_to_textarea(visible)
+            .ok()?
+            .checked_sub(line.textarea_start)?;
+        Some((line.source_line, column))
     }
     /// Return only an exactly retained caret within the current source/style
     /// scope. Runtime adapters translate these row-relative pixels into the view.
@@ -1095,11 +1128,12 @@ mod tests {
             guides: Arc::from([0]),
             indentation: Indentation::default(),
             whitespace: false,
+            word_wrap: false,
         };
         let mut fresh = old.clone();
         fresh.layout_epoch += 1;
         assert!(same_paint_runs(&old, &fresh));
-        for change in 0..14 {
+        for change in 0..15 {
             let mut stale = fresh.clone();
             match change {
                 0 => stale.view_revision += 1,
@@ -1118,7 +1152,8 @@ mod tests {
                 10 => stale.tokens = Arc::new((*old.tokens).clone()),
                 11 => stale.guides = Arc::from([0]),
                 12 => stale.indentation.width += 1,
-                _ => stale.whitespace = true,
+                13 => stale.whitespace = true,
+                _ => stale.word_wrap = true,
             }
             assert!(!same_paint_runs(&old, &stale), "change {change}");
         }

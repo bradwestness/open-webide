@@ -2449,3 +2449,48 @@ modes. This checkpoint's CI remains required.
 All five CI jobs passed for e061d68 (37856267663), 47c5cbb (37857374089) and
 3714b44 (37858160328). Those results do not replace this draft's CI or the full
 editor completion gates.
+
+### Current painted caret coverage (2026-10-08)
+
+Caret reveal now first maps the source byte into source-owned UTF-16 paint via
+`EditorActions`, then measures a collapsed browser range within actual painted
+coverage. Missing coverage, stale account/file/source/style, a mismatched DOM
+projection revision or an invalid rectangle preserves the existing retained-anchor
+and complete-renderer fallbacks. Whole rendered rows receive the same paint scope
+as windowed fragments. Retained paint now explicitly records the wrap preference,
+so a wrap toggle rejects old geometry before deferred layout refresh.
+
+The styled Rust navigation regression drives Home and 30 Right/Left moves through
+combining characters and emoji in both modes. A synchronous mutation audit sees
+no hidden row-probe allocations; selections return to byte zero and complete
+source stays unchanged. The harness supplies actual Rust syntax-service replies
+through its deferred transport, since its page does not host the release worker.
+Independent release-worker validation reports the same 1,552 cooperative yields,
+exact fresh/incremental publication and near-1-MiB Rust/YAML String styling.
+Trusted release Chromium input also passes commit/cancel, undo/redo and source
+preservation for LF/CRLF in both modes. These are engine checks, not physical IME,
+touch, installed PWA or local directory-permission evidence.
+
+[Repeated Linux measurements](editor-performance/painted-caret-linux-repeat.jsonl)
+use the finalized c24fc4781b9b96d2 bundle, based on f1cf98b plus this draft, the
+same pinned 3714b44 backend, existing arm64 image and 4-CPU/10-GiB container budget.
+All six runs use the actual 1,048,567-byte styled Rust String, require verified
+byte-zero selection before insertion and verify the complete saved document
+through load, scrolling and insertion. Three samples per mode are descriptive,
+not a percentile or a general memory guarantee. Component verification was also
+running on the host; the container budget does not imply exclusive host resources.
+Local recovery fixtures have no native directory handles.
+
+| Mode | Cold paint median (range), ms | Scroll paint median (range), ms | Beginning input median (range), ms | Peak Chrome PSS range, KiB | Largest task range, ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Local | 3942.4 (3904.1–3994.9) | 18.3 (17.1–21.7) | 2644.3 (2614.4–2686.2) | 760987–792826 | 100–109 |
+| Remote | 4151.3 (3712.2–4608.2) | 28.5 (26.2–30.1) | 2761.9 (2663.5–2893.5) | 761344–807202 | 115–122 |
+
+Cold/start-of-document repaint and process memory remain completion work. The
+previous trace shows beginning repaint still preparing 72 paragraph probes;
+shifted suffix reuse must preserve original paint-run boundaries and exact new
+glyph targets, not simply translate widths or assume unchanged source offsets.
+Validation passed: 115 native frontend tests, strict WASM frontend lint, the full
+Chrome suite (18 unit, 446 component and four adapter tests), the separate five-family
+font/feature/whitespace matrix and near-limit geometry matrix, format checks and
+the finalized release build. This checkpoint's CI remains required.

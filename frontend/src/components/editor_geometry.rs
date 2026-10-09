@@ -1087,6 +1087,46 @@ pub(super) fn neighborhood_layout(
     VisualLayout::neighborhood(&source, projection, identity, &lines, carets).ok()
 }
 
+/// Current painted coverage already contains exact browser caret geometry. Do
+/// not prepare a complete row when a source-owned fragment contains this caret.
+pub(super) fn painted_caret_rect(
+    actions: EditorActions,
+    input: &web_sys::HtmlTextAreaElement,
+    cache: &crate::state_actions::editor::EditorFragmentCache,
+    offset: usize,
+) -> Option<web_sys::DomRect> {
+    if !current_editor_target(actions, input) {
+        return None;
+    }
+    let revision = actions.view_revision();
+    let identity = super::editor_rows::metrics_identity(input)?;
+    let (line, column) = actions.painted_source_caret(cache, offset, &identity)?;
+    let paint = input
+        .parent_element()?
+        .query_selector(".editor-highlight-content")
+        .ok()??;
+    if paint.get_attribute("data-editor-scope").as_deref()
+        != Some(actions.projection_revision().to_string().as_str())
+    {
+        return None;
+    }
+    let row = paint
+        .query_selector(&format!(".editor-source-line[data-line='{}']", line + 1))
+        .ok()??;
+    let caret = super::editor::caret_rect(&row, u32::try_from(column).ok()?)?;
+    if caret.height() <= 0.0
+        || ![caret.left(), caret.top(), caret.width(), caret.height()]
+            .iter()
+            .all(|value| value.is_finite())
+        || actions.view_revision() != revision
+        || !current_editor_target(actions, input)
+        || super::editor_rows::metrics_identity(input).as_ref() != Some(&identity)
+    {
+        return None;
+    }
+    Some(caret)
+}
+
 /// Translate source-owned exact anchors without preparing a complete movement
 /// neighborhood. Unsupported or absent anchors retain the existing DOM fallback.
 pub(super) fn measured_caret_rect(

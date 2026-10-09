@@ -1550,20 +1550,20 @@ fn HighlightOverlay(
         }
         let mut cached = None;
         let mut cache_window = None;
-        if !windows.is_empty()
-            && let Some(input) = input.as_ref()
+        if let Some(input) = input.as_ref()
             && current_editor_target(actions, input)
             && let Some(metrics) = super::editor_rows::metrics_identity(input)
         {
-            let key = crate::state_actions::editor::EditorFragmentWindow {
-                rows: visible.get_untracked(),
-                windows: windows.clone(),
-                width: crate::viewport::editor_scroll(input).scroll_width(),
-                height: crate::viewport::editor_scroll(input).client_height(),
-                trailing: actions.projection().is_some_and(|projection| {
-                    viewport.get_untracked().rows.end < projection.lines().len()
-                }),
-            };
+            let key =
+                (!windows.is_empty()).then(|| crate::state_actions::editor::EditorFragmentWindow {
+                    rows: visible.get_untracked(),
+                    windows: windows.clone(),
+                    width: crate::viewport::editor_scroll(input).scroll_width(),
+                    height: crate::viewport::editor_scroll(input).client_height(),
+                    trailing: actions.projection().is_some_and(|projection| {
+                        viewport.get_untracked().rows.end < projection.lines().len()
+                    }),
+                });
             fragment_cache.update_value(|cache| {
                 if actions.fragment_scope(
                     cache,
@@ -1572,7 +1572,8 @@ fn HighlightOverlay(
                     guides.get_untracked(),
                     indentation.get_untracked(),
                     show_whitespace.get_untracked(),
-                ) {
+                ) && let Some(key) = key
+                {
                     cached = actions.cached_fragment(cache, &key);
                     cache_window = Some(key);
                 }
@@ -1680,7 +1681,12 @@ fn HighlightOverlay(
             let mut retained = None;
             fragment_cache.update_value(|cache| {
                 retained =
-                    super::editor_geometry::measured_caret_rect(actions, &input, cache, offset);
+                    super::editor_geometry::painted_caret_rect(actions, &input, cache, offset)
+                        .or_else(|| {
+                            super::editor_geometry::measured_caret_rect(
+                                actions, &input, cache, offset,
+                            )
+                        });
             });
             retained
                 .or_else(|| {
