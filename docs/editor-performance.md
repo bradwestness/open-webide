@@ -3085,3 +3085,39 @@ was 714,384/694,216 KiB, with 350/200-ms maximum frames. Complete source and
 String styling were preserved; these timing/memory results still fail the goal's
 responsiveness gate. These are instrumented single samples, not repeated release
 proof or evidence that final metadata ordering fixes the long-row shaping cost.
+
+### DOM rectangle batching experiment (2026-10-09; rejected)
+
+A thin DOM binding batched the existing Range queries while Rust retained source,
+glyph and overlap policy. Exact scalar/batched rectangle bits matched across
+all Monaspace families, ligature settings, Unicode, nested spans, fractional
+positions, reordered targets and failure cases. The optimized browser oracle
+passed in 0.10 seconds, and release WASM component-test lint passed.
+
+The production experiment did not demonstrate a reliable performance or memory
+benefit. Both bundles used editor checkpoint `47c26d8`, the same admitted styled
+1,048,567-byte string, four-CPU/10-GB Linux container limits and two fresh
+browser/runtime samples per workspace mode. All eight completed samples preserved
+String styling and verified complete-source beginning edits. Local baseline
+load-to-paint was 4,971/4,761 ms versus candidate 7,129/7,853 ms; remote baseline
+was 4,442/4,361 ms versus candidate 4,787/4,956 ms. Cold geometry work also
+remained expensive: local baseline 2,391/2,354 ms versus 2,852/3,590 ms; remote
+baseline 2,051/2,047 ms versus 2,246/2,396 ms. Peak PSS stayed around
+659–690 MiB, without a consistent reduction across modes. Host compilation
+activity was not controlled across these groups, so this does not establish
+an intrinsic batching regression. A subsequent quiet repeat produced no valid
+editor sample because the shared WASI artifact had been cleaned before Spin
+readiness. The binding is not shipped.
+
+[Baseline traces](editor-performance/paragraph-rectangle-batching-baseline-linux.jsonl),
+[candidate traces](editor-performance/paragraph-rectangle-batching-candidate-linux.jsonl)
+and the [rejected patch](editor-performance/paragraph-rectangle-batching-rejected.patch)
+retain the experiment. The next candidate should target native layout work:
+intermediate DOM probes currently force global overflow layout, although the
+shared plan already accepts extent-free intermediate records and requires a
+fresh terminal extent. Exact overlap and complete-renderer proofs must remain.
+
+All five CI jobs passed for checkpoint `47c26d8` in run `37912907218`, including
+Docker HTTPS transport and the full frontend browser suite. This remains a
+checkpoint result; the goal's near-limit, physical-input and complete release
+gates are still outstanding.
