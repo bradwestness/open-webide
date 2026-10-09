@@ -413,7 +413,8 @@ async fn context_command_shows_saved_breakdown_in_both_modes_and_projectless_cha
         mounted.input("/context");
         mounted.key("Enter", "Enter", false);
         settle().await;
-        let modal = mounted.element(".context-usage");
+        let document = web_sys::window().unwrap().document().unwrap();
+        let modal = document.query_selector(".context-usage").unwrap().unwrap();
         let text = modal.text_content().unwrap();
         for label in [
             "System instructions",
@@ -445,26 +446,14 @@ async fn context_command_shows_saved_breakdown_in_both_modes_and_projectless_cha
         if mode.is_some() {
             mounted.state.projects.active_project.set(None);
             settle().await;
-            assert!(
-                mounted
-                    .root
-                    .query_selector(".context-usage")
-                    .unwrap()
-                    .is_none()
-            );
+            assert!(document.query_selector(".context-usage").unwrap().is_none());
             mounted.input("/context");
             mounted.key("Enter", "Enter", false);
             settle().await;
         }
         mounted.state.auth.generation.update(|value| *value += 1);
         settle().await;
-        assert!(
-            mounted
-                .root
-                .query_selector(".context-usage")
-                .unwrap()
-                .is_none()
-        );
+        assert!(document.query_selector(".context-usage").unwrap().is_none());
     }
 }
 

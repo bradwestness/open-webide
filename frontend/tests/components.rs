@@ -97,3 +97,6 @@ mod omnibar;
 
 #[path = "components/memories.rs"]
 mod memories;
+
+#[path = "components/chat_details.rs"]
+mod chat_details;

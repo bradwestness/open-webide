@@ -13,11 +13,14 @@ it automatically; automatic titles refresh when their contents change. Agent
 updates preserve titles you assigned yourself.
 
 Completed chats show a collapsible **Where you left off** recap, a short result
-summary and suggested next prompts as inline composer hints. A hint completes
-matching text as you type. Press **Right Arrow** at the end of the input to accept
+summary marked with a **↪** recap indicator and suggested next prompts as inline
+composer hints. Summaries describe the topic or concrete result directly,
+mentioning failures or blockers only when relevant. A hint completes matching
+text as you type. Press **Right Arrow** at the end of the input to accept
 it; acceptance fills the composer without submitting. Cursor movement, text
 selection and modified arrow keys keep their normal behavior. Follow-up choices
-also appear in the chat history; clicking one sends it immediately. Activity
+also appear as compact outlined prompt buttons in the chat history; clicking one
+sends it immediately. Activity
 labels describe current tools and approval waits directly from their execution
 state.
 

@@ -66,6 +66,7 @@ pub use tool_panel::{FilesPanel, PanelRail, ToolPanel};
 mod run_changes;
 pub use run_changes::RunChangesPanel;
 
+mod chat_details;
 mod context_usage;
 pub use context_usage::ContextUsage;
 

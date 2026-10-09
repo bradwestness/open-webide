@@ -249,7 +249,6 @@ pub fn chat_actions(state: TestState) -> ChatActions {
 pub fn chat_view(state: TestState) -> impl IntoView {
     let actions = chat_actions(state);
     view! {
-        <openwebide_frontend::components::ContextUsage/>
         <ChatPane
             on_select_connection_model=actions.select_connection_model
             on_send=actions.send on_resume_run=actions.resume_run on_stop=actions.stop

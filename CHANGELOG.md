@@ -15,6 +15,10 @@ for what's still ahead.
   failed proofs retain fresh layout. Preserve styled replay candidates during
   plain preparation and matching font notifications after edits.
 
+- Move each prompt’s saved run context into its action menu and a modal. Make generation speed open statistics with latest token counts and generation time, a session token breakdown and recent-call speed bars; retain estimate markers and close dialogs on chat, project or account changes.
+
+- Present suggested follow-ups as compact outlined prompt buttons in chat history. Mark chat summaries with a compact ↪ indicator labeled Conversation recap. Make chat recaps and completion summaries conversational: lead with the topic or concrete result, omit third-person success reports and routine absence-of-blockers language, and refresh cached summaries when generation instructions change.
+
 - Resolve carets directly from current source-owned painted coverage before
   preparing hidden movement layouts, including positions between retained sparse
   anchors. Reject stale scope/font data and unpainted source gaps.

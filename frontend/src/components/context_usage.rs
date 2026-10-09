@@ -1,6 +1,6 @@
 use crate::{
     components::modal::Modal,
-    state::{auth::AuthState, chat::ChatState, projects::ProjectsState, ui::UiState},
+    state::{chat::ChatState, ui::UiState},
 };
 use leptos::prelude::*;
 
@@ -8,26 +8,8 @@ use leptos::prelude::*;
 pub fn ContextUsage() -> impl IntoView {
     let ui = expect_context::<UiState>();
     let chat = expect_context::<ChatState>();
-    let auth = expect_context::<AuthState>();
-    let projects = expect_context::<ProjectsState>();
-    let project = StoredValue::new(projects.active_project.get_untracked());
-    let session = StoredValue::new(chat.active_session.get_untracked());
-    let generation = StoredValue::new(auth.generation.get_untracked());
-    Effect::new(move |_| {
-        let current = chat.active_session.get();
-        let current_project = projects.active_project.get();
-        let account = auth.generation.get();
-        if session.get_value() != current
-            || generation.get_value() != account
-            || project.get_value() != current_project
-        {
-            ui.context_open.set(false);
-            project.set_value(current_project);
-            session.set_value(current);
-            generation.set_value(account);
-        }
-    });
-    let close = Callback::new(move |()| ui.context_open.set(false));
+    let close = expect_context::<crate::prompt::Composer>()
+        .after(Callback::new(move |()| ui.context_open.set(false)));
     view! { <Show when=move || ui.context_open.get()>
         <Modal title="Context".to_string().into() on_close=close class="modal modal-sm" describedby="context-description">
             <div class="modal-body context-usage">
@@ -58,7 +40,7 @@ pub fn ContextUsage() -> impl IntoView {
                     }
                 }}
             </div>
-            <div class="modal-footer"><button class="btn" on:click=move |_| close.run(())>"Close"</button></div>
+            <div class="modal-footer"><button class="btn ghost" on:click=move |_| { ui.context_open.set(false); ui.generation_open.set(true); }>"Generation statistics"</button><button class="btn" on:click=move |_| close.run(())>"Close"</button></div>
         </Modal>
     </Show> }
 }

@@ -221,6 +221,7 @@ mod tests {
         Owner::new().with(|| {
             let chat = ChatState::new();
             chat.session_telemetry.set(SessionTelemetry {
+                last_call: None,
                 context: None,
             model: "café".into(),
                 context_tokens: 12345,

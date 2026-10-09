@@ -3496,6 +3496,9 @@ button.browser-item {
 .chat-recap { margin: 0 0 12px; color: var(--text-muted); }
 .chat-recap summary { cursor: pointer; }
 .chat-followups, .chat-context-suggestions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.chat-followups .btn { justify-content: flex-start; background: transparent; font-family: var(--mono); text-align: left; max-width: 100%; }
+.chat-followups .btn:hover:not(:disabled) { background: var(--bg-hover); }
+.chat-followups .btn > span:last-child { min-width: 0; overflow-wrap: anywhere; }
 
 .git-draft-actions { padding: 6px 12px; border-bottom: 1px solid var(--border); }
 
@@ -3509,3 +3512,16 @@ button.browser-item {
 }
 .cron-fields .form-input, .cron-preview { font-family: var(--mono); }
 .cron-preview { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-muted); }
+
+/* Chat detail dialogs reuse the context visualization and modal layout. */
+.generation-rate { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }
+.generation-rate > span:first-child { font-family: var(--mono); font-size: 24px; color: var(--accent); }
+.generation-chart { display: grid; gap: var(--space-2); }
+.generation-chart-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) 72px; align-items: center; gap: var(--space-2); font-family: var(--mono); font-size: var(--font-caption); }
+.generation-chart-row > span:last-child { text-align: right; }
+.generation-chart-track { height: 12px; overflow: hidden; border-radius: 3px; background: var(--bg-hover); }
+.generation-chart-track > span { display: block; height: 100%; background: var(--accent); }
+.tui-statusline .tui-speed { flex: none; font: inherit; padding: 2px 4px; color: var(--accent); }
+
+.generation-statistics { gap: var(--space-3); }
+.generation-statistics > * { margin: 0; flex-shrink: 0; }

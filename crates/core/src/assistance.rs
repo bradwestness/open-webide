@@ -33,13 +33,13 @@ impl AssistanceKind {
             Self::TaskName => "Name this task from its prompt, at most 80 characters.",
             Self::MemoryName => "Name this saved memory from its contents, at most 80 characters.",
             Self::Recap => {
-                "Summarize where the user left off in at most two sentences. Include completed work, outstanding work and blockers only when evidenced. Do not infer commits, pushes or passing tests without evidence."
+                "Write a natural recap that helps pick up this conversation, in at most two short sentences. Lead with the topic and useful details, decisions or results. For casual conversation, describe what was discussed; do not frame receiving an answer as an accomplishment. For example: Science puns, dad jokes and animal jokes. Avoid third-person narration such as the user and stock phrases such as successfully received. Mention outstanding work or a blocker only when it matters and is evidenced; omit statements that there were no failures or blockers. Do not infer commits, pushes or passing tests without evidence."
             }
             Self::Activity => {
                 "Describe the current work in one short present-tense sentence, at most 120 characters."
             }
             Self::Completion => {
-                "Summarize the actual result in one short sentence, at most 240 characters. Include failures or blockers when present. Do not invent success."
+                "Write one short, natural summary of the actual result or conversation topic, at most 240 characters. Name the concrete answer or change directly. For example: Shared science puns, dad jokes and animal jokes. Avoid third-person narration such as the user and stock phrases such as successfully received. Mention a failure or blocker only when present and relevant; omit statements that there were no failures or blockers. Do not invent success."
             }
             Self::NextActions => {
                 "Suggest at most two concrete next prompts supported by the conversation. Return one prompt per line, without numbering. Return NONE if there is no useful next action."

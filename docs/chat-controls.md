@@ -19,6 +19,23 @@ can type a follow-up.
 Use `/help` for commands and shortcuts, or `/help goal` to search the command list.
 `/model` lists models; `/tokens` and `/context` show context accounting.
 
+## Inspect context and generation
+
+Open a prompt's **…** menu → **Run context** to inspect the saved instructions
+and environment for that prompt. These snapshots stay out of the transcript;
+compaction summaries remain expandable in the history.
+
+Click the **tokens/sec** readout in the statusline to open **Generation statistics**.
+It shows the latest call's input/output counts and generation time, session token
+usage, and speed bars for up to eight recorded model calls. Hover a bar for its
+output count and duration. **~** marks estimates; unknown durations stay unknown.
+Generation timing excludes tool execution and approval waits. Session totals include
+delegated tasks; intermediate calls may be absent after reloading.
+
+**Context** and **Generation statistics** link to each other, so statistics are
+also available through the context dialog on narrow screens. Dialogs close when
+you switch chats, projects or accounts. Closing one returns focus to the composer.
+
 ## Follow activity
 
 Consecutive tool calls and finished reasoning-only messages share an expandable

@@ -129,6 +129,8 @@ pub const DEFAULT_CONTEXT_LIMIT: usize = 4_096;
 /// Cumulative session-level telemetry for the statusline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionTelemetry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_call: Option<TurnTelemetry>,
     #[serde(default)]
     pub context: Option<crate::ContextBreakdown>,
     pub model: String,
@@ -166,6 +168,7 @@ pub struct SessionTelemetry {
 impl Default for SessionTelemetry {
     fn default() -> Self {
         Self {
+            last_call: None,
             context: None,
             model: "default".into(),
             total_prompt_tokens: 0,
@@ -265,6 +268,7 @@ impl SessionTelemetry {
     /// Record one turn's usage: the gauge tracks the latest call, while the
     /// `/tokens` totals accumulate.
     pub fn record_turn(&mut self, t: &TurnTelemetry) {
+        self.last_call = Some(*t);
         self.context = t.context;
         self.context_tokens = t.context_tokens();
         self.context_estimated = t.estimated;
@@ -287,6 +291,8 @@ impl SessionTelemetry {
     /// persisted, so `/tokens`'s totals undercount the run's intermediate
     /// calls. Accepted (see [`Self::total_prompt_tokens`]).
     pub fn restore_from_conversation(&mut self, entries: &[crate::ConversationEntry]) {
+        self.last_call = None;
+        self.context = None;
         self.context_tokens = 0;
         self.total_prompt_tokens = 0;
         self.total_completion_tokens = 0;
@@ -955,6 +961,7 @@ mod tests {
     #[test]
     fn test_session_telemetry_gauge() {
         let telem = SessionTelemetry {
+            last_call: None,
             context: None,
             model: "qwen2.5-coder:7b".into(),
             total_prompt_tokens: 16_384,
@@ -1094,6 +1101,34 @@ mod tests {
         assert!(!telem.context_estimated);
         assert!(!telem.speed_estimated);
         assert!(telem.totals_estimated);
+    }
+
+    #[test]
+    fn latest_call_restores_from_history_and_clears_with_empty_history() {
+        let usage = TurnTelemetry {
+            context: Some(crate::ContextBreakdown::default()),
+            prompt_tokens: 800,
+            completion_tokens: 200,
+            eval_duration_ms: 4000,
+            estimated: true,
+        };
+        let mut telemetry = SessionTelemetry::default();
+        telemetry.record_turn(&usage);
+        assert_eq!(telemetry.last_call, Some(usage));
+        telemetry.restore_from_conversation(&[msg_entry(1, Role::Assistant, "reply", Some(usage))]);
+        assert_eq!(telemetry.last_call, Some(usage));
+        let mut legacy = serde_json::to_value(&telemetry).unwrap();
+        legacy.as_object_mut().unwrap().remove("last_call");
+        assert!(
+            serde_json::from_value::<SessionTelemetry>(legacy)
+                .unwrap()
+                .last_call
+                .is_none()
+        );
+        telemetry.restore_from_conversation(&[]);
+        assert!(telemetry.last_call.is_none());
+        assert!(telemetry.context.is_none());
+        assert!(telemetry.current_speed_tps.is_none());
     }
 
     fn msg_entry(

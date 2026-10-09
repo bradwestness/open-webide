@@ -934,63 +934,155 @@ async fn hidden_tool_call_message_becomes_visible_and_user_text_updates() {
 }
 
 #[wasm_bindgen_test]
-async fn saved_and_streamed_run_context_is_collapsible_and_survives_reload() {
-    use openwebide_core::ConversationEntry;
-    let mounted = mount_test(|state| {
-        state.seed_project();
-        state.seed_connection();
-        state.seed_session();
-        state.fake.messages.borrow_mut().insert(
-            1,
-            vec![ConversationEntry::Message(message(
-                8,
-                Role::System,
-                &format!("{}Root rule", openwebide_core::RUN_CONTEXT_PREFIX),
-            ))],
+async fn saved_and_streamed_run_context_opens_from_prompt_menu_in_every_scope() {
+    use leptos::prelude::*;
+    use openwebide_core::{ConversationEntry, WorkspaceMode};
+    use wasm_bindgen::JsCast;
+    for mode in [
+        Some(WorkspaceMode::Local),
+        Some(WorkspaceMode::Remote),
+        None,
+    ] {
+        let mounted = mount_test(move |state| {
+            state.seed_connection();
+            state.seed_session();
+            if let Some(mode) = mode {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+            } else {
+                state
+                    .chat
+                    .sessions
+                    .update(|sessions| sessions[0].project_id = None);
+            }
+            state.fake.messages.borrow_mut().insert(
+                1,
+                vec![
+                    ConversationEntry::Message(message(
+                        8,
+                        Role::System,
+                        &format!("{}Root rule", openwebide_core::RUN_CONTEXT_PREFIX),
+                    )),
+                    ConversationEntry::Message(message(9, Role::User, "First prompt")),
+                ],
+            );
+            view! { <style>{include_str!("../../styles.css")}</style>{chat_view(state)} }
+        });
+        super::support::wait_until("saved prompt context", || {
+            mounted
+                .state
+                .chat
+                .run_contexts
+                .with_untracked(|contexts| contexts.contains_key(&9))
+        })
+        .await;
+        assert!(
+            mounted
+                .root
+                .query_selector(".ui-disclosure-panel.tui-thinking-box")
+                .unwrap()
+                .is_none()
         );
-        chat_view(state)
-    });
-    settle().await;
-    let context = mounted
-        .root
-        .query_selector(".ui-disclosure-panel.tui-thinking-box")
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        context
-            .query_selector("button")
+        assert!(
+            !mounted
+                .element(".messages")
+                .text_content()
+                .unwrap()
+                .contains("Root rule")
+        );
+        mounted.click(".tui-user button[aria-label='Message actions']");
+        settle().await;
+        mounted.click("button[aria-label='Run context'][data-message-id='9']");
+        let document = web_sys::window().unwrap().document().unwrap();
+        super::support::wait_until("run context dialog", || {
+            document
+                .query_selector(".run-context-content")
+                .unwrap()
+                .is_some()
+        })
+        .await;
+        let content = document
+            .query_selector(".run-context-content")
+            .unwrap()
+            .unwrap();
+        assert_eq!(content.text_content().as_deref(), Some("Root rule"));
+        mounted.state.chat.apply_event(RunEvent::Message {
+            message: message(
+                10,
+                Role::System,
+                &format!(
+                    "{}Nested rule <script>data</script>",
+                    openwebide_core::RUN_CONTEXT_PREFIX
+                ),
+            ),
+        });
+        super::support::wait_until("updated context", || {
+            content.text_content().unwrap().contains("Nested rule")
+        })
+        .await;
+        assert!(content.query_selector("script").unwrap().is_none());
+        assert!(
+            !content
+                .text_content()
+                .unwrap()
+                .contains(openwebide_core::RUN_CONTEXT_PREFIX)
+        );
+        document
+            .query_selector("[role='dialog'] .modal-footer .btn")
             .unwrap()
             .unwrap()
-            .get_attribute("aria-expanded")
-            .as_deref(),
-        Some("false")
-    );
-    assert!(context.text_content().unwrap().contains("Run context"));
-    assert!(context.text_content().unwrap().contains("Root rule"));
-    assert!(
-        !context
-            .text_content()
-            .unwrap()
-            .contains(openwebide_core::RUN_CONTEXT_PREFIX)
-    );
-    mounted.state.chat.apply_event(RunEvent::Message {
-        message: message(
-            9,
-            Role::System,
-            &format!("{}Nested rule", openwebide_core::RUN_CONTEXT_PREFIX),
-        ),
-    });
-    settle().await;
-    assert_eq!(
+            .unchecked_into::<web_sys::HtmlElement>()
+            .click();
+        super::support::wait_until("composer focus after context", || {
+            document.active_element().is_some_and(|active| {
+                active.is_same_node(Some(mounted.element(".composer-input").as_ref()))
+            })
+        })
+        .await;
+        mounted.state.chat.apply_event(RunEvent::Message {
+            message: message(11, Role::User, "Second prompt"),
+        });
+        mounted.state.chat.apply_event(RunEvent::Message {
+            message: message(
+                12,
+                Role::System,
+                &format!("{}Second rule", openwebide_core::RUN_CONTEXT_PREFIX),
+            ),
+        });
+        settle().await;
         mounted
             .root
-            .text_content()
+            .query_selector_all(".tui-user button[aria-label='Message actions']")
             .unwrap()
-            .matches("Run context")
-            .count(),
-        2
-    );
-    assert!(mounted.root.text_content().unwrap().contains("Nested rule"));
+            .item(1)
+            .unwrap()
+            .unchecked_into::<web_sys::HtmlElement>()
+            .click();
+        settle().await;
+        mounted.click("button[aria-label='Run context'][data-message-id='11']");
+        super::support::wait_until("second prompt context", || {
+            document
+                .query_selector(".run-context-content")
+                .unwrap()
+                .is_some_and(|content| content.text_content().unwrap() == "Second rule")
+        })
+        .await;
+        mounted
+            .state
+            .auth
+            .generation
+            .update(|generation| *generation += 1);
+        super::support::wait_until("account change closes context", || {
+            document
+                .query_selector("[role='dialog']")
+                .unwrap()
+                .is_none()
+        })
+        .await;
+    }
 }
 
 #[wasm_bindgen_test]
@@ -1050,9 +1142,10 @@ async fn markdown_tables_render_in_history_and_streaming_in_both_modes() {
 }
 
 #[wasm_bindgen_test]
-async fn run_context_headers_keep_their_height_in_narrow_overflowing_history() {
+async fn run_context_menus_keep_narrow_history_clear_and_dialogs_outside_the_pane() {
     use leptos::prelude::*;
     use openwebide_core::{ConversationEntry, WorkspaceMode};
+    use wasm_bindgen::JsCast;
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         let mounted = mount_test(move |state| {
             state.seed_project();
@@ -1068,7 +1161,12 @@ async fn run_context_headers_keep_their_height_in_narrow_overflowing_history() {
                     .flat_map(|index| {
                         [
                             ConversationEntry::Message(message(
-                                index * 2 + 1,
+                                index * 3 + 1,
+                                Role::User,
+                                &format!("Prompt {index}"),
+                            )),
+                            ConversationEntry::Message(message(
+                                index * 3 + 2,
                                 Role::System,
                                 &format!(
                                     "{}{}",
@@ -1077,7 +1175,7 @@ async fn run_context_headers_keep_their_height_in_narrow_overflowing_history() {
                                 ),
                             )),
                             ConversationEntry::Message(message(
-                                index * 2 + 2,
+                                index * 3 + 3,
                                 Role::Assistant,
                                 &"An answer with enough content to overflow the history viewport. "
                                     .repeat(20),
@@ -1086,13 +1184,16 @@ async fn run_context_headers_keep_their_height_in_narrow_overflowing_history() {
                     })
                     .collect(),
             );
-            view! {
-                <style>{include_str!("../../styles.css")}</style>
-                <style>".context-layout-regression .messages { height: 180px; flex: none; width: 100%; box-sizing: border-box; }"</style>
-                <div class="context-layout-regression">{chat_view(state)}</div>
-            }
+            view! { <style>{include_str!("../../styles.css")}</style><style>".context-layout-regression .chat-pane { width: 100% !important; } .context-layout-regression .messages { height: 180px; flex: none; width: 100%; box-sizing: border-box; }"</style><div class="context-layout-regression">{chat_view(state)}</div> }
         });
-        settle().await;
+        super::support::wait_until("eight prompt contexts", || {
+            mounted
+                .state
+                .chat
+                .run_contexts
+                .with_untracked(|contexts| contexts.len() == 8)
+        })
+        .await;
         for width in [220, 360, 900] {
             mounted
                 .element(".context-layout-regression")
@@ -1102,51 +1203,45 @@ async fn run_context_headers_keep_their_height_in_narrow_overflowing_history() {
             settle().await;
             let stream = mounted.element(".messages.tui-stream");
             assert!(stream.scroll_height() > stream.client_height());
-            let panels = stream
-                .query_selector_all(".ui-disclosure-panel.tui-thinking-box")
-                .unwrap();
-            assert_eq!(panels.length(), 8);
-            for index in 0..panels.length() {
-                use wasm_bindgen::JsCast;
-                let panel = panels
-                    .item(index)
+            assert!(
+                stream
+                    .query_selector(".ui-disclosure-panel.tui-thinking-box")
                     .unwrap()
-                    .unchecked_into::<web_sys::HtmlElement>();
-                let header = panel
-                    .query_selector(".ui-disclosure-toggle")
+                    .is_none()
+            );
+            assert!(stream.scroll_width() <= stream.client_width() + 1);
+            assert_eq!(stream.query_selector_all(".tui-user").unwrap().length(), 8);
+            mounted.click(".tui-user button[aria-label='Message actions']");
+            settle().await;
+            mounted.click("button[aria-label='Run context'][data-message-id='1']");
+            let document = web_sys::window().unwrap().document().unwrap();
+            super::support::wait_until("context modal escapes pane", || {
+                document
+                    .query_selector(".run-context-content")
                     .unwrap()
+                    .is_some()
+            })
+            .await;
+            let content = document
+                .query_selector(".run-context-content")
+                .unwrap()
+                .unwrap()
+                .unchecked_into::<web_sys::HtmlElement>();
+            assert!(content.get_bounding_client_rect().height() > 20.0);
+            assert!(!stream.contains(Some(content.as_ref())));
+            document
+                .query_selector("[role='dialog'] .modal-footer .btn")
+                .unwrap()
+                .unwrap()
+                .unchecked_into::<web_sys::HtmlElement>()
+                .click();
+            super::support::wait_until("closed run context", || {
+                document
+                    .query_selector(".run-context-content")
                     .unwrap()
-                    .unchecked_into::<web_sys::HtmlElement>();
-                assert!(
-                    header.get_bounding_client_rect().height() >= 24.0,
-                    "Clipped context header at {width}px in {mode:?}"
-                );
-                assert!(
-                    panel.get_bounding_client_rect().height()
-                        >= header.get_bounding_client_rect().height()
-                );
-                header.click();
-                settle().await;
-                let trace = panel
-                    .query_selector(".tui-thinking-trace")
-                    .unwrap()
-                    .unwrap()
-                    .unchecked_into::<web_sys::HtmlElement>();
-                assert!(trace.get_bounding_client_rect().height() > 20.0);
-                assert!(trace.client_height() <= 240);
-                assert!(
-                    panel.get_bounding_client_rect().height()
-                        >= header.get_bounding_client_rect().height()
-                            + f64::from(trace.client_height())
-                );
-                assert!(stream.scroll_width() <= stream.client_width() + 1);
-                header.click();
-                settle().await;
-                assert_eq!(
-                    header.get_attribute("aria-expanded").as_deref(),
-                    Some("false")
-                );
-            }
+                    .is_none()
+            })
+            .await;
         }
     }
 }

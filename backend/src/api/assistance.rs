@@ -29,7 +29,8 @@ pub(crate) async fn execute(
             ));
         }
     }
-    let key = serde_json::to_string(&request)
+    // Refresh cached text when its generation instructions change.
+    let key = serde_json::to_string(&(request, request.kind.instruction()))
         .map_err(|error| ApiError::bad_request(error.to_string()))?;
     if let Some(result) = store.cached_assistance(user, &key).await? {
         return Ok(Some(result));
@@ -45,4 +46,67 @@ pub(crate) async fn execute(
         store.cache_assistance(user, &key, result, now()).await?;
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openwebide_core::{AssistanceKind, AssistanceRequest, UserRole};
+
+    #[test]
+    fn summary_cache_refreshes_when_instructions_change() {
+        futures::executor::block_on(async {
+            let state = AppState::new().await.unwrap();
+            let user = state
+                .store
+                .insert_user("owner", "hash", UserRole::Admin, 1)
+                .await
+                .unwrap()
+                .id;
+            for kind in [AssistanceKind::Recap, AssistanceKind::Completion] {
+                let request = AssistanceRequest {
+                    kind,
+                    connection_id: 999,
+                    session_id: None,
+                    project_id: None,
+                    input: "Shared science puns, dad jokes and animal jokes.".into(),
+                };
+                let old_key = serde_json::to_string(&request).unwrap();
+                let older_instruction_key =
+                    serde_json::to_string(&(&request, "Earlier summary instructions")).unwrap();
+                for key in [&old_key, &older_instruction_key] {
+                    state
+                        .store
+                        .cache_assistance(
+                            user,
+                            key,
+                            "The user successfully received jokes with no blockers.",
+                            1,
+                        )
+                        .await
+                        .unwrap();
+                }
+                // No model connection exists: stale text must miss the cache and reach runtime lookup.
+                assert!(execute(&state.store, user, &request).await.is_err());
+                let current_key = serde_json::to_string(&(&request, kind.instruction())).unwrap();
+                state
+                    .store
+                    .cache_assistance(
+                        user,
+                        &current_key,
+                        "Science puns, dad jokes and animal jokes.",
+                        2,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    execute(&state.store, user, &request)
+                        .await
+                        .unwrap()
+                        .as_deref(),
+                    Some("Science puns, dad jokes and animal jokes.")
+                );
+            }
+        });
+    }
 }

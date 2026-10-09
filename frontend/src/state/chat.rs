@@ -327,6 +327,7 @@ pub struct ChatState {
     pub active_session: RwSignal<Option<i64>>,
     pub has_session: Memo<bool>,
     pub messages: ConversationStore,
+    pub run_contexts: Memo<std::collections::BTreeMap<i64, ConversationHandle>>,
     pub turn_summaries: Memo<std::collections::BTreeMap<i64, crate::turn_summary::TurnSummary>>,
     pub history_gen: StoredValue<u64>,
     pub send_generation: StoredValue<u64>,
@@ -408,6 +409,33 @@ impl ChatState {
         error: RwSignal<Option<String>>,
     ) -> Self {
         let messages = ConversationStore::new();
+        let run_contexts = Memo::new(move |_| {
+            let mut contexts = std::collections::BTreeMap::new();
+            let mut prompt = None;
+            let mut startup = None;
+            messages.handles.with(|handles| {
+                for handle in handles {
+                    handle.item.with(|item| {
+                        if let ConversationItem::Message(message) = item
+                            && message.role == openwebide_core::Role::User
+                            && message.id > 0
+                        {
+                            prompt = Some(message.id);
+                            if let Some(context) = startup.take() {
+                                contexts.insert(message.id, context);
+                            }
+                        } else if crate::conversation::is_run_context(item) {
+                            if let Some(prompt) = prompt {
+                                contexts.insert(prompt, *handle);
+                            } else {
+                                startup = Some(*handle);
+                            }
+                        }
+                    });
+                }
+            });
+            contexts
+        });
         let turn_summaries = Memo::new(move |_| {
             let mut summaries = crate::turn_summary::TurnSummaries::default();
             messages.handles.with(|handles| {
@@ -441,6 +469,7 @@ impl ChatState {
             active_session,
             has_session,
             messages,
+            run_contexts,
             turn_summaries,
             history_gen: StoredValue::new(0),
             send_generation: StoredValue::new(0),
@@ -1021,6 +1050,51 @@ mod tests {
             arguments: "{}".into(),
         }]);
         ConversationItem::Message(msg)
+    }
+
+    #[test]
+    fn run_contexts_stay_with_their_prompt_and_ignore_compaction() {
+        Owner::new().with(|| {
+            let chat = ChatState::new();
+            let context = |id, text| {
+                ConversationItem::Message(message(
+                    id,
+                    Role::System,
+                    &format!("{}{text}", openwebide_core::RUN_CONTEXT_PREFIX),
+                ))
+            };
+            let prompt = |id| ConversationItem::Message(message(id, Role::User, "prompt"));
+            chat.messages
+                .install_history(vec![context(1, "startup"), prompt(2)]);
+            let context_id = |prompt| {
+                chat.run_contexts.with_untracked(|contexts| {
+                    contexts.get(&prompt).map(|handle| {
+                        handle.item.with_untracked(|item| match item {
+                            ConversationItem::Message(message) => message.id,
+                            _ => 0,
+                        })
+                    })
+                })
+            };
+            assert_eq!(context_id(2), Some(1));
+            chat.messages.push(context(3, "first run"));
+            chat.messages.push(ConversationItem::Message(message(
+                4,
+                Role::System,
+                &format!("{}summary", openwebide_core::COMPACTION_PREFIX),
+            )));
+            chat.messages.push(prompt(5));
+            chat.messages.push(context(6, "second run"));
+            chat.messages.push(prompt(7));
+            assert_eq!(context_id(2), Some(3));
+            assert_eq!(context_id(5), Some(6));
+            assert_eq!(context_id(7), None);
+            chat.messages.install_history(Vec::new());
+            assert!(
+                chat.run_contexts
+                    .with_untracked(std::collections::BTreeMap::is_empty)
+            );
+        });
     }
 
     #[test]

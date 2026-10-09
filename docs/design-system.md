@@ -110,3 +110,8 @@ command input appears from its terminal icon or **New shell**. **Copy output**
 copies retained rendered lines. On phones, Output overlays the current pane as a
 sheet, and a full-width bottom bar provides equal icon-and-label destinations.
 Account actions live in the username dropdown.
+
+Chat details use the shared modal and context-breakdown styles. Run-context
+snapshots open from the prompt action menu; generation speed opens measured
+statistics with token and recent-rate bars. Chat dialogs mount outside the pane's
+contained layout, preserve focus, and close when their chat or account changes.

@@ -42,6 +42,11 @@ pub enum ConversationItem {
     },
 }
 
+/// Saved execution context is inspected from its prompt's menu.
+pub fn is_run_context(item: &ConversationItem) -> bool {
+    matches!(item, ConversationItem::Message(message) if message.role == Role::System && message.content.starts_with(openwebide_core::RUN_CONTEXT_PREFIX))
+}
+
 /// A fresh "stopped" marker for the conversation list.
 static STOP_NONCE: AtomicU64 = AtomicU64::new(0);
 

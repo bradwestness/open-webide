@@ -408,7 +408,9 @@ fn conversation_blocks(
         handles
             .iter()
             .copied()
-            .filter(|handle| handle.visible.get())
+            .filter(|handle| {
+                handle.visible.get() && !handle.item.with(crate::conversation::is_run_context)
+            })
             .filter(|handle| {
                 let tool = handle.item.with(crate::conversation::is_activity);
                 let include = !tool || !previous_tool;
@@ -429,10 +431,9 @@ fn render_tool_group(
 ) -> impl IntoView {
     let rows = Memo::new(move |_| {
         messages.handles.with(|handles| {
-            let visible = handles
-                .iter()
-                .copied()
-                .filter(|handle| handle.visible.get());
+            let visible = handles.iter().copied().filter(|handle| {
+                handle.visible.get() && !handle.item.with(crate::conversation::is_run_context)
+            });
             visible
                 .skip_while(|handle| handle.key != first)
                 .take_while(|handle| handle.item.with(crate::conversation::is_activity))
@@ -675,9 +676,9 @@ fn TuiStatusLine(
                 ")"</span>
             </button>
             <span class="tui-sep">"│"</span>
-            <span class="tui-speed" title="Generation Speed">
+            <button type="button" class="btn sm ghost tui-speed" title="Generation statistics" aria-label="View generation statistics" on:click=move |_| ui.generation_open.set(true)>
                 {move || session_telemetry.with(SessionTelemetry::speed_text)}
-            </span>
+            </button>
             <span class="tui-sep">"│"</span>
             <span class="tui-workspace-mode">
                 {move || if local_mode.get() { "Local" } else { "Remote" }}
@@ -707,6 +708,7 @@ pub fn ChatPane(
         crate::state_actions::conversation::ConversationActions,
     >,
 ) -> impl IntoView {
+    let ui = expect_context::<crate::state::ui::UiState>();
     let reviews = use_context::<crate::state::reviews::ReviewsState>();
     let chat = expect_context::<ChatState>();
     let layout = expect_context::<LayoutState>();
@@ -961,7 +963,13 @@ pub fn ChatPane(
                                     view! {
                                         <Show when=move || system.get() fallback=move || view! {
                                             <Show when=move || assistant.get() fallback=move || view! {
-                                                {render_user_message(content, view! { <div class="tui-prompt-actions"><Show when=move || (conversation_actions.is_some() || on_rewind.is_some()) && item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User))><super::dropdown::ActionMenu aria_label="Message actions">
+                                                {render_user_message(content, view! { <div class="tui-prompt-actions"><Show when=move || item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User && (conversation_actions.is_some() || on_rewind.is_some() || chat.run_contexts.with(|contexts| contexts.contains_key(&message.id)))))><super::dropdown::ActionMenu aria_label="Message actions">
+                                                <Show when=move || item.with(|item| matches!(item, ConversationItem::Message(message) if chat.run_contexts.with(|contexts| contexts.contains_key(&message.id))))>
+                                                    <button role="menuitem" type="button" class="ui-dropdown-item recent-item" aria-label="Run context" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) on:click=move |_| {
+                                                        if let Some(id) = item.with_untracked(|item| match item { ConversationItem::Message(message) => Some(message.id), _ => None }) { ui.run_context.set(Some(id)); }
+                                                    }><super::ui::Icon name=super::ui::IconName::FileText/><span>"Run context"</span></button>
+                                                </Show>
+
                                                 <Show when=move || conversation_actions.is_some() && item.with(|item| matches!(item, ConversationItem::Message(message) if message.id > 0 && message.role == Role::User))>
                                                     <button role="menuitem" type="button" class="ui-dropdown-item recent-item icon-btn ui-icon tui-edit-prompt" title="Edit prompt" aria-label="Edit prompt" data-message-id=move || item.with(|item| match item { ConversationItem::Message(message) => message.id, _ => 0 }) disabled=move || streaming.get() || chat.rewinding.get() || chat.branching.get() || chat.queue_busy.get() || chat.reading_images.get() on:click=move |_| {
                                                         if let (Some(actions), Some(id)) = (conversation_actions, item.with_untracked(|item| match item { ConversationItem::Message(message) => Some(message.id), _ => None })) { actions.edit.run(id); }
@@ -998,7 +1006,7 @@ pub fn ChatPane(
                         }
                     />
                     <Show when=move || assistance.completion.get().is_some() && !streaming.get()>
-                        <p class="form-hint chat-completion" role="status">{move || assistance.completion.get().unwrap_or_default()}</p>
+                        <p class="form-hint chat-completion" role="status"><span role="img" aria-label="Conversation recap" title="Conversation recap">"↪"</span>" "{move || assistance.completion.get().unwrap_or_default()}</p>
                     </Show>
                     <Show when=move || assistance.activity.get().is_some() && streaming.get()>
                         <p class="form-hint chat-activity" role="status">{move || assistance.activity.get().unwrap_or_default()}</p>
@@ -1015,14 +1023,15 @@ pub fn ChatPane(
                 <div class="chat-followups" aria-label="Suggested next actions">
                     {move || assistance.next_actions.get().into_iter().map(|prompt| {
                         let label = prompt.clone();
-                        view! { <button class="btn ghost" type="button" disabled=move || submission_blocked.get() on:click=move |_| {
+                        let accessible_label = label.clone();
+                        view! { <button class="btn md" type="button" aria-label=accessible_label title="Send this prompt" disabled=move || submission_blocked.get() on:click=move |_| {
                             if !submission_blocked.get_untracked() && !streaming.get_untracked() && chat.draft.get_untracked().is_empty() && chat.prompt_images.with_untracked(Vec::is_empty) {
                                 history_index.set(None);
                                 prompt_history.update(|history| crate::history::push_history(history, prompt.clone()));
                                 chat.draft.set(prompt.clone());
                                 on_send.run(());
                             }
-                        }>{label}</button> }
+                        }><span class="tui-glyph user" aria-hidden="true">"❯"</span><span>{label}</span></button> }
                     }).collect::<Vec<_>>()}
                 </div>
             </Show>
@@ -1300,6 +1309,7 @@ pub fn ChatPane(
                 </Show>
                 </div>
             </div>
+            <super::chat_details::ChatDetails/>
         </main>
     }
 }

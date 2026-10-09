@@ -800,7 +800,7 @@ async fn chat_actions_send_followups_immediately_and_restore_composer_focus() {
             .blur()
             .unwrap();
         assert!(!focused());
-        mounted.click_text("Draft a commit");
+        click(".chat-followups button[aria-label='Draft a commit']");
         settle().await;
         assert_eq!(sent.get_untracked(), ["Draft a commit"]);
         wait_until("focus after suggested prompt", focused).await;
