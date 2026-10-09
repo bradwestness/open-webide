@@ -2,6 +2,83 @@
 use std::ops::Range;
 
 pub const MAX_ROW_GEOMETRY_ANCHORS: usize = 4096;
+/// Exact range reads per cooperative cold-layout turn.
+pub const ROW_GEOMETRY_BATCH: usize = 128;
+
+/// A source-scoped geometry job publishes only the complete validated table.
+/// Adapters supply real rectangles; neither scheduling nor sampling estimates
+/// glyph advances. Dropping the job discards all incomplete measurements.
+pub struct RowGeometryPreparation {
+    glyphs: usize,
+    width: f64,
+    height: f64,
+    horizontal: bool,
+    targets: Vec<usize>,
+    anchors: Vec<GlyphRectangle>,
+}
+impl RowGeometryPreparation {
+    pub fn new(
+        glyphs: usize,
+        width: f64,
+        height: f64,
+        horizontal: bool,
+        targets: Vec<usize>,
+    ) -> Option<Self> {
+        if glyphs == 0
+            || !width.is_finite()
+            || !(0.0..=1_000_000_000.0).contains(&width)
+            || !height.is_finite()
+            || !(0.0..=1_000_000.0).contains(&height)
+            || height == 0.0
+            || targets.is_empty()
+            || targets.len() > MAX_ROW_GEOMETRY_ANCHORS
+            || targets.first().copied() != Some(0)
+            || targets.last().copied() != Some(glyphs - 1)
+            || targets.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return None;
+        }
+        Some(Self {
+            glyphs,
+            width,
+            height,
+            horizontal,
+            anchors: Vec::with_capacity(targets.len()),
+            targets,
+        })
+    }
+    pub fn pending(&self) -> &[usize] {
+        let start = self.anchors.len();
+        &self.targets[start..(start + ROW_GEOMETRY_BATCH).min(self.targets.len())]
+    }
+    /// Reject mismatched, invalid or partial batches without advancing the job.
+    pub fn record(&mut self, rectangles: &[GlyphRectangle]) -> bool {
+        let pending = self.pending();
+        if pending.is_empty()
+            || rectangles.len() != pending.len()
+            || rectangles
+                .iter()
+                .zip(pending)
+                .any(|(rectangle, glyph)| rectangle.glyph != *glyph || !rectangle.valid())
+        {
+            return false;
+        }
+        self.anchors.extend_from_slice(rectangles);
+        true
+    }
+    pub fn finish(self) -> Option<MeasuredRowGeometry> {
+        if self.anchors.len() != self.targets.len() {
+            return None;
+        }
+        if self.horizontal {
+            HorizontalGeometry::new(self.glyphs, self.width, self.height, self.anchors)
+                .map(MeasuredRowGeometry::Horizontal)
+        } else {
+            WrappedGeometry::new(self.glyphs, self.width, self.height, self.anchors)
+                .map(MeasuredRowGeometry::Wrapped)
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlyphRectangle {
@@ -249,6 +326,85 @@ impl MeasuredRowGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cooperative_geometry_matches_complete_tables_without_partial_publication() {
+        for horizontal in [true, false] {
+            let glyphs = 6000;
+            let targets = (0..glyphs)
+                .step_by(3)
+                .chain([glyphs - 1])
+                .collect::<Vec<_>>();
+            let rectangles = targets
+                .iter()
+                .map(|&glyph| GlyphRectangle {
+                    glyph,
+                    left: if horizontal {
+                        glyph as f64 * 8.0
+                    } else {
+                        (glyph % 40) as f64 * 8.0
+                    },
+                    top: if horizontal {
+                        0.0
+                    } else {
+                        (glyph / 40) as f64 * 15.0
+                    },
+                    width: 8.0,
+                    height: 15.0,
+                })
+                .collect::<Vec<_>>();
+            let expected = if horizontal {
+                MeasuredRowGeometry::Horizontal(
+                    HorizontalGeometry::new(glyphs, 320.0, 3000.0, rectangles.clone()).unwrap(),
+                )
+            } else {
+                MeasuredRowGeometry::Wrapped(
+                    WrappedGeometry::new(glyphs, 320.0, 3000.0, rectangles.clone()).unwrap(),
+                )
+            };
+            let mut plan =
+                RowGeometryPreparation::new(glyphs, 320.0, 3000.0, horizontal, targets.clone())
+                    .unwrap();
+            let mut at = 0;
+            while !plan.pending().is_empty() {
+                let count = plan.pending().len();
+                assert!(count <= ROW_GEOMETRY_BATCH);
+                assert_eq!(plan.pending(), &targets[at..at + count]);
+                assert!(plan.record(&rectangles[at..at + count]));
+                at += count;
+            }
+            assert_eq!(plan.finish(), Some(expected));
+            let mut cancelled =
+                RowGeometryPreparation::new(glyphs, 320.0, 3000.0, horizontal, targets).unwrap();
+            assert!(cancelled.record(&rectangles[..ROW_GEOMETRY_BATCH]));
+            assert!(cancelled.finish().is_none());
+        }
+    }
+    #[test]
+    fn invalid_geometry_batches_cannot_advance_or_weaken_complete_validation() {
+        let mut plan = RowGeometryPreparation::new(2, 100.0, 15.0, true, vec![0, 1]).unwrap();
+        assert!(!plan.record(&[anchor(0, 0.0)]));
+        assert!(!plan.record(&[anchor(0, 0.0), anchor(0, 8.0)]));
+        assert!(!plan.record(&[anchor(0, f64::NAN), anchor(1, 8.0)]));
+        assert_eq!(plan.pending(), &[0, 1]);
+        assert!(plan.record(&[anchor(0, 8.0), anchor(1, 0.0)]));
+        assert!(!plan.record(&[]));
+        assert!(plan.finish().is_none());
+        for targets in [vec![], vec![1], vec![0, 0, 1], vec![0, 2, 1]] {
+            assert!(RowGeometryPreparation::new(2, 100.0, 15.0, true, targets).is_none());
+        }
+        assert!(RowGeometryPreparation::new(2, f64::NAN, 15.0, true, vec![0, 1]).is_none());
+        assert!(RowGeometryPreparation::new(2, 100.0, 0.0, true, vec![0, 1]).is_none());
+        assert!(
+            RowGeometryPreparation::new(
+                MAX_ROW_GEOMETRY_ANCHORS + 1,
+                100.0,
+                15.0,
+                true,
+                (0..=MAX_ROW_GEOMETRY_ANCHORS).collect()
+            )
+            .is_none()
+        );
+    }
     fn anchor(glyph: usize, left: f64) -> GlyphRectangle {
         GlyphRectangle {
             glyph,

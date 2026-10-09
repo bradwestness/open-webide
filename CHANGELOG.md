@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Yield between bounded batches of exact cold-row glyph measurements, including
+  wrapped and tabbed source. Discard incomplete geometry after source, account,
+  project, font or layout changes in both workspace modes. Full-row shaping and
+  unsupported-layout fallback remain unchanged.
+
 - Give editor action-menu entries consistent icons and aligned labels using the
   shared menu and icon components in both workspace modes.
 

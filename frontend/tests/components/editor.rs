@@ -18155,3 +18155,59 @@ async fn editor_tab_focus_accessibility_contract() {
         );
     }
 }
+
+#[wasm_bindgen_test]
+async fn cooperative_cold_glyph_geometry_matches_complete_and_cancels_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    let loaded = load_all_editor_fonts().await;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            view! { <style>{include_str!("../../styles.css")}</style><div class="editor-highlight" style="position:relative;width:320px"></div> }
+        });
+        let paint = mounted.element(".editor-highlight");
+        let document = web_sys::window().unwrap().document().unwrap();
+        for wrapped in [false, true] {
+            if wrapped {
+                mounted.root.class_list().add_1("editor-word-wrap").unwrap();
+            } else {
+                mounted
+                    .root
+                    .class_list()
+                    .remove_1("editor-word-wrap")
+                    .unwrap();
+            }
+            for (family, features) in [
+                ("Monaspace Neon", "\"calt\" 1, \"liga\" 1"),
+                ("Monaspace Argon", "\"calt\" 0, \"liga\" 0"),
+            ] {
+                paint.set_attribute("style", &format!("position:relative;width:320px;font-family:'{family}',monospace;font-feature-settings:{features}" )).unwrap();
+                let row = document.create_element("div").unwrap();
+                row.set_class_name("editor-source-line");
+                row.set_attribute("style", "width:320px").unwrap();
+                let mut body = String::new();
+                for (class, text) in [
+                    ("tok-string", "word 文😀e\u{301}\t != -> ".repeat(2500)),
+                    ("tok-comment", "tail words == café ".repeat(2500)),
+                ] {
+                    let span = document.create_element("span").unwrap();
+                    span.set_class_name(class);
+                    span.set_text_content(Some(&text));
+                    row.append_child(&span).unwrap();
+                    body.push_str(&text);
+                }
+                paint.append_child(&row).unwrap();
+                assert!(openwebide_frontend::components::cooperative_geometry_matches_complete_and_cancels(&row, &body, wrapped).await,
+                    "{mode:?} wrapped={wrapped} family={family}");
+                row.remove();
+            }
+        }
+    }
+    for font in loaded {
+        removeEditorFont(&font);
+    }
+}

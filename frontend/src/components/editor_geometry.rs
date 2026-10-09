@@ -178,48 +178,44 @@ fn sample_geometry(
     if !horizontal && !glyphs.index.source_paint_eligible() {
         return None;
     }
-    use openwebide_core::editor::{
-        GlyphRectangle, HorizontalGeometry, MAX_ROW_GEOMETRY_ANCHORS, MeasuredRowGeometry,
-        WrappedGeometry,
-    };
     let mut indices = samples.unwrap_or_else(|| glyphs.index.anchor_glyphs().collect::<Vec<_>>());
     indices.dedup();
-    if indices.len() <= MAX_ROW_GEOMETRY_ANCHORS {
-        let anchors = indices
-            .into_iter()
-            .map(|glyph| {
-                let rect = glyphs.rect(glyph)?;
-                Some(GlyphRectangle {
-                    glyph,
-                    left: rect.left() - bounds.left(),
-                    top: rect.top() - bounds.top(),
-                    width: rect.width(),
-                    height: rect.height(),
-                })
-            })
-            .collect::<Option<Vec<_>>>();
-        anchors.and_then(|anchors| {
-            if horizontal {
-                HorizontalGeometry::new(
-                    glyphs.index.len() - 1,
-                    bounds.width(),
-                    bounds.height(),
-                    anchors,
-                )
-                .map(MeasuredRowGeometry::Horizontal)
-            } else {
-                WrappedGeometry::new(
-                    glyphs.index.len() - 1,
-                    bounds.width(),
-                    bounds.height(),
-                    anchors,
-                )
-                .map(MeasuredRowGeometry::Wrapped)
-            }
-        })
-    } else {
-        None
+    let mut plan = openwebide_core::editor::RowGeometryPreparation::new(
+        glyphs.index.len() - 1,
+        bounds.width(),
+        bounds.height(),
+        horizontal,
+        indices,
+    )?;
+    while !plan.pending().is_empty() {
+        let rectangles = geometry_batch(glyphs, bounds, plan.pending())?;
+        if !plan.record(&rectangles) {
+            return None;
+        }
     }
+    plan.finish()
+}
+
+/// Exact DOM primitives shared by synchronous viewport queries and cooperative
+/// cold preparation. Batch admission and final validation belong to Rust core.
+fn geometry_batch(
+    glyphs: &mut Glyphs<'_>,
+    bounds: &web_sys::DomRect,
+    targets: &[usize],
+) -> Option<Vec<openwebide_core::editor::GlyphRectangle>> {
+    targets
+        .iter()
+        .map(|&glyph| {
+            let rect = glyphs.rect(glyph)?;
+            Some(openwebide_core::editor::GlyphRectangle {
+                glyph,
+                left: rect.left() - bounds.left(),
+                top: rect.top() - bounds.top(),
+                width: rect.width(),
+                height: rect.height(),
+            })
+        })
+        .collect()
 }
 
 /// Exact browser rectangles for one bounded source probe. The shared plan owns
@@ -259,12 +255,13 @@ pub(super) fn paragraph_rectangles(
 }
 
 /// Reuse the styled logical row already laid out by the cold height probe.
-pub(super) fn preparation_geometry(
+pub(super) async fn preparation_geometry(
     row: &web_sys::Element,
     body: &str,
     index: VisualLineIndex,
     bounds: &web_sys::DomRect,
     wrapped: bool,
+    current: &impl Fn() -> bool,
 ) -> Option<openwebide_core::editor::MeasuredRowGeometry> {
     if !index.source_paint_eligible() {
         return None;
@@ -277,7 +274,88 @@ pub(super) fn preparation_geometry(
         return None;
     }
     let mut glyphs = Glyphs::new(row, body, Some(index))?;
-    sample_geometry(&mut glyphs, bounds, !wrapped, None)
+    let mut targets = glyphs.index.anchor_glyphs().collect::<Vec<_>>();
+    targets.dedup();
+    let mut plan = openwebide_core::editor::RowGeometryPreparation::new(
+        glyphs.index.len() - 1,
+        bounds.width(),
+        bounds.height(),
+        !wrapped,
+        targets,
+    )?;
+    let mut batches = 0;
+    while !plan.pending().is_empty() {
+        if !current() || !row.is_connected() {
+            return None;
+        }
+        let rectangles = geometry_batch(&mut glyphs, bounds, plan.pending())?;
+        if !plan.record(&rectangles) {
+            return None;
+        }
+        if !plan.pending().is_empty() {
+            batches += 1;
+            if batches % openwebide_core::editor::MAX_MEASURE_BATCHES_PER_FRAME == 0 {
+                crate::util::yield_frame().await;
+            } else {
+                crate::util::yield_task().await;
+            }
+        }
+    }
+    current().then(|| plan.finish()).flatten()
+}
+
+/// Independent complete-renderer oracle and cancellation during an actual yield.
+#[cfg(feature = "test-support")]
+pub async fn cooperative_geometry_matches_complete_and_cancels(
+    row: &web_sys::Element,
+    body: &str,
+    wrapped: bool,
+) -> bool {
+    use openwebide_core::editor::{HorizontalGeometry, MeasuredRowGeometry, WrappedGeometry};
+    let Some(index) = VisualLineIndex::new(body) else {
+        return false;
+    };
+    let bounds = row.get_bounding_client_rect();
+    let Some(mut glyphs) = Glyphs::new(row, body, Some(index.clone())) else {
+        return false;
+    };
+    let mut targets = index.anchor_glyphs().collect::<Vec<_>>();
+    targets.dedup();
+    if targets.len() <= openwebide_core::editor::ROW_GEOMETRY_BATCH {
+        return false;
+    }
+    let Some(rectangles) = geometry_batch(&mut glyphs, &bounds, &targets) else {
+        return false;
+    };
+    let expected = if wrapped {
+        WrappedGeometry::new(index.len() - 1, bounds.width(), bounds.height(), rectangles)
+            .map(MeasuredRowGeometry::Wrapped)
+    } else {
+        HorizontalGeometry::new(index.len() - 1, bounds.width(), bounds.height(), rectangles)
+            .map(MeasuredRowGeometry::Horizontal)
+    };
+    if expected.is_none() {
+        return false;
+    }
+    let current = std::rc::Rc::new(std::cell::Cell::new(true));
+    let cancelled = current.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+            &wasm_bindgen::JsValue::NULL,
+        ))
+        .await;
+        cancelled.set(false);
+    });
+    let checks = std::cell::Cell::new(0);
+    let result = preparation_geometry(row, body, index.clone(), &bounds, wrapped, &|| {
+        checks.set(checks.get() + 1);
+        current.get()
+    })
+    .await;
+    if result.is_some() || current.get() || checks.get() < 2 {
+        return false;
+    }
+    preparation_geometry(row, body, index, &bounds, wrapped, &|| true).await == expected
 }
 
 /// The complete renderer independently measures every anchor selected by the

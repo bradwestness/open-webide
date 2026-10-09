@@ -60,7 +60,7 @@ tracks the remaining work rather than every optimization already shipped.
 | Navigation and review | Find/Replace; line numbers; horizontal scrolling and linked split scrolling; Edit/Inline/Split diffs; supported previews and Markdown change gutters/word differences; pending-edit review and agent context. |
 | Tabs, appearance and recovery | Tab context actions; consistent editor action-menu icons and labels; five Monaspace families; texture healing and ligature toggles enabled by default; retained caret/selection/scroll and database-backed editor recovery. Real folder-permission recovery still needs device verification. |
 | Selection and browser input | Multiple/rectangular selections and clipboard transactions; scoped native windows for eligible unwrapped views; automated Chromium composition and pointer checks. The recorded line-end caret bug is fixed and user-verified in the localhost PWA. |
-| Preparation and ownership | Rust/WASM worker and cooperative fallback; retained source/token/structure allocations; bounded worker delta reconstruction/reply-source publication and final structure metadata, parsed/lexical region reconciliation and retained fallback collection; bounded eligible unwrapped paragraph probes, exact overlap validation, exact carets from retained anchors/current painted coverage and conservative complete-layout fallback. Current-file progress is shown during preparation. Matching trusted font notifications retain current in-flight work. |
+| Preparation and ownership | Rust/WASM worker and cooperative fallback; retained source/token/structure allocations; bounded worker delta reconstruction/reply-source publication and final structure metadata, parsed/lexical region reconciliation and retained fallback collection; bounded eligible unwrapped paragraph probes and cooperative sampled cold-row glyph measurements, exact overlap validation, exact carets from retained anchors/current painted coverage and conservative complete-layout fallback. Current-file progress is shown during preparation. Matching trusted font notifications retain current in-flight work. |
 
 **Remaining implementation**:
 
@@ -71,7 +71,9 @@ tracks the remaining work rather than every optimization already shipped.
   mappings and complete-native fallback when bounded geometry cannot be proved.
 - [ ] **Tabbed, wrapped and bidirectional layout:** finish bounded preparation,
   bidirectional visual-run windows, fine long-row paint and incremental glyph
-  measurement. Establish exact browser geometry against the complete renderer;
+  measurement beyond the cooperatively sampled complete cold row. Full-row HTML
+  installation, initial browser shaping and DOM-node enumeration still run
+  synchronously. Establish exact browser geometry against the complete renderer;
   retained DOM, canvas widths and approximate Rust advances are insufficient.
 - [ ] **Incremental paragraph updates:** extend shifted suffix reuse to changed
   long-token and plain-run boundaries; avoid repeated prefix segmentation for

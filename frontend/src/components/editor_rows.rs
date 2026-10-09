@@ -552,8 +552,18 @@ pub(super) async fn measure_batches(
                 .is_some_and(|parent| parent.class_list().contains("editor-word-wrap"));
             if let Some(index) = projection.visual_line_index(logical)
                 && let Some(measured) = super::editor_geometry::preparation_geometry(
-                    &row, body, index, &bounds, wrapped,
+                    &row,
+                    body,
+                    index,
+                    &bounds,
+                    wrapped,
+                    &|| {
+                        current()
+                            && input.is_connected()
+                            && metrics_identity(&input).as_ref() == Some(metrics)
+                    },
                 )
+                .await
                 && current()
             {
                 geometry(logical, measured);
@@ -565,6 +575,10 @@ pub(super) async fn measure_batches(
         if let Some(trace) = &timing {
             trace.report(&paint, "layout", layout_ms, count);
             trace.report(&paint, "geometry", geometry_ms, count);
+        }
+        if !current() || !input.is_connected() || metrics_identity(&input).as_ref() != Some(metrics)
+        {
+            return Ok(None);
         }
         if !plan.record_layout(range, &batch, &widths) {
             return Err(());

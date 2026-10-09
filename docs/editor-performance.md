@@ -3255,3 +3255,32 @@ comparisons, JSON encoding/decoding, message-size fallback publication and runti
 capacity growth remain unbounded. Browser request construction still drains the
 shared source policy synchronously. This change does not establish the full
 responsiveness, memory, geometry or physical PWA release gates.
+
+## Cooperative cold-row glyph measurement
+
+Cold height probes retain the complete styled row, but sampled glyph geometry now
+advances through the shared `RowGeometryPreparation` in batches of at most 128
+exact DOM range reads. The browser yields between batches, checks the immutable
+source/account/project/layout/font scope before continuing, and publishes only a
+complete table accepted by the existing horizontal or wrapped geometry validator.
+Synchronous viewport queries drain the same policy without introducing a second
+geometry contract. Invalid or superseded jobs discard their partial table.
+
+This does not bound complete-row HTML installation, initial browser shaping,
+DOM-node enumeration, source comparisons or synchronous viewport queries. It does
+not enable bidirectional slicing or remove the complete-layout fallback. The
+existing anchor/rectangle limits are unchanged. Geometry timing around this async
+pass includes time spent yielding; it is wall time, not isolated CPU measurement.
+This checkpoint makes no startup, input-latency or memory improvement claim.
+
+Verification includes a direct complete-renderer rectangle comparison and actual
+browser-yield cancellation for wrapped and unwrapped styled/tabbed Unicode text,
+using loaded Monaspace Neon/Argon fonts and enabled/disabled healing and ligatures,
+plus the existing both-mode cold preparation and wrapped fragment regressions.
+
+Validation for this checkpoint: 569 parser-enabled and 426 minimal core tests;
+strict native core and optimized WASM component-test Clippy; the new optimized
+Chrome contract (0.82 s), cold superseded preparation (3.68 s), wrapped fragment
+scroll/Find and bidi fallback (1.52 s), and six paragraph geometry regressions
+(33.27 s). Browser contracts exercise both workspace modes. These fixture timings
+are regression observations, not production performance measurements.

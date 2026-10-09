@@ -1740,5 +1740,5 @@ pub use paint_cache::PaintCache;
 mod row_geometry;
 pub use row_geometry::{
     GlyphRectangle, HorizontalGeometry, MAX_ROW_GEOMETRY_ANCHORS, MeasuredRowGeometry,
-    WrappedGeometry,
+    ROW_GEOMETRY_BATCH, RowGeometryPreparation, WrappedGeometry,
 };
