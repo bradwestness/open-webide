@@ -9,6 +9,12 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Yield while publishing parser line indexes after large-file edits, preserving
+  the previous coordinates until the complete replacement is ready. Cancelled
+  or superseded work cannot publish partial indexes in either workspace mode.
+- Keep browser discovery and compaction fixtures sized for expanded tool schemas,
+  preserving over-capacity compaction coverage and bridge timeout checks.
+
 - Carry cursor-provided parent context through syntax color classifiers and
   retained part checks, avoiding repeated tree searches on wide documents while
   preserving parent-dependent colors, folds and editing contexts.

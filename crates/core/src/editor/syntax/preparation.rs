@@ -53,7 +53,8 @@ pub(super) struct RowPreparation {
     edit: crate::editor::lines::LineEdit,
     start: tree_sitter::Point,
     old_end: tree_sitter::Point,
-    job: crate::editor::lines::LineReplacement,
+    job: Option<crate::editor::lines::LineReplacement>,
+    publication: Option<crate::editor::lines::LinePublication>,
 }
 
 impl SyntaxDocument {
@@ -274,7 +275,8 @@ impl SyntaxDocument {
                 change: change.clone(),
                 start: indexed_point(&self.source_lines, change.range.start),
                 old_end: indexed_point(&self.source_lines, change.range.end),
-                job: edit.prepare_replacement(source.clone(), limit),
+                job: Some(edit.prepare_replacement(source.clone(), limit)),
+                publication: None,
                 edit,
             });
         }
@@ -284,30 +286,42 @@ impl SyntaxDocument {
                 return Some(Err(SyntaxStatus::Cancelled));
             }
             let work = self.row_preparation.as_mut().expect("retained row source");
-            match work.job.status() {
+            if let Some(publication) = &mut work.publication {
+                if !publication.is_complete() {
+                    if should_yield() {
+                        return None;
+                    }
+                    publication.advance(&self.source_lines, 256);
+                    continue;
+                }
+                let work = self.row_preparation.take().unwrap();
+                self.source_lines = work.publication.unwrap().finish().unwrap();
+                return Some(Ok(InputEdit {
+                    start_byte: work.change.range.start,
+                    old_end_byte: work.change.range.end,
+                    new_end_byte: work.change.new_end,
+                    start_position: work.start,
+                    old_end_position: work.old_end,
+                    new_end_position: indexed_point(&self.source_lines, work.change.new_end),
+                }));
+            }
+            let job = work.job.as_mut().expect("pending row scan");
+            match job.status() {
                 LineReplacementStatus::TooLarge => {
                     self.clear();
                     return Some(Err(SyntaxStatus::TooLarge));
                 }
                 LineReplacementStatus::Ready => {
-                    let work = self.row_preparation.take().unwrap();
-                    work.edit
-                        .apply(&mut self.source_lines, work.job.finish().unwrap());
-                    return Some(Ok(InputEdit {
-                        start_byte: work.change.range.start,
-                        old_end_byte: work.change.range.end,
-                        new_end_byte: work.change.new_end,
-                        start_position: work.start,
-                        old_end_position: work.old_end,
-                        new_end_position: indexed_point(&self.source_lines, work.change.new_end),
-                    }));
+                    let replacement = work.job.take().unwrap().finish().unwrap();
+                    work.publication = Some(work.edit.prepare_publication(replacement));
+                    continue;
                 }
                 LineReplacementStatus::Pending => {}
             }
             if should_yield() {
                 return None;
             }
-            work.job.advance(crate::highlight::LEXICAL_BATCH_BYTES);
+            job.advance(crate::highlight::LEXICAL_BATCH_BYTES);
         }
     }
 
@@ -753,13 +767,19 @@ mod tests {
                 .is_none()
         );
         let work = document.row_preparation.as_mut().unwrap();
-        while work.job.status() == crate::editor::lines::LineReplacementStatus::Pending {
-            work.job.advance(usize::MAX);
+        let job = work.job.as_mut().unwrap();
+        while job.status() == crate::editor::lines::LineReplacementStatus::Pending {
+            job.advance(usize::MAX);
         }
         assert_eq!(
-            work.job.status(),
+            job.status(),
             crate::editor::lines::LineReplacementStatus::Ready
         );
+        let mut publication = work
+            .edit
+            .prepare_publication(work.job.take().unwrap().finish().unwrap());
+        while !publication.advance(&document.source_lines, 256) {}
+        work.publication = Some(publication);
     }
 
     #[test]
@@ -854,6 +874,96 @@ mod tests {
                 if let Some(analysis) = analysis {
                     assert!(Arc::ptr_eq(analysis.source_snapshot(), &source));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn pending_index_publication_preserves_base_on_cancellation_replacement_and_sync_takeover() {
+        for operation in ["cancel", "replace", "sync", "complete"] {
+            let original = Arc::new(format!("{}fn original() {{}}\r\n", "\r\n".repeat(4_000)));
+            let mut document = SyntaxDocument::new(Language::Rust).unwrap();
+            document
+                .prepare_shared(original.clone(), 4, || true)
+                .1
+                .unwrap();
+            let original_rows = document.source_lines.clone();
+            let source = Arc::new(format!("// 文😀\r\n{original}"));
+            let weak = Arc::downgrade(&source);
+            let change = crate::editor::text_change(&original, &source).unwrap();
+            for _ in 0..100 {
+                let mut checks = 0;
+                assert!(
+                    document
+                        .prepare_rows_cooperative(&source, &change, &mut || true, &mut || {
+                            checks += 1;
+                            checks >= 2
+                        })
+                        .is_none()
+                );
+                if document
+                    .row_preparation
+                    .as_ref()
+                    .unwrap()
+                    .publication
+                    .is_some()
+                {
+                    break;
+                }
+            }
+            assert!(
+                document
+                    .row_preparation
+                    .as_ref()
+                    .unwrap()
+                    .publication
+                    .is_some()
+            );
+            assert_eq!(document.source_lines, original_rows);
+            assert!(document.structure().is_none());
+            assert!(document.folds().is_empty());
+            let next = Arc::new("fn replacement() {}\n".to_owned());
+            let (status, analysis) = if operation == "sync" {
+                document.prepare_shared(next.clone(), 4, || true)
+            } else {
+                let target = if operation == "cancel" || operation == "complete" {
+                    source.clone()
+                } else {
+                    next.clone()
+                };
+                document
+                    .prepare_cooperative(target, 4, || operation != "cancel", || false)
+                    .unwrap()
+            };
+            assert!(document.row_preparation.is_none());
+            if operation == "cancel" {
+                assert_eq!(status, SyntaxStatus::Cancelled);
+                assert!(analysis.is_none());
+            } else {
+                let target = if operation == "complete" {
+                    &source
+                } else {
+                    &next
+                };
+                assert!(matches!(status, SyntaxStatus::Ready { .. }));
+                assert!(Arc::ptr_eq(
+                    analysis.as_ref().unwrap().source_snapshot(),
+                    target
+                ));
+                assert_eq!(document.source_lines, crate::editor::lines::lines(target));
+                let (_, expected) = SyntaxDocument::new(Language::Rust).unwrap().prepare_shared(
+                    target.clone(),
+                    4,
+                    || true,
+                );
+                assert_eq!(
+                    serde_json::to_value(analysis.unwrap().transfer_data()).unwrap(),
+                    serde_json::to_value(expected.unwrap().transfer_data()).unwrap()
+                );
+            }
+            drop(source);
+            if operation != "complete" {
+                assert!(weak.upgrade().is_none());
             }
         }
     }
@@ -1675,6 +1785,8 @@ mod tests {
                 document.prepare_shared(source.clone(), 4, || true).0,
                 SyntaxStatus::Ready { .. }
             ));
+            admit_for_phase(&mut document, &changed);
+            rows_for_parser_phase(&mut document, &changed);
             let mut previous_remaining = None;
             let mut matching_batches = 0;
             let result = loop {
