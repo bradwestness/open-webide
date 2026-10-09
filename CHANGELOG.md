@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Keep browser memory and skill persistence checks aligned with host-installed plugin tool availability, preserving tool-disable and context assertions. Give Output a distinct accessible label and keep syntax progress immediately before it, with Plugins before the reserved progress slot.
+
 - Include plugin documentation in the project site navigation and repair roadmap links to the plugin section.
 
 - Yield between bounded batches of retained paragraph-prefix probes in wrapped and unwrapped editor preparation, rechecking source ownership between batches and measuring terminal dimensions freshly.

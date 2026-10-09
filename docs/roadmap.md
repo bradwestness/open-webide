@@ -126,6 +126,8 @@ tracks the remaining work rather than every optimization already shipped.
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving
   source and selection comparisons; verify the complete suite on CI as well.
+  Host-plugin fixtures and explicit Output targeting preserve the memory/skill and
+  terminal contracts; verify focus/layout behavior in the complete browser partition.
   Current checkpoints and measured results are in [performance evidence](editor-performance.md).
 - [ ] **Physical Chrome/Edge PWA input:** verify real input-method commit/cancel,
   Unicode and LF/CRLF undo/redo, multiple-cursor clipboard behavior and touch input

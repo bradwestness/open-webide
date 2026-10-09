@@ -11330,7 +11330,7 @@ async fn pending_wheel_intent_reaches_complete_measured_width_in_both_modes() {
         })
         .await;
         assert!(actions.measured_rows().is_none());
-        let output = mounted.element(".statusbar .status-btn");
+        let output = mounted.element(".statusbar [aria-label='Toggle Output']");
         let before = output.get_bounding_client_rect().x();
         assert_eq!(
             mounted

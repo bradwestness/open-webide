@@ -1117,7 +1117,7 @@ async fn bottom_terminal_spans_workspace_resizes_height_and_requires_project_in_
                 .unwrap()
                 .is_none()
         );
-        mounted.click(".statusbar .status-btn");
+        mounted.click(".statusbar [aria-label='Toggle Output']");
         settle().await;
         let terminal = mounted.element("#panel-terminal");
         let row = mounted.element(".workspace-docks");
@@ -1159,8 +1159,8 @@ async fn bottom_terminal_spans_workspace_resizes_height_and_requires_project_in_
             mounted.state.fake.settings.borrow()["panel_terminal_height"],
             (before + 30.0).to_string()
         );
-        mounted.click(".statusbar .status-btn");
-        mounted.click(".statusbar .status-btn");
+        mounted.click(".statusbar [aria-label='Toggle Output']");
+        mounted.click(".statusbar [aria-label='Toggle Output']");
         settle().await;
         assert!(terminal.is_same_node(Some(mounted.element("#panel-terminal").as_ref())));
         assert!((terminal.get_bounding_client_rect().height() - before - 30.0).abs() < 1.0);
@@ -1190,7 +1190,7 @@ async fn bottom_terminal_spans_workspace_resizes_height_and_requires_project_in_
         settle().await;
         assert!(
             mounted
-                .element(".statusbar .status-btn")
+                .element(".statusbar [aria-label='Toggle Output']")
                 .has_attribute("disabled")
         );
         assert!(!layout.visible_panels.get_untracked().terminal);

@@ -75,18 +75,19 @@ pub fn StatusBar(
             </Show>
 
             <span class="spacer" />
-            <span class="status-preparation" title=move || if preparing.get() { "Preparing syntax…" } else { "" }>
-                <Show when=move || preparing.get()>
-                    <super::ui::LoadingStatus label="Preparing syntax…" compact=true />
-                </Show>
-            </span>
             <button type="button" class=move || if ui.plugins_open.get() { "status-btn active" } else { "status-btn" }
                 title="Browse and manage plugins" aria-haspopup="dialog" aria-expanded=move || ui.plugins_open.get().to_string()
                 on:click=move |_| ui.plugins_open.update(|open| *open = !*open)>
                 <super::ui::Icon name=super::ui::IconName::Puzzle />"Plugins"<Show when=move || {updates.get()>0}><span class="plugin-count plugin-update-count" title="Plugin updates available" aria-label=move ||format!("{} plugin updates available",updates.get())>{move ||updates.get()}</span></Show>
             </button>
+            <span class="status-preparation" title=move || if preparing.get() { "Preparing syntax…" } else { "" }>
+                <Show when=move || preparing.get()>
+                    <super::ui::LoadingStatus label="Preparing syntax…" compact=true />
+                </Show>
+            </span>
             <button
                 class=move || if show_terminal.get() { "status-btn active" } else { "status-btn" }
+                aria-label="Toggle Output"
                 disabled=move || !layout.available(crate::state::layout::Panel::Terminal)
                 title=move || if layout.available(crate::state::layout::Panel::Terminal) { "Toggle Output and terminal dock (Ctrl+`)" } else { "Open a project to use Terminal" }
                 on:click=move |_| on_toggle_terminal()

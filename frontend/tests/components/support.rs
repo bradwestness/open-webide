@@ -151,6 +151,21 @@ impl TestState {
         self.projects.active_project.set(Some(1));
     }
 
+    pub fn seed_plugin_tools(&self, group: openwebide_core::plugins::PluginToolGroup) {
+        let mut prepared = openwebide_core::plugins::testing::receipt();
+        prepared.manifest.compatibility.plugin_api = 2;
+        prepared.manifest.contributions.tool_groups = vec![group];
+        self.fake.project_plugin_entries.borrow_mut().insert(
+            1,
+            vec![openwebide_core::plugins::ProjectPlugin {
+                id: 1,
+                revision: 1,
+                prepared,
+                enabled: true,
+            }],
+        );
+    }
+
     pub fn seed_connection(&self) {
         let connection = Connection {
             id: 1,

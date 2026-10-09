@@ -11,6 +11,9 @@ fn fixture(mode: WorkspaceMode, chat: bool) -> Mounted {
         state.seed_project();
         state.seed_connection();
         state.seed_session();
+        if chat {
+            state.seed_plugin_tools(openwebide_core::plugins::PluginToolGroup::Memory);
+        }
         state
             .projects
             .projects
