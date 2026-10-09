@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Validate, stably order and deduplicate final syntax structure metadata across
+  bounded worker batches, retaining exact source ownership and hiding incomplete
+  contexts in both workspace modes.
+
 - Isolate container inventory test runtimes from host-installed Docker and Podman
   so CI exercises both fixtures reliably.
 

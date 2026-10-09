@@ -2,6 +2,8 @@
 //! unsupported languages retain plain-text editing rather than guessing syntax.
 use std::ops::Range;
 use std::sync::Arc;
+#[cfg(feature = "editor-parser")]
+mod ordering;
 pub(super) mod scanning;
 
 use crate::highlight::Language;
@@ -218,44 +220,11 @@ impl Structure {
     pub(super) fn prepare_parsed(
         text: Arc<String>,
         language: Language,
-        mut protected: Vec<(Range<usize>, bool, RegionKind)>,
+        protected: Vec<(Range<usize>, bool, RegionKind)>,
         scopes: Vec<(Range<usize>, Language)>,
-        mut opaque_starts: Vec<usize>,
-        mut selection_ranges: Vec<Range<usize>>,
-    ) -> Option<StructurePreparation> {
-        if scopes.iter().any(|(range, _)| {
-            range.start > range.end
-                || !text.is_char_boundary(range.start)
-                || !text.is_char_boundary(range.end)
-        }) || scopes
-            .windows(2)
-            .any(|pair| pair[0].0.end > pair[1].0.start)
-        {
-            return None;
-        }
-        protected.sort_by_key(|(range, _, _)| (range.start, range.end));
-        let mut end = 0;
-        for (range, _, _) in &protected {
-            if range.start < end
-                || range.start > range.end
-                || !text.is_char_boundary(range.start)
-                || !text.is_char_boundary(range.end)
-            {
-                return None;
-            }
-            end = range.end;
-        }
-        if selection_ranges.iter().any(|range| {
-            range.start >= range.end
-                || !text.is_char_boundary(range.start)
-                || !text.is_char_boundary(range.end)
-        }) {
-            return None;
-        }
-        selection_ranges.sort_by_key(|range| (range.start, range.end));
-        selection_ranges.dedup();
-        opaque_starts.sort_unstable();
-        opaque_starts.dedup();
+        opaque_starts: Vec<usize>,
+        selection_ranges: Vec<Range<usize>>,
+    ) -> StructurePreparation {
         let result = Self {
             source: text,
             language,
@@ -266,10 +235,11 @@ impl Structure {
             protected,
             brackets: Vec::new(),
         };
-        Some(StructurePreparation {
+        StructurePreparation {
             structure: result,
+            metadata: MetadataPreparation::default(),
             linking: BracketLinking::default(),
-        })
+        }
     }
 
     #[cfg(all(feature = "editor-parser", test))]
@@ -288,7 +258,7 @@ impl Structure {
             scopes,
             opaque_starts,
             selection_ranges,
-        )?;
+        );
         while !work.advance(256)? {}
         work.finish()
     }
@@ -369,19 +339,171 @@ impl Structure {
 }
 
 #[cfg(feature = "editor-parser")]
+#[derive(Default)]
+struct MetadataPreparation {
+    phase: u8,
+    index: usize,
+    end: usize,
+    write: usize,
+    ordering: Option<ordering::MetadataOrder>,
+    failed: bool,
+}
+
+#[cfg(feature = "editor-parser")]
+impl MetadataPreparation {
+    fn complete(&self) -> bool {
+        self.phase == 8 && !self.failed
+    }
+
+    fn next(&mut self) {
+        self.phase += 1;
+        self.index = 0;
+        self.end = 0;
+        self.write = 0;
+        self.ordering = None;
+    }
+
+    fn advance(&mut self, structure: &mut Structure, budget: usize) -> Option<bool> {
+        if self.failed {
+            return None;
+        }
+        for _ in 0..budget {
+            let valid = match self.phase {
+                0 => {
+                    if let Some((range, _)) = structure.scopes.get(self.index) {
+                        let valid = range.start >= self.end
+                            && range.start <= range.end
+                            && structure.source.is_char_boundary(range.start)
+                            && structure.source.is_char_boundary(range.end);
+                        self.end = range.end;
+                        self.index += 1;
+                        valid
+                    } else {
+                        self.next();
+                        true
+                    }
+                }
+                1 => {
+                    let order = self
+                        .ordering
+                        .get_or_insert_with(ordering::MetadataOrder::new);
+                    if order.step(&mut structure.protected, |(range, _, _)| {
+                        (range.start, range.end)
+                    }) {
+                        self.next();
+                    }
+                    true
+                }
+                2 => {
+                    if let Some((range, _, _)) = structure.protected.get(self.index) {
+                        let valid = range.start >= self.end
+                            && range.start <= range.end
+                            && structure.source.is_char_boundary(range.start)
+                            && structure.source.is_char_boundary(range.end);
+                        self.end = range.end;
+                        self.index += 1;
+                        valid
+                    } else {
+                        self.next();
+                        true
+                    }
+                }
+                3 => {
+                    if let Some(range) = structure.selection_ranges.get(self.index) {
+                        let valid = range.start < range.end
+                            && structure.source.is_char_boundary(range.start)
+                            && structure.source.is_char_boundary(range.end);
+                        self.index += 1;
+                        valid
+                    } else {
+                        self.next();
+                        true
+                    }
+                }
+                4 => {
+                    let order = self
+                        .ordering
+                        .get_or_insert_with(ordering::MetadataOrder::new);
+                    if order.step(&mut structure.selection_ranges, |range| {
+                        (range.start, range.end)
+                    }) {
+                        self.next();
+                    }
+                    true
+                }
+                5 => {
+                    if self.index < structure.selection_ranges.len() {
+                        if self.write == 0
+                            || structure.selection_ranges[self.index]
+                                != structure.selection_ranges[self.write - 1]
+                        {
+                            structure.selection_ranges.swap(self.write, self.index);
+                            self.write += 1;
+                        }
+                        self.index += 1;
+                    } else {
+                        structure.selection_ranges.truncate(self.write);
+                        self.next();
+                    }
+                    true
+                }
+                6 => {
+                    let order = self
+                        .ordering
+                        .get_or_insert_with(ordering::MetadataOrder::new);
+                    if order.step(&mut structure.opaque_starts, |position| (*position, 0)) {
+                        self.next();
+                    }
+                    true
+                }
+                7 => {
+                    if self.index < structure.opaque_starts.len() {
+                        if self.write == 0
+                            || structure.opaque_starts[self.index]
+                                != structure.opaque_starts[self.write - 1]
+                        {
+                            structure.opaque_starts.swap(self.write, self.index);
+                            self.write += 1;
+                        }
+                        self.index += 1;
+                    } else {
+                        structure.opaque_starts.truncate(self.write);
+                        self.next();
+                    }
+                    true
+                }
+                _ => return Some(true),
+            };
+            if !valid {
+                self.failed = true;
+                return None;
+            }
+        }
+        Some(self.complete())
+    }
+}
+
+#[cfg(feature = "editor-parser")]
 pub(super) struct StructurePreparation {
     structure: Structure,
+    metadata: MetadataPreparation,
     linking: BracketLinking,
 }
 #[cfg(feature = "editor-parser")]
 impl StructurePreparation {
     pub fn advance(&mut self, budget: usize) -> Option<bool> {
+        if !self.metadata.complete() {
+            self.metadata.advance(&mut self.structure, budget)?;
+            return Some(false);
+        }
         self.linking
             .advance(&mut self.structure, budget, &mut || {})
     }
     pub fn finish(self) -> Option<Structure> {
-        (!self.linking.failed && self.linking.position == self.structure.source.len())
-            .then_some(self.structure)
+        (self.metadata.complete()
+            && !self.linking.failed
+            && self.linking.position == self.structure.source.len())
+        .then_some(self.structure)
     }
 }
 #[cfg(feature = "editor-parser")]
@@ -570,6 +692,96 @@ mod tests {
     use super::*;
     #[cfg(feature = "editor-parser")]
     #[test]
+    fn metadata_batches_match_independent_sort_dedup_and_lexical_bracket_oracles() {
+        for ending in ["\n", "\r\n"] {
+            let source = Arc::new(format!("α() /* x */ β[]{ending}").repeat(2048));
+            let lexical = Structure::scan(&source, Language::Rust).unwrap();
+            let mut protected = lexical.protected.clone();
+            protected.reverse();
+            let mut selections: Vec<_> = source
+                .char_indices()
+                .map(|(start, ch)| start..start + ch.len_utf8())
+                .collect();
+            selections.reverse();
+            selections.extend(selections.clone());
+            let mut expected_selections = selections.clone();
+            expected_selections.sort_by_key(|range| (range.start, range.end));
+            expected_selections.dedup();
+            let mut opaque: Vec<_> = lexical
+                .protected
+                .iter()
+                .map(|(range, _, _)| range.start)
+                .collect();
+            opaque.reverse();
+            opaque.extend(opaque.clone());
+            let mut expected_opaque = opaque.clone();
+            expected_opaque.sort_unstable();
+            expected_opaque.dedup();
+            for budget in [1, 7, 256] {
+                let mut work = Structure::prepare_parsed(
+                    source.clone(),
+                    Language::Rust,
+                    protected.clone(),
+                    vec![],
+                    opaque.clone(),
+                    selections.clone(),
+                );
+                assert_eq!(work.advance(0), Some(false));
+                while !work.advance(budget).unwrap() {
+                    if !work.metadata.complete() {
+                        assert_eq!(work.linking.position, 0);
+                        assert!(work.structure.brackets.is_empty());
+                    }
+                }
+                let result = work.finish().unwrap();
+                assert!(Arc::ptr_eq(&result.source, &source));
+                assert_eq!(result.protected, lexical.protected);
+                assert_eq!(result.selection_ranges, expected_selections);
+                assert_eq!(result.opaque_starts, expected_opaque);
+                assert_eq!(result.brackets, lexical.brackets);
+            }
+        }
+    }
+
+    #[cfg(feature = "editor-parser")]
+    #[test]
+    fn invalid_metadata_remains_rejected_after_yielding_and_releases_its_source() {
+        for (protected, scopes, selections) in [
+            (
+                vec![
+                    (0..2, true, RegionKind::String),
+                    (1..3, true, RegionKind::String),
+                ],
+                vec![],
+                vec![],
+            ),
+            (vec![(1..2, true, RegionKind::String)], vec![], vec![]),
+            (
+                vec![],
+                vec![(0..2, Language::Rust), (1..3, Language::Rust)],
+                vec![],
+            ),
+            (vec![], vec![], std::iter::once(2..2).collect()),
+            (vec![], vec![], std::iter::once(0..9).collect()),
+        ] {
+            let source = Arc::new("α()".to_owned());
+            let weak = Arc::downgrade(&source);
+            let mut work = Structure::prepare_parsed(
+                source,
+                Language::Rust,
+                protected,
+                scopes,
+                vec![],
+                selections,
+            );
+            while work.advance(1) == Some(false) {}
+            assert_eq!(work.advance(256), None);
+            assert!(work.finish().is_none());
+            assert!(weak.upgrade().is_none());
+        }
+    }
+    #[cfg(feature = "editor-parser")]
+    #[test]
     fn bracket_batches_bound_region_and_scope_cursors_and_preserve_pairing() {
         for budget in [1, 7, 256] {
             let source = Arc::new("()".to_owned());
@@ -580,10 +792,10 @@ mod tests {
                 vec![(0..0, Language::JavaScript); 1000],
                 vec![],
                 vec![],
-            )
-            .unwrap();
+            );
             assert_eq!(work.advance(0), Some(false));
             assert_eq!(work.linking.position, 0);
+            while !work.metadata.advance(&mut work.structure, 256).unwrap() {}
             let mut batches = 0;
             loop {
                 let scopes = work.linking.scope_index;
@@ -625,8 +837,7 @@ mod tests {
                 vec![],
                 vec![],
                 vec![],
-            )
-            .unwrap();
+            );
             drop(source);
             let complete = loop {
                 match work.advance(256) {
@@ -653,8 +864,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
-        )
-        .unwrap();
+        );
         assert_eq!(work.advance(256), Some(false));
         drop(source);
         assert!(weak.upgrade().is_some());
@@ -689,8 +899,7 @@ mod tests {
                     vec![],
                     serde_json::from_value(case.metadata["opaque_starts"].clone()).unwrap(),
                     vec![],
-                )
-                .unwrap();
+                );
                 while !work.advance(budget).unwrap() {}
                 assert_eq!(
                     work.finish().unwrap().brackets,
