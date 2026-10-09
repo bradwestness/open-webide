@@ -13,6 +13,8 @@ for what's still ahead.
   preserve editor reads across chat-session changes, and retain pending history
   selections while loading more commits. Keep timeline popovers inside their panel
   in both workspace modes.
+- Isolate container inventory test runtimes from host-installed Docker and Podman
+  so CI exercises both fixtures reliably.
 
 - Prepare final bracket links across bounded worker batches, preserving embedded
   language boundaries and hiding partial editing contexts until completion in

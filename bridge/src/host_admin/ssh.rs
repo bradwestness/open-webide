@@ -817,6 +817,9 @@ case "$3" in *Env*) exit 11 ;; esac
 printf '%s\n' '{"Id":"plex","Name":"/Plex","State":"running","Image":"plex:latest","Ports":{"32400/tcp":[{"HostPort":"32400"}]},"Labels":{"PODMAN_SYSTEMD_UNIT":"plex.service"},"Mounts":[{"Source":"/media/movies","Destination":"/movies"}]}'
 "#).unwrap();
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)).unwrap();
+            // Keep installed host runtimes out of discovery: the Docker case
+            // must not select a real Podman ahead of its fixture.
+            std::os::unix::fs::symlink("/usr/bin/head", dir.path().join("head")).unwrap();
             let result = std::process::Command::new("/bin/sh")
                 .args(["-c", &container_script(Platform::Linux)])
                 .env("PATH", dir.path())
