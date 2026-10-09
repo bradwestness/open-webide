@@ -2549,7 +2549,62 @@ Both separate complete-renderer font/feature/whitespace and near-limit geometry
 matrices pass. Trusted release input checks pass commit/cancel, undo/redo and
 complete LF/CRLF source preservation in both modes. These checks do not establish
 physical IME, installed PWA, touch, assistive-technology or native folder permission
-behavior. This checkpoint's CI remains required.
+behavior. All five CI jobs passed for 2e934df (37866467373).
 
 All five jobs passed for both previous caret checkpoints: f1cf98b (37861220328)
 and 40cab32 (37862828415). They do not replace verification of this draft.
+
+
+### Ordered source coordinate queries (2026-10-08)
+
+Shifted replay now evaluates exact old/new glyph positions in ordered queries,
+sharing cluster traversal between dense targets and using retained checkpoints
+across sparse gaps. Relative old glyph numbers remain candidates: every old/new
+source byte must still match the measured source shift, alongside the original
+source/run, font, scope, overlap and fresh-terminal-extent checks. The shared Rust
+coordinate API rejects unordered, mismatched-length and over-budget requests;
+duplicates and EOF retain exact byte/UTF-16 semantics. Unicode tests compare dense,
+sparse and repeated queries to complete cluster coordinates, including emoji,
+regional indicators, combining sequences and Indic conjuncts.
+
+The exact 2e934df [baseline](editor-performance/ordered-positions-before-linux-repeat.jsonl)
+(module ab421393ed5b99d) and [new query samples](editor-performance/ordered-positions-after-linux-repeat.jsonl)
+(module b95be28cdbd84bcd) use the same newly rebuilt 2e934df backend, pinned outside
+Cargo cleanup at SHA-256
+`e15661c00f9b8d42efb10b5287ff2cc28c2549649534854a36851d84b213b0f1`.
+A shared target cleanup removed the previous pin after the baseline frontend build;
+measurement resumed only after rebuilding and preserving the backend. No new Docker
+image was created. Both versions use the existing arm64 image and 4-CPU/10-GiB
+container budget. Concurrent host builds/tests mean resources were not exclusive.
+
+All twelve samples use the actual 1,048,567-byte Rust String, retain String styling
+through load/scroll/input, verify byte-zero selection before insertion and verify
+the complete saved source afterward. Local fixtures contain no native directory
+handles. Three samples per mode/version are descriptive, not percentiles or a
+memory/permission guarantee.
+
+| Mode / version | Cold paint median (range), ms | Scroll paint median (range), ms | Beginning input median (range), ms | Peak Chrome PSS range, KiB | Largest task range, ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Local before | 4155.8 (4138.4–4436.5) | 24.2 (23.0–28.0) | 555.0 (544.9–638.7) | 750373–764653 | 103–108 |
+| Local after | 3864.0 (3797.8–4274.6) | 20.4 (17.3–23.6) | 143.3 (139.4–162.9) | 715479–759498 | 108–112 |
+| Remote before | 4177.0 (4053.9–4190.7) | 27.2 (24.4–27.4) | 555.0 (552.1–556.4) | 721500–763088 | 117–127 |
+| Remote after | 3936.3 (3910.0–4125.4) | 25.6 (17.3–27.7) | 147.1 (145.9–147.2) | 716743–759972 | 115–128 |
+
+The [untruncated new trace](editor-performance/ordered-positions-after-linux-trace.jsonl)
+still records three sliced input probes per mode; their first-to-last span is
+43.8/42.5 ms, versus 453.3/422.6 ms in the preceding shifted-replay trace. This
+supports reduction of coordinate-validation work, not less geometry coverage.
+Cold preparation still measures 80/72 probes and remains multi-second. Largest
+cold tasks and process memory remain completion work; this does not finish the
+responsiveness, wrapped/bidirectional, ownership, device, recovery or accessibility
+gates.
+
+Validation so far passes 495 all-feature and 391 no-default-feature core tests,
+strict core/WASM lint, both complete-browser suffix regressions, the release build
+and the actual production worker checks (1,552 cooperative yields with exact
+near-limit Rust/YAML String publication). The full ordinary Chrome suite passes
+18 unit, 450 component and four adapter tests. Both separate font/feature/whitespace
+and near-limit geometry matrices pass, as do trusted release composition,
+undo/redo and full LF/CRLF source checks in both modes. These are supporting engine
+checks, not physical IME, touch, assistive-technology or native folder-permission
+verification. This checkpoint's CI remains required.

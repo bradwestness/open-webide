@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share exact Unicode coordinate traversal across ordered glyph queries when
+  validating shifted paragraph replay, preserving every source-byte and browser
+  overlap check while avoiding repeated grapheme-prefix scans.
+
 - Reuse unchanged styled paragraph suffix measurements across insertions and
   deletions, with exact source/run/glyph and browser-overlap validation. Replay in
   bounded batches and freshly measure the complete extent; shifted tab grids and
