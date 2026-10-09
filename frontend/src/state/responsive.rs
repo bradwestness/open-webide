@@ -62,11 +62,17 @@ impl LayoutPreferences {
     }
     pub fn order(&self, panel: &str) -> u8 {
         if let Some(index) = self.order.iter().position(|id| id == panel) {
-            return u8::try_from(index).unwrap_or(255);
+            return u8::try_from(index.saturating_mul(2)).unwrap_or(255);
+        }
+        // Insert new History beside Files when restoring an older saved panel order.
+        if panel == "history" && !self.order.is_empty() {
+            let after = self.order.iter().position(|id| id == "files").unwrap_or(0);
+            return u8::try_from(after.saturating_mul(2).saturating_add(1)).unwrap_or(255);
         }
         let rank = match panel {
             "sessions" => 1,
             "files" => 2,
+            "history" => 3,
             "search" => 3,
             "git" => 4,
             "editor" => 5,
@@ -80,7 +86,7 @@ impl LayoutPreferences {
         }
     }
     pub fn move_panel(&mut self, panel: &str, right: bool, visible: &[&str]) -> bool {
-        let mut panels = ["sessions", "files", "editor", "terminal", "chat"];
+        let mut panels = ["sessions", "files", "history", "editor", "terminal", "chat"];
         panels.sort_by_key(|id| self.order(id));
         let Some(index) = panels.iter().position(|id| *id == panel) else {
             return false;
@@ -114,7 +120,7 @@ impl LayoutPreferences {
     }
     pub fn pin(&mut self, panel: &str, side: PanelSide) -> bool {
         if ![
-            "sessions", "files", "editor", "chat", "terminal", "git", "search",
+            "sessions", "files", "editor", "chat", "terminal", "git", "search", "history",
         ]
         .contains(&panel)
         {
@@ -145,20 +151,20 @@ mod tests {
         assert!(prefs.move_panel(
             "terminal",
             false,
-            &["sessions", "files", "editor", "terminal", "chat"]
+            &["sessions", "files", "history", "editor", "terminal", "chat"]
         ));
         assert!(prefs.order("terminal") < prefs.order("editor"));
         assert_eq!(prefs.side("terminal"), PanelSide::Left);
         assert!(prefs.move_panel(
             "terminal",
             true,
-            &["sessions", "files", "editor", "terminal", "chat"]
+            &["sessions", "files", "history", "editor", "terminal", "chat"]
         ));
         assert_eq!(prefs.side("terminal"), PanelSide::Right);
         assert!(!prefs.move_panel(
             "sessions",
             false,
-            &["sessions", "files", "editor", "terminal", "chat"]
+            &["sessions", "files", "history", "editor", "terminal", "chat"]
         ));
         let restored: LayoutPreferences =
             serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
@@ -169,6 +175,14 @@ mod tests {
                 .files_view,
             FilesView::Explorer
         );
+    }
+    #[test]
+    fn history_joins_older_saved_layouts_beside_files() {
+        let prefs: LayoutPreferences =
+            serde_json::from_str(r#"{"order":["sessions","files","editor","terminal","chat"]}"#)
+                .unwrap();
+        assert!(prefs.order("files") < prefs.order("history"));
+        assert!(prefs.order("history") < prefs.order("editor"));
     }
     #[test]
     fn pin_preferences_keep_defaults_and_roundtrip_without_viewport_state() {

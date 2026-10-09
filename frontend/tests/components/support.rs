@@ -262,6 +262,8 @@ pub fn chat_actions(state: TestState) -> ChatActions {
         request_open: Callback::new(|_| ()),
         refresh_git: Callback::new(|()| ()),
         on_sync_click: Callback::new(|()| ()),
+        on_commit: Callback::new(|_: openwebide_core::GitCommitRequest| ()),
+        on_checkout: Callback::new(|_: (String, bool)| ()),
     })
 }
 

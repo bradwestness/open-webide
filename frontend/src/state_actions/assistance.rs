@@ -154,6 +154,8 @@ impl ChatAssistance {
                     }
                     let request = AssistanceRequest {
                         kind,
+                        model: None,
+                        staged_draft: false,
                         connection_id,
                         session_id,
                         project_id,

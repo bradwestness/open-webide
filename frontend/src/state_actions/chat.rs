@@ -14,7 +14,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use openwebide_agent::policy::ApprovalMode;
 use openwebide_core::{
-    ConversationEntry, GitCheckoutRequest, GitCommitRequest,
+    ConversationEntry, GitCommitRequest,
     tui::{DEFAULT_CONTEXT_LIMIT, SlashCommand},
 };
 use web_sys::AbortController;
@@ -33,6 +33,8 @@ pub struct ChatActionContext {
     pub request_open: Callback<String>,
     pub refresh_git: Callback<()>,
     pub on_sync_click: Callback<()>,
+    pub on_commit: Callback<GitCommitRequest>,
+    pub on_checkout: Callback<(String, bool)>,
 }
 
 /// App-owned actions for sending chat, handling approvals, choosing models,
@@ -77,6 +79,8 @@ impl ChatActions {
             request_open,
             refresh_git,
             on_sync_click,
+            on_commit,
+            on_checkout,
         } = context;
         let todos = super::todos::install(api, chat, projects);
         let project_git = expect_context::<crate::project_git::ProjectGit>();
@@ -1082,90 +1086,24 @@ impl ChatActions {
                         project_id,
                         message,
                     } => {
-                        spawn_local(async move {
-                            let request = GitCommitRequest {
-                                message: message.clone(),
+                        if project_id == projects.active_project.get_untracked() {
+                            on_commit.run(GitCommitRequest {
+                                message,
                                 paths: None,
                                 include_untracked: false,
-                            };
-                            match async {
-                                project_git
-                                    .repository(project_id)
-                                    .await?
-                                    .commit(&request)
-                                    .await
-                            }
-                            .await
-                            {
-                                Ok(result) => {
-                                    refresh_git.run(());
-                                    chat.notify(format!(
-                                        "Committed `{}`: {}\nSigned: {}",
-                                        result.commit_hash, result.summary, result.is_signed
-                                    ));
-                                }
-                                Err(error) => {
-                                    chat.notify(format!("Git commit failed: {error}"));
-                                }
-                            }
-                        });
+                                staged_only: false,
+                            });
+                        }
                     }
                     SlashAction::Checkout { project_id, branch } => {
-                        spawn_local(async move {
-                            let request = GitCheckoutRequest {
-                                branch: branch.clone(),
-                                create_if_missing: false,
-                            };
-                            match async {
-                                project_git
-                                    .repository(project_id)
-                                    .await?
-                                    .checkout(&request)
-                                    .await
-                            }
-                            .await
-                            {
-                                Ok(result) => {
-                                    refresh_git.run(());
-                                    chat.notify(format!(
-                                        "Checked out branch `{}` (previous: `{}`).",
-                                        result.branch,
-                                        result.previous_branch.as_deref().unwrap_or("none")
-                                    ));
-                                }
-                                Err(error) => {
-                                    chat.notify(format!("Git checkout failed: {error}"));
-                                }
-                            }
-                        });
+                        if project_id == projects.active_project.get_untracked() {
+                            on_checkout.run((branch, false));
+                        }
                     }
                     SlashAction::CreateBranch { project_id, branch } => {
-                        spawn_local(async move {
-                            let request = GitCheckoutRequest {
-                                branch: branch.clone(),
-                                create_if_missing: true,
-                            };
-                            match async {
-                                project_git
-                                    .repository(project_id)
-                                    .await?
-                                    .checkout(&request)
-                                    .await
-                            }
-                            .await
-                            {
-                                Ok(result) => {
-                                    refresh_git.run(());
-                                    chat.notify(format!(
-                                        "Created and checked out branch `{}`.",
-                                        result.branch
-                                    ));
-                                }
-                                Err(error) => {
-                                    chat.notify(format!("Git branch failed: {error}"));
-                                }
-                            }
-                        });
+                        if project_id == projects.active_project.get_untracked() {
+                            on_checkout.run((branch, true));
+                        }
                     }
                     SlashAction::ListBranches { project_id } => {
                         spawn_local(async move {

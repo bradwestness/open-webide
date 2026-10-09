@@ -115,3 +115,6 @@ pub mod questions;
 mod monitors;
 
 pub use monitors::ConversationMonitors;
+
+pub mod git_changes;
+pub mod git_history;

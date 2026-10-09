@@ -295,3 +295,220 @@ mod tests {
         assert_eq!(tokens[0].token.kind, expected_kind);
     }
 }
+
+/// Paint a bounded Git patch using the same tokens and gutters as editor diffs.
+/// Hunk headers supply original line numbers; metadata never consumes source rows.
+pub fn paint_unified_diff(patch: &str, path: &str) -> Vec<DiffPaintLine> {
+    let mut rows = Vec::new();
+    let (mut old, mut new) = (0, 0);
+    let mut hunk = false;
+    let mut remaining = (0_usize, 0_usize);
+    for line in patch.lines() {
+        if let Some(header) = line.strip_prefix("@@ -") {
+            let ranges = header.split_whitespace().take(2).collect::<Vec<_>>();
+            let number = |range: &str| {
+                range
+                    .trim_start_matches('+')
+                    .split(',')
+                    .next()
+                    .and_then(|value| value.parse::<usize>().ok())
+            };
+            if let [left, right] = ranges.as_slice()
+                && let (Some(left), Some(right)) = (number(left), number(right))
+            {
+                old = left;
+                new = right;
+                hunk = true;
+                let count = |range: &str| {
+                    range
+                        .split_once(',')
+                        .and_then(|(_, count)| count.parse::<usize>().ok())
+                        .unwrap_or(1)
+                };
+                remaining = (count(ranges[0]), count(ranges[1]));
+                let context = header
+                    .split_once("@@")
+                    .map_or("", |(_, context)| context.trim());
+                rows.push(('m', None, None, context));
+                continue;
+            }
+        } else if line.starts_with("diff --git ") {
+            hunk = false;
+        }
+        if !hunk || remaining == (0, 0) {
+            if line.starts_with("Binary files ")
+                || line.starts_with("GIT binary patch")
+                || line.starts_with("\\ No newline")
+            {
+                rows.push(('m', None, None, line));
+            }
+            continue;
+        }
+        let marker = line
+            .chars()
+            .next()
+            .filter(|_| hunk && !line.starts_with("@@ "))
+            .unwrap_or('m');
+        let (old_number, new_number, text) = match marker {
+            '+' => {
+                let number = new;
+                new += 1;
+                remaining.1 = remaining.1.saturating_sub(1);
+                (None, Some(number), &line[1..])
+            }
+            '-' => {
+                let number = old;
+                old += 1;
+                remaining.0 = remaining.0.saturating_sub(1);
+                (Some(number), None, &line[1..])
+            }
+            ' ' => {
+                let numbers = (old, new);
+                old += 1;
+                new += 1;
+                remaining.0 = remaining.0.saturating_sub(1);
+                remaining.1 = remaining.1.saturating_sub(1);
+                (Some(numbers.0), Some(numbers.1), &line[1..])
+            }
+            _ => (None, None, line),
+        };
+        rows.push((marker, old_number, new_number, text));
+    }
+    if rows.is_empty() && !patch.trim().is_empty() {
+        rows.push((
+            'm',
+            None,
+            None,
+            "No textual hunks (binary, rename, copy or mode change).",
+        ));
+    }
+    let old_source = rows
+        .iter()
+        .filter(|(_, old, _, _)| old.is_some())
+        .map(|(_, _, _, text)| *text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let new_source = rows
+        .iter()
+        .filter(|(_, _, new, _)| new.is_some())
+        .map(|(_, _, _, text)| *text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (old_paint, new_paint) = (
+        paint_source(&old_source, path),
+        paint_source(&new_source, path),
+    );
+    let (mut old_index, mut new_index) = (0, 0);
+    rows.into_iter()
+        .map(|(marker, old_number, new_number, text)| {
+            let tokens = if marker == '-' {
+                old_paint.get(old_index)
+            } else if new_number.is_some() {
+                new_paint.get(new_index)
+            } else {
+                None
+            };
+            let tokens = tokens
+                .filter(|tokens| {
+                    tokens
+                        .iter()
+                        .map(|token| token.text.as_str())
+                        .collect::<String>()
+                        == text
+                })
+                .cloned()
+                .unwrap_or_else(|| {
+                    vec![Token {
+                        kind: TokenKind::Plain,
+                        text: text.into(),
+                    }]
+                });
+            if old_number.is_some() {
+                old_index += 1;
+            }
+            if new_number.is_some() {
+                new_index += 1;
+            }
+            DiffPaintLine {
+                marker: if old_number.is_none() && new_number.is_none() {
+                    ' '
+                } else {
+                    marker
+                },
+                old_number,
+                new_number,
+                tokens: tokens
+                    .into_iter()
+                    .map(|token| DiffPaintToken {
+                        token,
+                        change: DiffChange::Unchanged,
+                    })
+                    .collect(),
+                ending_note: None,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+    #[test]
+    fn patch_headers_and_multiple_hunks_preserve_source_numbers_and_text() {
+        let patch = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -40,2 +50,2 @@\n-old\n+new\n context\n@@ -100 +120 @@\n-last\n+next\n\\ No newline at end of file";
+        let lines = paint_unified_diff(patch, "a.rs");
+        assert!(lines[..1].iter().all(|line| line.old_number.is_none()
+            && line.new_number.is_none()
+            && line.marker == ' '));
+        assert_eq!((lines[1].old_number, lines[1].new_number), (Some(40), None));
+        assert_eq!((lines[2].old_number, lines[2].new_number), (None, Some(50)));
+        assert_eq!(
+            (lines[3].old_number, lines[3].new_number),
+            (Some(41), Some(51))
+        );
+        assert_eq!(
+            (lines[5].old_number, lines[6].new_number),
+            (Some(100), Some(120))
+        );
+        assert_eq!(
+            lines[2]
+                .tokens
+                .iter()
+                .map(|token| token.token.text.as_str())
+                .collect::<String>(),
+            "new"
+        );
+        assert!(lines[7].new_number.is_none());
+    }
+}
+
+#[cfg(test)]
+mod patch_presentation_tests {
+    use super::*;
+    #[test]
+    fn hunk_context_remains_plain_and_metadata_like_source_is_not_filtered() {
+        let patch = "diff --git a/a b/a\nindex 123..456 100644\nold mode 100644\nnew mode 100755\nrename from old\nrename to new\n--- a/a\n+++ b/a\n@@ -10,2 +20,3 @@ function <script>\n--- source payload\n+++ source payload\n diff --git literal\n+index literal\n\\ No newline at end of file";
+        let lines = paint_unified_diff(patch, "a.txt");
+        let text = |line: &DiffPaintLine| {
+            line.tokens
+                .iter()
+                .map(|token| token.token.text.as_str())
+                .collect::<String>()
+        };
+        assert_eq!(text(&lines[0]), "function <script>");
+        assert_eq!(text(&lines[1]), "-- source payload");
+        assert_eq!(lines[1].old_number, Some(10));
+        assert_eq!(text(&lines[2]), "++ source payload");
+        assert_eq!(lines[2].new_number, Some(20));
+        assert_eq!(text(&lines[3]), "diff --git literal");
+        assert_eq!(text(&lines[4]), "index literal");
+        assert!(text(&lines[5]).contains("No newline"));
+        for patch in [
+            "diff --git a/a b/b\nrename from a\nrename to b",
+            "diff --git a/a b/a\nold mode 100644\nnew mode 100755",
+            "diff --git a/a b/a\nBinary files a/a and b/a differ",
+        ] {
+            assert!(!paint_unified_diff(patch, "a").is_empty());
+        }
+    }
+}

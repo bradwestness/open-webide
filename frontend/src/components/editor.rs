@@ -1868,7 +1868,26 @@ pub(super) fn render_inline_diff(diff: FileDiff) -> impl IntoView {
         .max(1)
         .to_string()
         .len();
-    let body = openwebide_core::diff::paint_inline_diff(&diff)
+    render_diff_lines(openwebide_core::diff::paint_inline_diff(&diff), digits)
+}
+
+pub(super) fn render_commit_diff(patch: &str, path: &str) -> impl IntoView + use<> {
+    let lines = openwebide_core::diff::paint_unified_diff(patch, path);
+    let digits = lines
+        .iter()
+        .filter_map(|line| line.old_number.into_iter().chain(line.new_number).max())
+        .max()
+        .unwrap_or(1)
+        .to_string()
+        .len();
+    render_diff_lines(lines, digits)
+}
+
+fn render_diff_lines(
+    lines: Vec<openwebide_core::diff::DiffPaintLine>,
+    digits: usize,
+) -> impl IntoView {
+    let body = lines
         .into_iter()
         .map(|dl| {
             let mark = dl.marker;

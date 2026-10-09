@@ -128,6 +128,19 @@ pub struct FakeBackend {
     pub git_path_requests: RefCell<Vec<(Option<i64>, openwebide_core::git::GitPathRequest)>>,
     pub git_path_status_requests: RefCell<Vec<Option<i64>>>,
     pub git_statuses: RefCell<VecDeque<Deferred<GitRepoStatus>>>,
+    pub git_stashes: RefCell<openwebide_core::git::GitStashResult>,
+    pub git_stash_requests: RefCell<Vec<openwebide_core::git::GitStashRequest>>,
+    pub git_index_diff: RefCell<String>,
+    pub git_history: RefCell<openwebide_core::git::GitHistoryPage>,
+    pub git_history_results: RefCell<VecDeque<Deferred<openwebide_core::git::GitHistoryPage>>>,
+    pub git_history_requests: RefCell<Vec<openwebide_core::git::GitHistoryRequest>>,
+    pub git_commit_diff: RefCell<Option<openwebide_core::git::GitCommitDiff>>,
+    pub git_commit_diff_results: RefCell<VecDeque<Deferred<openwebide_core::git::GitCommitDiff>>>,
+    pub git_commit_diff_requests: RefCell<Vec<openwebide_core::git::GitCommitDiffRequest>>,
+    pub git_commit_results: RefCell<VecDeque<Deferred<GitCommitResult>>>,
+    pub git_commit_requests: RefCell<Vec<GitCommitRequest>>,
+    pub git_sync_results: RefCell<VecDeque<Deferred<GitSyncResult>>>,
+    pub git_sync_requests: RefCell<Vec<GitSyncRequest>>,
     pub git_branches: RefCell<Vec<GitBranchInfo>>,
     pub git_branches_results: RefCell<VecDeque<Deferred<Vec<GitBranchInfo>>>>,
     pub git_checkout_results: RefCell<VecDeque<Deferred<GitCheckoutResult>>>,
@@ -1500,6 +1513,57 @@ impl Backend for FakeBackend {
             Err("git_file_head has no scripted response".into())
         })
     }
+    fn git_stash<'a>(
+        &'a self,
+        _project_id: Option<i64>,
+        request: &'a openwebide_core::git::GitStashRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::git::GitStashResult, String>> {
+        Box::pin(async move {
+            self.git_stash_requests.borrow_mut().push(request.clone());
+            Ok(self.git_stashes.borrow().clone())
+        })
+    }
+    fn git_index_diff(
+        &self,
+        _project_id: Option<i64>,
+    ) -> LocalBoxFuture<'_, Result<String, String>> {
+        Box::pin(async move { Ok(self.git_index_diff.borrow().clone()) })
+    }
+    fn git_history<'a>(
+        &'a self,
+        _project_id: Option<i64>,
+        request: &'a openwebide_core::git::GitHistoryRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::git::GitHistoryPage, String>> {
+        Box::pin(async move {
+            self.git_history_requests.borrow_mut().push(request.clone());
+            let pending = self.git_history_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                pending.await.map_err(|error| error.to_string())?
+            } else {
+                Ok(self.git_history.borrow().clone())
+            }
+        })
+    }
+    fn git_commit_diff<'a>(
+        &'a self,
+        _project_id: Option<i64>,
+        request: &'a openwebide_core::git::GitCommitDiffRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::git::GitCommitDiff, String>> {
+        Box::pin(async move {
+            self.git_commit_diff_requests
+                .borrow_mut()
+                .push(request.clone());
+            let pending = self.git_commit_diff_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                pending.await.map_err(|error| error.to_string())?
+            } else {
+                self.git_commit_diff
+                    .borrow()
+                    .clone()
+                    .ok_or_else(|| "Commit diff unavailable".into())
+            }
+        })
+    }
     fn git_branches<'a>(
         &'a self,
         _project_id: Option<i64>,
@@ -1552,13 +1616,18 @@ impl Backend for FakeBackend {
     fn git_commit<'a>(
         &'a self,
         _project_id: Option<i64>,
-        _req: &'a GitCommitRequest,
+        req: &'a GitCommitRequest,
     ) -> LocalBoxFuture<'a, Result<GitCommitResult, String>> {
         Box::pin(async move {
             self.calls.borrow_mut().push(Call::Request {
                 method: "git_commit",
             });
-            Err("git_commit has no scripted response".into())
+            self.git_commit_requests.borrow_mut().push(req.clone());
+            let pending = self.git_commit_results.borrow_mut().pop_front();
+            match pending {
+                Some(pending) => pending.await.map_err(|error| error.to_string())?,
+                None => Err("git_commit has no scripted response".into()),
+            }
         })
     }
     fn git_checkout<'a>(
@@ -1584,13 +1653,18 @@ impl Backend for FakeBackend {
     fn git_sync<'a>(
         &'a self,
         _project_id: Option<i64>,
-        _req: &'a GitSyncRequest,
+        req: &'a GitSyncRequest,
     ) -> LocalBoxFuture<'a, Result<GitSyncResult, String>> {
         Box::pin(async move {
             self.calls
                 .borrow_mut()
                 .push(Call::Request { method: "git_sync" });
-            Err("git_sync has no scripted response".into())
+            self.git_sync_requests.borrow_mut().push(req.clone());
+            let pending = self.git_sync_results.borrow_mut().pop_front();
+            match pending {
+                Some(pending) => pending.await.map_err(|error| error.to_string())?,
+                None => Err("git_sync has no scripted response".into()),
+            }
         })
     }
     fn set_session_connection(
@@ -1864,6 +1938,32 @@ impl Backend for FakeBackend {
                 .unwrap_or_default();
             Ok(openwebide_core::ApprovalDecision {
                 approved: mode.auto_approves(&check.call.name),
+            })
+        })
+    }
+    fn staged_assistance<'a>(
+        &'a self,
+        request: &'a openwebide_core::AssistanceRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::assistance::GitDraftResult, String>> {
+        Box::pin(async move {
+            let runtime = self
+                .model_runtime(request.connection_id, request.model.as_deref())
+                .await?;
+            let text = self
+                .assistance(request)
+                .await?
+                .ok_or("The model could not produce a draft. Try again.")?;
+            Ok(openwebide_core::assistance::GitDraftResult {
+                text,
+                context_limit: runtime
+                    .settings
+                    .context_limit
+                    .or(runtime.connection.context_limit)
+                    .unwrap_or(8192),
+                output_limit: runtime.settings.max_output_tokens.unwrap_or(512).min(512),
+                timeout_seconds: runtime.transport.timeout_seconds,
+                input_tokens: request.input.len(),
+                estimated: true,
             })
         })
     }

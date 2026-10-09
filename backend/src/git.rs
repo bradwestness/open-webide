@@ -87,6 +87,7 @@ pub async fn repo_status(
                 Err(_) => {
                     // Return a default "unknown" status if .git doesn't exist or is unreadable
                     Ok(GitRepoStatus {
+                        availability: openwebide_core::git::GitStatusAvailability::Passive,
                         branch: "unknown".into(),
                         commit_hash: "".into(),
                         commit_message: None,
@@ -133,6 +134,7 @@ fn passive_repo_status(project_full_path: &Path) -> Result<GitRepoStatus, String
     }
 
     Ok(GitRepoStatus {
+        availability: openwebide_core::git::GitStatusAvailability::Passive,
         branch,
         commit_hash,
         commit_message: None,
@@ -256,6 +258,41 @@ pub async fn repo_path_action(
     request: &openwebide_core::git::GitPathRequest,
 ) -> Result<openwebide_core::git::GitPathChanges, BridgeError> {
     bridge_post(store, "/git/path", project_dir, request).await
+}
+
+pub async fn repo_history(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    project_dir: &str,
+    request: &openwebide_core::git::GitHistoryRequest,
+) -> Result<openwebide_core::git::GitHistoryPage, BridgeError> {
+    bridge_post(store, "/git/history", project_dir, request).await
+}
+pub async fn repo_commit_diff(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    project_dir: &str,
+    request: &openwebide_core::git::GitCommitDiffRequest,
+) -> Result<openwebide_core::git::GitCommitDiff, BridgeError> {
+    bridge_post(store, "/git/commit-diff", project_dir, request).await
+}
+
+pub async fn repo_stash(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    project_dir: &str,
+    request: &openwebide_core::git::GitStashRequest,
+) -> Result<openwebide_core::git::GitStashResult, BridgeError> {
+    bridge_post(store, "/git/stash", project_dir, request).await
+}
+pub async fn repo_index_diff(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    project_dir: &str,
+) -> Result<openwebide_core::GitDiff, BridgeError> {
+    bridge_post(
+        store,
+        "/git/index-diff",
+        project_dir,
+        &serde_json::json!({}),
+    )
+    .await
 }
 
 #[cfg(test)]

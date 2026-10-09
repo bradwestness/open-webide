@@ -428,6 +428,7 @@ async fn local_runs_use_discovered_tools_and_hide_them_when_bridge_cannot_see_fo
                 message: "commit".into(),
                 paths: None,
                 include_untracked: false,
+                staged_only: false,
             })
             .await;
         let _ = client

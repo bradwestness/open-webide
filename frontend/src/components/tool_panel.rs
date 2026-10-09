@@ -28,15 +28,16 @@ pub fn ToolPanel(panel: Panel, children: Children) -> impl IntoView {
     let kind = match panel {
         Panel::Sessions => ActiveResizer::Sidebar,
         Panel::Files => ActiveResizer::Tree,
+        Panel::History => ActiveResizer::History,
         Panel::Chat => ActiveResizer::Chat,
         Panel::Terminal => ActiveResizer::Terminal,
         _ => ActiveResizer::None,
     };
     view! { <section id=format!("panel-{}", panel.id()) class="tool-panel"
-        class:tool-panel-center=panel == Panel::Editor
+        class:tool-panel-center=move ||layout.flexible_panel()==Some(panel)
         style=move || {
             let order = if panel == Panel::Terminal { 255 } else { layout.preferences.with(|prefs| prefs.order(panel.id())) };
-            format!("display: {}; order: {order}; --files-panel-width: {}px; --tool-window-width: {}px; --tool-window-height: {}px;", if layout.visible_panels.get().visible(panel) { "flex" } else { "none" }, layout.tree_width.get(), if kind == ActiveResizer::None { 0.0 } else { layout.width(kind).get() }, layout.terminal_height.get())
+            format!("display: {}; order: {order}; --files-panel-width: {}px; --tool-window-width: {}px; --tool-window-height: {}px;", if layout.visible_panels.get().visible(panel) { "flex" } else { "none" }, layout.tree_width.get(), if kind == ActiveResizer::None { 260.0 } else { layout.width(kind).get() }, layout.terminal_height.get())
         }
         aria-label=panel.label()>
         <div class="tool-panel-heading" data-context-menu="" hidden=panel == Panel::Terminal || panel == Panel::Editor || panel == Panel::Files>
@@ -73,7 +74,7 @@ pub fn PanelRail(panels: Vec<Panel>) -> impl IntoView {
                 aria-current=move || if layout.phone.get() && layout.visible_panels.get().visible(panel) { Some("page") } else { None }
                 aria-controls=format!("panel-{}", panel.id()) aria-expanded=move || layout.visible_panels.get().visible(panel).to_string()
                 disabled=move || !layout.available(panel)
-                title=move || if layout.available(panel) { format!("Show or collapse {}", panel.label()) } else { format!("Open a project to use {}", panel.label()) } on:click=move |_| { if layout.phone.get_untracked() { actions.show.run(panel); } else { actions.toggle.run(panel); } }><super::ui::Icon name=match panel { Panel::Sessions | Panel::Chat => super::ui::IconName::MessageCircle, Panel::Files | Panel::Search => super::ui::IconName::FolderSearch, Panel::Editor | Panel::Git => super::ui::IconName::File, Panel::Terminal => super::ui::IconName::Terminal } /><span>{panel.label()}</span></button>
+                title=move || if layout.available(panel) { format!("Show or collapse {}", panel.label()) } else { format!("Open a project to use {}", panel.label()) } on:click=move |_| { if layout.phone.get_untracked() { actions.show.run(panel); } else { actions.toggle.run(panel); } }><super::ui::Icon name=match panel { Panel::Sessions | Panel::Chat => super::ui::IconName::MessageCircle, Panel::Files | Panel::Search => super::ui::IconName::FolderSearch, Panel::Editor | Panel::Git => super::ui::IconName::File, Panel::History => super::ui::IconName::FileClock, Panel::Terminal => super::ui::IconName::Terminal } /><span>{panel.label()}</span></button>
 
             </div>
         }).collect_view()}
@@ -93,7 +94,7 @@ pub fn FilesPanel(
     let actions = expect_context::<LayoutActions>();
     view! { <div class="files-panel">
         <super::ui::PanelToolbar class="files-panel-toolbar">
-        <SegmentedControl options=vec![SegmentOption::new("Explorer", FilesView::Explorer), SegmentOption::new("Changes", FilesView::Changes)]
+        <SegmentedControl options=vec![SegmentOption::new("File Tree", FilesView::Explorer), SegmentOption::new("Changes", FilesView::Changes)]
             value=Signal::derive(move || layout.preferences.with(|p| if p.files_view == FilesView::Search { FilesView::Explorer } else { p.files_view })) on_change=actions.select_files_view />
             <button type="button" class="icon-btn ui-icon" data-file-search-toggle="" title="Search project files" aria-label="Search project files" aria-controls="project-search" aria-expanded=move || layout.preferences.with(|prefs| prefs.files_view == FilesView::Search).to_string()
                 on:click=move |_| actions.select_files_view.run(if layout.preferences.with(|prefs| prefs.files_view == FilesView::Search) { FilesView::Explorer } else { FilesView::Search })><super::ui::Icon name=super::ui::IconName::Search /></button>
@@ -111,20 +112,20 @@ fn DockBoundary(panel: Panel) -> impl IntoView {
     let boundary = Memo::new(move |_| {
         let visible = layout.visible_panels.get();
         layout.preferences.with(|prefs| {
-            let mut panels = [Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat]
-                .into_iter()
-                .filter(|candidate| visible.visible(*candidate))
-                .collect::<Vec<_>>();
+            let mut panels = [
+                Panel::Sessions,
+                Panel::Files,
+                Panel::History,
+                Panel::Editor,
+                Panel::Chat,
+            ]
+            .into_iter()
+            .filter(|candidate| visible.visible(*candidate))
+            .collect::<Vec<_>>();
             panels.sort_by_key(|candidate| prefs.order(candidate.id()));
             let index = panels.iter().position(|candidate| *candidate == panel)?;
             let next = *panels.get(index + 1)?;
-            let flexible = if visible.editor {
-                Some(Panel::Editor)
-            } else if visible.chat {
-                Some(Panel::Chat)
-            } else {
-                None
-            };
+            let flexible = layout.flexible_panel();
             let flexible_index = flexible
                 .and_then(|flexible| panels.iter().position(|candidate| *candidate == flexible));
             let invert = flexible_index.is_some_and(|flexible| index == flexible);
@@ -133,6 +134,7 @@ fn DockBoundary(panel: Panel) -> impl IntoView {
             let kind_for = |target| match target {
                 Panel::Sessions => ActiveResizer::Sidebar,
                 Panel::Files => ActiveResizer::Tree,
+                Panel::History => ActiveResizer::History,
                 Panel::Chat => ActiveResizer::Chat,
                 _ => ActiveResizer::None,
             };

@@ -546,6 +546,7 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             message: message.clone(),
             paths,
             include_untracked: false,
+            staged_only: false,
         };
 
         match self.bridge.git_commit(&req).await {
@@ -1680,6 +1681,7 @@ mod tests {
                 openwebide_core::GitFileStatus::Modified,
             );
             Ok(GitRepoStatus {
+                availability: openwebide_core::git::GitStatusAvailability::Complete,
                 branch: "main".into(),
                 commit_hash: "abcdef123456".into(),
                 commit_message: Some("init".into()),

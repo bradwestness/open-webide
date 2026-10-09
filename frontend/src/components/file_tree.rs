@@ -444,9 +444,50 @@ pub(super) fn FileTreeEntry(
             on_open.run(entry.get_value().path);
         }
     });
+    let folder_summaries = git.folder_summaries;
+    let description = Signal::derive(move || {
+        let value = entry.get_value();
+        let available = git.status.with(|repo| {
+            repo.as_ref().is_some_and(|repo| {
+                repo.availability == openwebide_core::git::GitStatusAvailability::Complete
+            })
+        });
+        let status = if is_dir {
+            folder_summaries.with(|summaries| {
+                summaries.get(&value.path).map_or_else(
+                    || {
+                        if available {
+                            "Unchanged folder".into()
+                        } else {
+                            "Descendant status unavailable".into()
+                        }
+                    },
+                    crate::git_status::FolderSummary::description,
+                )
+            })
+        } else {
+            git.status.with(|repo| {
+                repo.as_ref()
+                    .and_then(|repo| repo.files.get(&value.path))
+                    .copied()
+                    .map_or(
+                        if available {
+                            crate::git_status::Status::Clean
+                        } else {
+                            crate::git_status::Status::Unavailable
+                        },
+                        crate::git_status::Status::from,
+                    )
+                    .presentation()
+                    .text
+                    .to_owned()
+            })
+        };
+        format!("{}, {status}", value.path)
+    });
     view! {
         <div node_ref=root data-context-menu="" class=move || if workspace.open_file.get().as_deref() == Some(&entry.get_value().path) {"tree-item selected"} else {"tree-item"}
-            style=move || format!("padding-left: {}px", 8 + depth.get() as usize * 14) tabindex="0" role="treeitem" aria-label=move || git.status.with(|repo| { let value = entry.get_value(); let status = repo.as_ref().and_then(|repo| repo.files.get(&value.path)); status.map_or(value.name.clone(), |status| format!("{}, {}", value.name, status.description())) }) data-tree-path=entry.get_value().path
+            style=move || format!("padding-left: {}px", 8 + depth.get() as usize * 14) tabindex="0" role="treeitem" aria-label=move ||description.get() title=move ||description.get() data-tree-path=entry.get_value().path
             aria-expanded=move || (is_dir || nested.get()).then(|| workspace.expanded.with(|dirs| dirs.contains(&entry.get_value().path)).to_string())
             on:click=move |_| activate.run(())
             on:keydown=move |event: web_sys::KeyboardEvent| {
@@ -485,16 +526,13 @@ pub(super) fn FileTreeEntry(
                     </Show>
                 </span>
             })}
-            <span class=move || git.status.with(|repo| {
-                let path = entry.get_value().path;
-                let class = repo.as_ref().and_then(|repo| repo.files.get(&path).map(|status| status.css_class())).unwrap_or(if is_dir && repo.as_ref().is_some_and(|repo| repo.files.keys().any(|file| file.starts_with(&format!("{path}/")))) { "git-badge-modified" } else { "" });
-                format!("tree-icon {class}")
-            }) title=move || git.status.with(|repo| {
-                let path = entry.get_value().path;
-                repo.as_ref().and_then(|repo| repo.files.get(&path).map(|status| status.description())).unwrap_or(if is_dir && repo.as_ref().is_some_and(|repo| repo.files.keys().any(|file| file.starts_with(&format!("{path}/")))) { "Contains changed files" } else { "" })
-            })><Icon name=Signal::derive(move || if is_dir {
-                if workspace.expanded.with(|dirs| dirs.contains(&entry.get_value().path)) {IconName::FolderOpen} else {IconName::Folder}
-            } else {IconName::File}) /></span>
+            {if is_dir {
+                view! {<span class=move ||folder_summaries.with(|summaries|format!("tree-icon {}",summaries.get(&entry.get_value().path).map_or("",crate::git_status::FolderSummary::class))) title=move ||folder_summaries.with(|summaries|summaries.get(&entry.get_value().path).map_or_else(||if git.status.with(|repo|repo.as_ref().is_none_or(|repo|repo.availability!=openwebide_core::git::GitStatusAvailability::Complete)){"Descendant status unavailable".into()}else{"Unchanged folder".into()},crate::git_status::FolderSummary::description))>
+                    <Icon name=Signal::derive(move ||if folder_summaries.with(|summaries|summaries.contains_key(&entry.get_value().path)){IconName::FolderGit}else if workspace.expanded.with(|dirs|dirs.contains(&entry.get_value().path)){IconName::FolderOpen}else{IconName::Folder}) />
+                </span>}.into_any()
+            } else {
+                view! {<super::ui::GitStatusIcon status=Signal::derive(move ||git.status.with(|repo|repo.as_ref().and_then(|repo|repo.files.get(&entry.get_value().path)).copied().map_or(if git.status.with(|repo|repo.as_ref().is_none_or(|repo|repo.availability!=openwebide_core::git::GitStatusAvailability::Complete)){crate::git_status::Status::Unavailable}else{crate::git_status::Status::Clean},crate::git_status::Status::from))) />}.into_any()
+            }}
             <span class="tree-name">{entry.get_value().name}</span>
             {move || git.status.with(|repo| {
                 let repo = repo.as_ref()?;
@@ -648,7 +686,7 @@ pub(super) fn FileEntryMenu(
                     label=|| view! {<Icon name=IconName::Ellipsis />}>
                     <div class="ui-action-items" on:click=move |event| {
                         if event.target().and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-                            .is_some_and(|target| target.closest("button:not(:disabled)").ok().flatten().is_some()) {open.set(false);}
+                            .is_some_and(|target| target.closest("button").ok().flatten().is_some()) {open.set(false);}
                     }>{move || changes.with(|result| result.as_ref().and_then(|result| result.as_ref().err()).map(|error| view! {<div class="form-hint" role="status">{format!("Git actions unavailable: {error}")}</div>}))}
                     {owner.with(|| view! {
                         {children.as_ref().map(|children| children())}
@@ -667,6 +705,7 @@ pub(super) fn FileEntryMenu(
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.delete(&entry.get_value())><crate::components::ui::Icon name=crate::components::ui::IconName::X /><span>"Delete"</span></button>
                         })}
                         <h3 class="ui-menu-heading">"Git"</h3>
+                        {(!is_dir).then(|| view!{<button class="recent-item" role="menuitem" on:click=move |_| actions.history(&entry.get_value().path)><Icon name=IconName::FileClock /><span>"View file history"</span></button>})}
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !stage.get()
                             on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Stage)><crate::components::ui::Icon name=crate::components::ui::IconName::Plus /><span>{move || if untracked.get() {"Add / track"} else {"Stage"}}</span></button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !unstage.get()

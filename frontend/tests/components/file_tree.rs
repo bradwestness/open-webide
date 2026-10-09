@@ -728,6 +728,7 @@ async fn changes_rows_share_git_and_chat_menus_and_review_uses_known_status() {
             .bridge_url
             .set("ws://git.test:3001".into());
         mounted.state.git.status.set(Some(GitRepoStatus {
+            availability: openwebide_core::git::GitStatusAvailability::Complete,
             branch: "main".into(),
             commit_hash: "abc".into(),
             commit_message: None,
@@ -1752,6 +1753,7 @@ async fn git_tree_colors_counts_and_phone_disclosures_stay_visible_in_both_modes
                 );
             });
             state.git.status.set(Some(GitRepoStatus {
+                availability: openwebide_core::git::GitStatusAvailability::Complete,
                 files: [
                     ("a.txt".into(), GitFileStatus::Modified),
                     ("src/b.txt".into(), GitFileStatus::Modified),

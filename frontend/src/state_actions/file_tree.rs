@@ -27,6 +27,7 @@ enum Mutation {
     Delete(String),
     Ignore(String, bool),
     Git(GitPathRequest),
+    Stash(openwebide_core::git::GitStashRequest),
 }
 impl Mutation {
     fn path(&self) -> &str {
@@ -36,6 +37,7 @@ impl Mutation {
             | Self::Delete(path)
             | Self::Ignore(path, _) => path,
             Self::Git(request) => &request.path,
+            Self::Stash(_) => "",
         }
     }
     fn discards(&self) -> bool {
@@ -70,6 +72,7 @@ pub struct FileTreeActions {
     ui: UiState,
     chat: Option<ChatState>,
     git: Option<ProjectGit>,
+    git_state: Option<crate::state::git::GitState>,
     layout: Option<super::layout::LayoutActions>,
     layout_state: Option<crate::state::layout::LayoutState>,
     workspace_for: Callback<i64, Option<Workspace>>,
@@ -120,6 +123,7 @@ impl FileTreeActions {
             auth,
             ui,
             git,
+            git_state: use_context(),
             chat: use_context::<ChatState>(),
             layout: use_context::<super::layout::LayoutActions>(),
             layout_state: use_context::<crate::state::layout::LayoutState>(),
@@ -292,6 +296,9 @@ impl FileTreeActions {
     }
     pub fn disabled(self) -> bool {
         self.busy.get()
+            || self.git_state.is_some_and(|git| {
+                git.commit_busy.get() || git.branch_busy.get() || git.sync_busy.get().is_some()
+            })
             || self
                 .chat
                 .is_some_and(|chat| chat.streaming.get() || chat.rewinding.get())
@@ -300,12 +307,56 @@ impl FileTreeActions {
         if !self.current(scope) {
             return Err("Project changed; reopen the menu".into());
         }
+        if matches!(mutation, Mutation::Git(_) | Mutation::Stash(_))
+            && self.git_state.is_some_and(|git| {
+                git.status_error.get_untracked().is_some()
+                    || git.status.with_untracked(|status| {
+                        status.as_ref().is_some_and(|status| {
+                            status.availability
+                                != openwebide_core::git::GitStatusAvailability::Complete
+                        })
+                    })
+            })
+        {
+            return Err("Git status unavailable. Reconnect the execution host and refresh.".into());
+        }
         if self.disabled() {
             return Err("Wait for the current operation to finish".into());
         }
         self.guard_editor(mutation)
     }
     fn guard_editor(self, mutation: &Mutation) -> Result<(), String> {
+        if matches!(
+            mutation,
+            Mutation::Stash(_)
+                | Mutation::Git(GitPathRequest {
+                    action: GitPathAction::StageAll | GitPathAction::UnstageAll,
+                    ..
+                })
+        ) {
+            if matches!(mutation, Mutation::Stash(request) if request.action==openwebide_core::git::GitStashAction::Drop)
+            {
+                return Ok(());
+            }
+            if self.workspace.is_resolving()
+                || !self
+                    .workspace
+                    .pending_edits
+                    .with_untracked(std::collections::HashMap::is_empty)
+                || self.workspace.dirty.get_untracked()
+                || self.workspace.editor_buffers.with_untracked(|buffers| {
+                    buffers.iter().any(|((project, _), buffer)| {
+                        Some(*project) == self.workspace.active_project.get_untracked()
+                            && buffer.dirty
+                    })
+                })
+            {
+                return Err(
+                    "Save or discard unsaved editor changes and resolve pending edits first".into(),
+                );
+            }
+            return Ok(());
+        }
         entry_path(mutation.path())?;
         if self.workspace.is_resolving()
             || self.workspace.pending_edits.with_untracked(|edits| {
@@ -425,6 +476,50 @@ impl FileTreeActions {
                     self.open.run(".gitignore".into());
                 }
             }
+            Mutation::Stash(request) => {
+                let repo = self
+                    .git
+                    .ok_or("Git execution unavailable")?
+                    .repository(Some(scope.project))
+                    .await?;
+                if !current() {
+                    return Err("Project changed".into());
+                }
+                repo.stash(request).await?;
+                if current() {
+                    if let Some(git) = self.git_state {
+                        git.changes_revision.update(|revision| *revision += 1);
+                        git.history_revision.update(|revision| *revision += 1);
+                    }
+                    if matches!(
+                        request.action,
+                        openwebide_core::git::GitStashAction::Save
+                            | openwebide_core::git::GitStashAction::Apply
+                    ) {
+                        let open = self.workspace.open_file.get_untracked();
+                        let tabs = self.workspace.editor_tabs.with_untracked(|tabs| {
+                            tabs.get(&scope.project).cloned().unwrap_or_default()
+                        });
+                        let paths = self.workspace.editor_buffers.with_untracked(|buffers| {
+                            buffers
+                                .keys()
+                                .filter(|(project, _)| *project == scope.project)
+                                .map(|(_, path)| path.clone())
+                                .collect::<Vec<_>>()
+                        });
+                        for path in paths {
+                            self.invalidate_buffers(&path);
+                        }
+                        if let Some(path) = open {
+                            self.close_affected(&path);
+                            self.open.run(path);
+                        }
+                        self.workspace.editor_tabs.update(|projects| {
+                            projects.insert(scope.project, tabs);
+                        });
+                    }
+                }
+            }
             Mutation::Git(request) => {
                 let repo = self
                     .git
@@ -438,14 +533,27 @@ impl FileTreeActions {
                 if !current() {
                     return Err("Project changed".into());
                 }
-                let paths = changes.action_paths(&request.path)?;
+                let paths = if matches!(
+                    request.action,
+                    GitPathAction::StageAll | GitPathAction::UnstageAll
+                ) {
+                    Vec::new()
+                } else {
+                    changes.action_paths(&request.path)?
+                };
                 for path in &paths {
                     self.guard_editor(&Mutation::Git(GitPathRequest {
                         path: path.clone(),
                         action: request.action,
                     }))?;
                 }
-                repo.path_action(request).await?;
+                let changes = repo.path_action(request).await?;
+                if current()
+                    && let Some(git) = self.git_state
+                {
+                    git.path_changes.set(Some(changes));
+                    git.changes_revision.update(|revision| *revision += 1);
+                }
                 if current() && request.action == GitPathAction::Revert {
                     for path in &paths {
                         self.invalidate_buffers(path);
@@ -589,6 +697,11 @@ impl FileTreeActions {
             "Delete `{}`{}? Unsaved editor changes for this path will be discarded. This cannot be undone.",
             entry.path, if entry.is_dir {" and everything inside it"} else {""}));
     }
+    pub fn history(self, path: &str) {
+        if let Some(git) = self.git_state {
+            git.file_history.set(Some(path.to_owned()));
+        }
+    }
     pub fn git_action(self, path: &str, action: GitPathAction) {
         let mutation = Mutation::Git(GitPathRequest {
             path: path.into(),
@@ -596,6 +709,14 @@ impl FileTreeActions {
         });
         if action == GitPathAction::Revert {
             self.confirm(mutation, "Revert", format!("Discard staged, working-tree and unsaved editor changes for `{path}` (including the original paths of renamed files) and restore HEAD? Untracked files are preserved."));
+        } else if let Some(scope) = self.scope() {
+            self.dispatch(scope, mutation);
+        }
+    }
+    pub fn stash(self, request: openwebide_core::git::GitStashRequest) {
+        let mutation = Mutation::Stash(request.clone());
+        if request.action == openwebide_core::git::GitStashAction::Drop {
+            self.confirm(mutation,"Drop stash",format!("Permanently drop stash {}? Its saved changes will no longer be recoverable from the stash list.",request.hash.as_deref().unwrap_or_default()));
         } else if let Some(scope) = self.scope() {
             self.dispatch(scope, mutation);
         }

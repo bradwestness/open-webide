@@ -31,6 +31,8 @@ async fn name(
     };
     if let Some(connection_id) = connection {
         let request = AssistanceRequest {
+            model: None,
+            staged_draft: false,
             connection_id,
             session_id: session,
             project_id: project,

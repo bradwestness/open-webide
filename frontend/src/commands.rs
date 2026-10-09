@@ -153,6 +153,13 @@ pub const COMMANDS: &[CommandDefinition] = &[
         ""
     ),
     command!(
+        "history",
+        Command::TogglePanel(Panel::History),
+        "Toggle History panel",
+        "git commits branches",
+        ""
+    ),
+    command!(
         "git",
         Command::TogglePanel(Panel::Git),
         "Toggle Git changes",

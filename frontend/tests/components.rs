@@ -106,7 +106,12 @@ mod chat_details;
 #[path = "components/host_admin.rs"]
 mod host_admin;
 
+#[path = "components/git_history.rs"]
+mod git_history;
 #[path = "components/monitors.rs"]
 mod monitors;
 #[path = "components/questions.rs"]
 mod questions;
+
+#[path = "components/git_changes.rs"]
+mod git_changes;

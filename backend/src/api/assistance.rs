@@ -8,6 +8,12 @@ pub(crate) async fn generate(
 ) -> Result<JsonResp, ApiError> {
     let request: openwebide_core::AssistanceRequest =
         parse_json(read_body(req, JSON_BODY_LIMIT).await?)?;
+    if request.staged_draft {
+        return Ok(json_response(
+            200,
+            &execute_staged(&state.store, user.id, &request).await?,
+        ));
+    }
     let result = execute(&state.store, user.id, &request).await?;
     Ok(json_response(200, &result))
 }
@@ -66,6 +72,8 @@ mod tests {
             for kind in [AssistanceKind::Recap, AssistanceKind::Completion] {
                 let request = AssistanceRequest {
                     kind,
+                    model: None,
+                    staged_draft: false,
                     connection_id: 999,
                     session_id: None,
                     project_id: None,
@@ -109,4 +117,55 @@ mod tests {
             }
         });
     }
+}
+
+async fn execute_staged(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    user: UserId,
+    request: &openwebide_core::AssistanceRequest,
+) -> Result<openwebide_core::assistance::GitDraftResult, ApiError> {
+    request.validate().map_err(ApiError::bad_request)?;
+    if request.kind != openwebide_core::AssistanceKind::Commit {
+        return Err(ApiError::bad_request(
+            "Staged drafting requires commit assistance.",
+        ));
+    }
+    if let Some(project) = request.project_id {
+        store.get_project(project, user).await?;
+    }
+    if let Some(session) = request.session_id
+        && store.get_session(session, user).await?.project_id != request.project_id
+    {
+        return Err(ApiError::bad_request(
+            "Session belongs to a different project",
+        ));
+    }
+    let runtime = super::model_setup::runtime_store(
+        store,
+        user,
+        request.connection_id,
+        request.model.as_deref(),
+    )
+    .await?;
+    let key = serde_json::to_string(&(request, request.kind.instruction(), &runtime))
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    if let Some(cached) = store.cached_assistance(user, &key).await?
+        && let Ok(result) = serde_json::from_str(&cached)
+    {
+        return Ok(result);
+    }
+    let source = super::model_operations::ModelSource { store, user };
+    let result = openwebide_agent::assistance::generate_staged(&source, runtime, &request.input)
+        .await
+        .map_err(|error| {
+            eprintln!(
+                "Staged Git draft failed for server {}",
+                request.connection_id
+            );
+            ApiError::bad_request(error)
+        })?;
+    let cached =
+        serde_json::to_string(&result).map_err(|error| ApiError::bad_request(error.to_string()))?;
+    store.cache_assistance(user, &key, &cached, now()).await?;
+    Ok(result)
 }

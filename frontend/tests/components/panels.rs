@@ -43,15 +43,24 @@ async fn panels_collapse_without_unmounting_and_persist_in_both_modes() {
                 });
             });
             view! {
-                <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] />
+                <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::History, Panel::Editor, Panel::Chat] />
                 <ToolPanel panel=Panel::Sessions><input value="server draft" /></ToolPanel>
                 <ToolPanel panel=Panel::Files><input value="search draft" /></ToolPanel>
+                <ToolPanel panel=Panel::History><input value="history query" /></ToolPanel>
                 <ToolPanel panel=Panel::Editor><textarea>"unsaved editor"</textarea></ToolPanel>
                 <ToolPanel panel=Panel::Chat><textarea>"unsent prompt"</textarea></ToolPanel>
             }
         });
         settle().await;
-        for panel in [Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] {
+        mounted.click("button[aria-controls='panel-history']");
+        settle().await;
+        for panel in [
+            Panel::Sessions,
+            Panel::Files,
+            Panel::History,
+            Panel::Editor,
+            Panel::Chat,
+        ] {
             let selector = format!("#panel-{}", panel.id());
             let element = mounted.element(&selector);
             let child = element.first_element_child().unwrap();
@@ -84,7 +93,7 @@ async fn panels_collapse_without_unmounting_and_persist_in_both_modes() {
         let saved: PanelVisibility =
             serde_json::from_str(&mounted.state.fake.settings.borrow()[PANEL_VISIBILITY_KEY])
                 .unwrap();
-        assert!(!saved.editor && !saved.chat && saved.sessions && saved.files);
+        assert!(!saved.editor && !saved.chat && saved.sessions && saved.files && saved.history);
         let draft: web_sys::HtmlTextAreaElement =
             mounted.element("#panel-chat textarea").unchecked_into();
         assert_eq!(draft.value(), "unsent prompt");
@@ -333,8 +342,9 @@ async fn phone_sheets_keep_drafts_and_desktop_preferences_in_both_modes() {
             provide_context(actions);
             read.set(Some((layout, actions)));
             view! {
-                <PanelRail panels=vec![Panel::Files, Panel::Chat, Panel::Terminal, Panel::Git, Panel::Search] />
+                <PanelRail panels=vec![Panel::Files, Panel::History, Panel::Chat, Panel::Terminal, Panel::Git, Panel::Search] />
                 <ToolPanel panel=Panel::Files><input value="file draft" /></ToolPanel>
+                <ToolPanel panel=Panel::History><input value="history query" /></ToolPanel>
                 <ToolPanel panel=Panel::Chat><textarea>"chat draft"</textarea></ToolPanel>
                 <ToolPanel panel=Panel::Search><input value="query" /></ToolPanel>
                 <ToolPanel panel=Panel::Git><span>"Git"</span></ToolPanel>
@@ -349,7 +359,7 @@ async fn phone_sheets_keep_drafts_and_desktop_preferences_in_both_modes() {
         settle().await;
         assert!(layout.phone.get_untracked());
         assert!(layout.visible_panels.get_untracked().chat);
-        for panel in [Panel::Files, Panel::Search, Panel::Git] {
+        for panel in [Panel::Files, Panel::History, Panel::Search, Panel::Git] {
             actions.show.run(panel);
             settle().await;
             assert!(layout.visible_panels.get_untracked().visible(
@@ -392,7 +402,13 @@ async fn phone_sheets_keep_drafts_and_desktop_preferences_in_both_modes() {
         layout.active_project.set(None);
         actions.set_mode.run(LayoutMode::Phone);
         settle().await;
-        for panel in [Panel::Files, Panel::Terminal, Panel::Git, Panel::Search] {
+        for panel in [
+            Panel::Files,
+            Panel::History,
+            Panel::Terminal,
+            Panel::Git,
+            Panel::Search,
+        ] {
             assert!(!layout.available(panel));
         }
         assert!(layout.visible_panels.get_untracked().chat);
@@ -414,6 +430,12 @@ async fn git_window_loads_diffs_only_when_open_in_a_repository_in_both_modes() {
                 .update(|projects| projects[0].mode = mode);
             state.workspace.open_file.set(Some("demo.rs".into()));
             let layout = expect_context::<LayoutState>();
+            provide_context(LayoutActions::new(
+                state.api,
+                layout,
+                expect_context::<AuthState>(),
+                state.ui,
+            ));
             read.set(Some(layout));
             view! { <GitPane on_open=Callback::new(|_| ()) on_load_git_diff=Callback::new(move |()| loads.update(|value| *value += 1)) on_discard_git_diff=Callback::new(|()| ()) /> }
         });
@@ -478,6 +500,7 @@ async fn shared_panel_resizers_use_the_right_edge_and_save_widths_in_both_modes(
             view! {
                 <ToolPanel panel=Panel::Sessions><span>"Sessions"</span></ToolPanel>
                 <ToolPanel panel=Panel::Files><span>"Files"</span></ToolPanel>
+                <ToolPanel panel=Panel::History><span>"History"</span></ToolPanel>
                 <ToolPanel panel=Panel::Editor><span>"Editor"</span></ToolPanel>
                 <ToolPanel panel=Panel::Chat><span>"Chat"</span></ToolPanel>
                 <ToolPanel panel=Panel::Terminal><span>"Terminal"</span></ToolPanel>
@@ -492,11 +515,13 @@ async fn shared_panel_resizers_use_the_right_edge_and_save_widths_in_both_modes(
         for (panel, kind) in [
             (Panel::Sessions, ActiveResizer::Sidebar),
             (Panel::Files, ActiveResizer::Tree),
+            (Panel::History, ActiveResizer::History),
             (Panel::Chat, ActiveResizer::Chat),
         ] {
             layout.panels.set(PanelVisibility {
                 sessions: panel == Panel::Sessions,
                 files: panel == Panel::Files,
+                history: panel == Panel::History,
                 chat: panel == Panel::Chat,
                 editor: true,
                 terminal: false,
@@ -509,6 +534,22 @@ async fn shared_panel_resizers_use_the_right_edge_and_save_widths_in_both_modes(
                 let leading = layout.preferences.with_untracked(|prefs| {
                     prefs.order(panel.id()) > prefs.order(Panel::Editor.id())
                 });
+                if panel == Panel::History && leading {
+                    assert!(
+                        mounted
+                            .element("#panel-history")
+                            .class_list()
+                            .contains("tool-panel-center")
+                    );
+                    assert!(
+                        mounted
+                            .root
+                            .query_selector("#panel-editor [role=separator]")
+                            .unwrap()
+                            .is_none()
+                    );
+                    continue;
+                }
                 let owner = if leading { Panel::Editor } else { panel };
                 let separator = mounted.element(&format!("#panel-{} [role=separator]", owner.id()));
                 let before = layout.width(kind).get_untracked();
@@ -1535,5 +1576,108 @@ async fn feature_headers_minimize_files_and_editor_and_retain_the_draft_in_both_
                     > 0
             );
         }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn rightmost_history_fills_remaining_dock_width_in_both_modes() {
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let observed_layout = StoredValue::new(None);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            let layout = expect_context::<LayoutState>();
+            observed_layout.set_value(Some(layout));
+            provide_context(LayoutActions::new(state.api, layout, state.auth, state.ui));
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <div class="app" style="width:1200px;height:600px;display:flex;flex-direction:row">
+                    <ToolPanel panel=Panel::Editor><textarea>"editor"</textarea></ToolPanel>
+                    <ToolPanel panel=Panel::Chat><textarea>"chat"</textarea></ToolPanel>
+                    <ToolPanel panel=Panel::History><span>"history"</span></ToolPanel>
+                </div>
+            }
+        });
+        settle().await;
+        let layout = observed_layout.get_value().unwrap();
+        layout.panels.update(|panels| {
+            panels.sessions = false;
+            panels.files = false;
+            panels.history = true;
+        });
+        layout.preferences.set(
+            serde_json::from_str(
+                r#"{"mode":"desktop","order":["editor","chat","history","files","sessions"]}"#,
+            )
+            .unwrap(),
+        );
+        settle().await;
+        let history = mounted.element("#panel-history");
+        assert!(history.class_list().contains("tool-panel-center"));
+        let width = history.get_bounding_client_rect().width();
+        assert!(width > 500.0, "history width {width}");
+        assert!(
+            mounted
+                .element("#panel-editor")
+                .get_bounding_client_rect()
+                .width()
+                >= 260.0
+        );
+        assert!(
+            mounted
+                .element("#panel-chat")
+                .get_bounding_client_rect()
+                .width()
+                >= 200.0
+        );
+        mounted.click("#panel-chat button[aria-label='Minimize Chat']");
+        settle().await;
+        assert!(history.get_bounding_client_rect().width() > width);
+        mounted
+            .element(".app")
+            .class_list()
+            .add_1("editor-collapsed")
+            .unwrap();
+        layout.panels.update(|panels| {
+            panels.editor = false;
+            panels.chat = true;
+        });
+        settle().await;
+        assert!(
+            !mounted
+                .element("#panel-chat")
+                .class_list()
+                .contains("tool-panel-center")
+        );
+        assert!(
+            (history.get_bounding_client_rect().width()
+                - (1200.0 - layout.chat_width.get_untracked()))
+            .abs()
+                < 1.0
+        );
+        mounted
+            .element(".app")
+            .class_list()
+            .remove_1("editor-collapsed")
+            .unwrap();
+        layout.panels.update(|panels| {
+            panels.editor = true;
+            panels.chat = false;
+        });
+        settle().await;
+        mounted.click("#panel-history button[aria-label='Panel actions']");
+        settle().await;
+        mounted.click("#panel-history button[aria-label='Move History left']");
+        settle().await;
+        assert!(!history.class_list().contains("tool-panel-center"));
+        assert!(
+            mounted
+                .element("#panel-editor")
+                .class_list()
+                .contains("tool-panel-center")
+        );
     }
 }

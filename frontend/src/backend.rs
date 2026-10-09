@@ -289,6 +289,23 @@ pub trait Backend {
         project_id: Option<i64>,
         path: &'a str,
     ) -> LocalBoxFuture<'a, Result<String, String>>;
+    fn git_stash<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        request: &'a openwebide_core::git::GitStashRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::git::GitStashResult, String>>;
+    fn git_index_diff(&self, project_id: Option<i64>)
+    -> LocalBoxFuture<'_, Result<String, String>>;
+    fn git_history<'a>(
+        &'a self,
+        _project_id: Option<i64>,
+        _request: &'a openwebide_core::git::GitHistoryRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::git::GitHistoryPage, String>>;
+    fn git_commit_diff<'a>(
+        &'a self,
+        _project_id: Option<i64>,
+        _request: &'a openwebide_core::git::GitCommitDiffRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::git::GitCommitDiff, String>>;
     fn git_branches<'a>(
         &'a self,
         project_id: Option<i64>,
@@ -387,6 +404,10 @@ pub trait Backend {
             })
         })
     }
+    fn staged_assistance<'a>(
+        &'a self,
+        request: &'a openwebide_core::AssistanceRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::assistance::GitDraftResult, String>>;
     fn assistance<'a>(
         &'a self,
         _request: &'a openwebide_core::AssistanceRequest,
@@ -1103,6 +1124,33 @@ impl Backend for BackendApi {
     ) -> LocalBoxFuture<'a, Result<String, String>> {
         Box::pin(BackendApi::git_file_head(self, project_id, path))
     }
+    fn git_stash<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        request: &'a openwebide_core::git::GitStashRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::git::GitStashResult, String>> {
+        Box::pin(BackendApi::git_stash(self, project_id, request))
+    }
+    fn git_index_diff(
+        &self,
+        project_id: Option<i64>,
+    ) -> LocalBoxFuture<'_, Result<String, String>> {
+        Box::pin(BackendApi::git_index_diff(self, project_id))
+    }
+    fn git_history<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        request: &'a openwebide_core::git::GitHistoryRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::git::GitHistoryPage, String>> {
+        Box::pin(BackendApi::git_history(self, project_id, request))
+    }
+    fn git_commit_diff<'a>(
+        &'a self,
+        project_id: Option<i64>,
+        request: &'a openwebide_core::git::GitCommitDiffRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::git::GitCommitDiff, String>> {
+        Box::pin(BackendApi::git_commit_diff(self, project_id, request))
+    }
     fn git_branches<'a>(
         &'a self,
         project_id: Option<i64>,
@@ -1187,6 +1235,12 @@ impl Backend for BackendApi {
         search: &'a openwebide_core::SessionSearch,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::SessionSearchResults, String>> {
         Box::pin(BackendApi::session_search_suggestions(self, search))
+    }
+    fn staged_assistance<'a>(
+        &'a self,
+        request: &'a openwebide_core::AssistanceRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::assistance::GitDraftResult, String>> {
+        Box::pin(BackendApi::staged_assistance(self, request))
     }
     fn assistance<'a>(
         &'a self,
