@@ -224,6 +224,8 @@ async fn goal_assessment(
     };
     let request = openwebide_core::AssistanceRequest {
         kind: openwebide_core::AssistanceKind::GoalEvaluation,
+        model: None,
+        staged_draft: false,
         connection_id,
         session_id: Some(goal.session_id),
         project_id: session.project_id,

@@ -1005,7 +1005,9 @@ async fn settings_tabs_autosave_choices_and_support_keyboard_navigation_in_every
             false,
         );
         settle().await;
-        assert_eq!(active().id(), "settings-tab-bridge");
+        assert_eq!(active().id(), "settings-tab-host");
+        mounted.click("#settings-tab-bridge");
+        settle().await;
         let input: web_sys::HtmlInputElement = mounted
             .element("#settings-panel-bridge input[type=text]")
             .unchecked_into();

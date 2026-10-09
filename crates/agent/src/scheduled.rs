@@ -50,16 +50,22 @@ pub fn definition(name: &str) -> ToolDefinition {
     if name == "monitor" {
         return ToolDefinition {
             name: name.into(),
-            description: "Start, list or cancel ephemeral host-owned follow-up checks in this conversation. Use for checking an async process later, not saved recurring tasks or sleeping in this run. Checks survive browser closure; local projects need a user-authorized paired host. A check uses normal approvals and session context. Cancel by id/revision once the condition is met. Repeats stop after max_checks or 24 hours; failures stop repeats. Cancellation stops future checks; Stop controls an active response.".into(),
-            parameters: serde_json::json!({"oneOf":[
-                {"type":"object","properties":{"action":{"const":"start"},"prompt":{"type":"string","minLength":1,"maxLength":32768},"delay_seconds":{"type":"integer","minimum":5,"maximum":86399},"interval_seconds":{"type":"integer","minimum":5,"maximum":86400,"default":600},"max_checks":{"type":"integer","minimum":1,"maximum":24,"default":1}},"required":["action","prompt","delay_seconds"],"additionalProperties":false},
-                {"type":"object","properties":{"action":{"const":"list"}},"required":["action"],"additionalProperties":false},
-                {"type":"object","properties":{"action":{"const":"cancel"},"id":{"type":"integer","minimum":1},"revision":{"type":"integer","minimum":1}},"required":["action","id","revision"],"additionalProperties":false}
-            ]}),
+            description: "Check later in this conversation. Start requires prompt and delay_seconds (5–86399); interval_seconds (5–86400), max_checks (1–24) optional. Cancel requires id/revision. Host-owned checks survive browser closure, use normal approvals, and stop on failure or after 24h. Local projects require a paired host.".into(),
+            parameters: serde_json::json!({"type":"object","properties":{
+                "action":{"type":"string","enum":["start","list","cancel"]},
+                "prompt":{"type":"string"},"delay_seconds":{"type":"integer"},
+                "interval_seconds":{"type":"integer","default":600},"max_checks":{"type":"integer","default":1},
+                "id":{"type":"integer"},"revision":{"type":"integer"}
+            },"required":["action"],"additionalProperties":false}),
         };
     }
-    let schedule = serde_json::json!({"oneOf":[{"type":"object","properties":{"kind":{"const":"once"},"at":{"type":"integer","description":"UTC epoch seconds"}},"required":["kind","at"],"additionalProperties":false},{"type":"object","properties":{"kind":{"const":"cron"},"expression":{"type":"string","description":"Five fields: minute hour day month weekday"},"timezone":{"type":"string","description":"IANA timezone, such as America/Chicago"}},"required":["kind","expression","timezone"],"additionalProperties":false}]});
-    let draft = serde_json::json!({"type":"object","properties":{"title":{"type":"string","maxLength":120},"prompt":{"type":"string","maxLength":32768},"session_target":{"type":"string","enum":["existing","new","latest"],"description":"Existing (default), new session each run, or latest unarchived session at delivery"},"session_id":{"type":"integer","description":"Used only for existing; 0 means this session"},"model":{"description":"Optional run override; omit or null to use the current session model","oneOf":[{"type":"null"},{"type":"object","properties":{"server_id":{"type":"integer","minimum":1},"model":{"type":"string","minLength":1,"maxLength":256}},"required":["server_id","model"],"additionalProperties":false}]},"schedule":schedule,"enabled":{"type":"boolean"}},"required":["title","prompt","schedule","enabled"],"additionalProperties":false});
+    let schedule = serde_json::json!({"type":"object","properties":{
+        "kind":{"type":"string","enum":["once","cron"]},
+        "at":{"type":"integer","description":"once: UTC epoch seconds (required)"},
+        "expression":{"type":"string","description":"cron: five fields (required)"},
+        "timezone":{"type":"string","description":"cron: IANA timezone (required)"}
+    },"required":["kind"],"additionalProperties":false});
+    let draft = serde_json::json!({"type":"object","properties":{"title":{"type":"string"},"prompt":{"type":"string"},"session_target":{"type":"string","enum":["existing","new","latest"],"description":"Default existing; new each run; latest at delivery"},"session_id":{"type":"integer","description":"Existing target: 0=this session"},"model":{"description":"Omit/null: current session model","oneOf":[{"type":"null"},{"type":"object","properties":{"server_id":{"type":"integer"},"model":{"type":"string"}},"required":["server_id","model"],"additionalProperties":false}]},"schedule":schedule,"enabled":{"type":"boolean"}},"required":["prompt","schedule","enabled"],"additionalProperties":false});
     let parameters = match name {
         "schedule_list" => {
             serde_json::json!({"type":"object","properties":{},"additionalProperties":false})
@@ -68,13 +74,13 @@ pub fn definition(name: &str) -> ToolDefinition {
             serde_json::json!({"type":"object","properties":{"draft":draft},"required":["draft"],"additionalProperties":false})
         }
         "schedule_update" => {
-            serde_json::json!({"type":"object","properties":{"id":{"type":"integer","minimum":1},"revision":{"type":"integer","minimum":1},"draft":draft},"required":["id","revision","draft"],"additionalProperties":false})
+            serde_json::json!({"type":"object","properties":{"id":{"type":"integer"},"revision":{"type":"integer"},"draft":draft},"required":["id","revision","draft"],"additionalProperties":false})
         }
         _ => {
-            serde_json::json!({"type":"object","properties":{"id":{"type":"integer","minimum":1},"revision":{"type":"integer","minimum":1}},"required":["id","revision"],"additionalProperties":false})
+            serde_json::json!({"type":"object","properties":{"id":{"type":"integer"},"revision":{"type":"integer"}},"required":["id","revision"],"additionalProperties":false})
         }
     };
-    ToolDefinition{name:name.into(),description:match name{"schedule_list"=>"List saved scheduled prompts for this project or projectless chat.","schedule_create"=>"Schedule a future user prompt. Omit title to let the assistance model name it; provide a title when the user requests one. Runs use the current session model unless model is overridden, and normal approvals. Local projects need a user-authorized paired host.","schedule_update"=>"Replace a saved scheduled prompt using its current revision. Set enabled false to pause. Changes cancel undelivered prompts.",_=>"Remove a scheduled prompt using its current revision. Delivered runs remain in chat."}.into(),parameters}
+    ToolDefinition{name:name.into(),description:match name{"schedule_list"=>"List saved scheduled prompts for this project or projectless chat.","schedule_create"=>"Schedule a future prompt with normal approvals. Omit title for automatic naming. Local projects require a paired host.","schedule_update"=>"Replace a saved scheduled prompt using its current revision. Set enabled false to pause. Changes cancel undelivered prompts.",_=>"Remove a scheduled prompt using its current revision. Delivered runs remain in chat."}.into(),parameters}
 }
 pub trait TaskStore: Send + Sync {
     fn execute(

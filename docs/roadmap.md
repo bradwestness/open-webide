@@ -5,6 +5,8 @@ What's left, grouped by how soon it's coming: **Next** (queued up), **Later**
 phases 1 through 14, telemetry, hardening, streaming, `/test`, database-backed
 theme and prompt history, frontend performance & polish, app branding and the chat
 welcome, database-backed agent skills and skill import/export — moved to [CHANGELOG.md](../CHANGELOG.md).
+[Host administration](host-administration.md), structured agent questions and
+[Monitors](monitors.md) are implemented; their shipped behavior is in the changelog.
 The [Git pane](git.md) includes commit history, staged-only commits and repository
 actions, with retained refresh results, primary-model drafting, resizable history
 inspection and shared Git-status icons in both project modes.
@@ -223,23 +225,6 @@ autocomplete) into the editor while keeping the core diagnostics engine
 - One diagnostics UI regardless of whether a diagnostic came from the
   in-browser linter or a remote host LSP.
 
-### Git history panel
-
-- Full Git panel in the style of Fork or GitKraken, with a scrollable commit history
-  and colored “train tracks” showing branches and merges. Show branch/tag labels,
-  commit subjects, authors, dates and short hashes; support search and filtering.
-- Selecting a commit shows its full message, author/committer details, parents,
-  refs and changed files, with file diffs and navigation into the editor. Include
-  a branch/remotes/tags sidebar and links between merge commits and their parents.
-- Common Git actions from the panel: fetch, pull, push, checkout and branch
-  creation, alongside the existing working-tree changes and commit workflow.
-  Show progress and actionable errors; confirm operations that could discard work.
-- Share history queries, graph layout, selection and action orchestration through
-  the Git facade, with thin bridge adapters for local and remote projects. Keep
-  behavior consistent in both modes, bound loading/rendering for large histories,
-  and reject stale results after project or account changes. Verify both adapter
-  contracts, including merge graphs, failures and refresh after Git actions.
-
 ### Editor Git annotations
 
 - GitLens-style editor annotations showing line authorship, commit details and
@@ -349,8 +334,8 @@ agent can manage, without requiring changes to the app for each new capability.
 - Start with tools and skills: a manifest declares identity, version, harness
   compatibility, dependencies, configuration and required capabilities, alongside
   tool schemas/handlers and skill instructions/resources. Build on the MCP client
-  and [database-backed project skills](agent-skills.md); keep discovery and context loading bounded
-  through the deferred-tool-loading work above. Add context/run hooks later when
+  and [database-backed project skills](agent-skills.md); keep discovery and context
+  loading bounded through the deferred-tool-loading work above. Add context/run hooks later when
   needed; UI extensions are separate future work.
 - Maintain an official marketplace as a separate catalog repository in the
   OpenWebIDE GitHub organization. Use a JSON index pointing to plugin repositories
@@ -378,21 +363,11 @@ agent can manage, without requiring changes to the app for each new capability.
   runs. Validate compatibility and dependencies before activation, report failures
   clearly, and prevent plugins from granting themselves capabilities or changing
   the approval policy.
-- Run monitors, delayed callbacks and other continuing plugin/skill work as
-  durable host-owned jobs, extending the existing database-backed scheduled-task
-  dispatcher rather than relying on browser timers or a live app session. Persist
-  triggers, progress, results and pending approvals; support cancellation,
-  deduplicated callback delivery and restart recovery without blindly replaying
-  side effects. Bind local jobs to a user-authorized execution host. Closing the
-  phone app must not stop the work; reconnecting shows its saved state. Treat
-  agent-created follow-up checks (such as checking a build in ten minutes) as
-  ephemeral jobs, separate from the user's saved scheduled tasks. They remain
-  durable until completion, cancellation or expiry, appear with status/cancel
-  controls in their originating conversation, and are cleaned up afterward while
-  retaining conversation results. Bound repeat checks by a deadline or retry
-  limit. Verify
-  browser disconnects, host restarts, unavailable hosts and plugin disable/remove
-  or update while jobs are pending, preserving each job's plugin version.
+- Extend the durable dispatcher used by [Monitors](monitors.md) for plugin
+  callbacks and continuing skill jobs. Define trigger contracts, persist progress,
+  results and pending approvals, and pin each job to its plugin version. Verify
+  restart recovery, deduplicated delivery and plugin disable/remove/update while
+  jobs are pending through the shared facade in both project modes.
 - Put discovery, package validation, lifecycle, permissions, dependency resolution
   and context contribution behind one shared plugin facade. Keep GitHub transport,
   database access and runtime execution in thin adapters for local and remote
@@ -401,61 +376,6 @@ agent can manage, without requiring changes to the app for each new capability.
   stale results after account/project/session changes. Demonstrate an agent adding
   a tool plugin, testing it in both modes, enabling it for a new run and rolling it
   back.
-
-### Host administration & live environment map
-
-Make project-less chat the place to inspect and manage the homelab machine
-running the server's execution bridge. Project sessions remain bound to their
-project folder; host administration is a separate execution scope, enforced by
-the tool executor rather than only by UI visibility. Opening the browser on
-another device does not grant access to that device, and local companion bridges
-are not administration targets for this feature.
-
-- **Live environment map:** show OS and machine health, services, processes,
-  containers, listening ports, storage and mounts. Show relationships such as
-  Plex → Quadlet → container → port and media mount → disk. Link resources to
-  logs, configuration and contextual chat actions.
-- **Host operations from chat:** support requests such as “update the OS,”
-  “set up a Podman Quadlet for Plex,” and “why did this service fail?” Inspect
-  the machine first, collect required choices, prepare reviewable configuration
-  or commands, apply approved changes and verify the resulting service health.
-- **Durable operations:** retain commands, output, results and pending approvals
-  across browser disconnects. Support bridge startup after reboot, reconnect and
-  post-update checks; serialize conflicting host maintenance operations.
-- **Execution and privilege boundaries:** identify the target machine clearly,
-  authenticate host operations and require explicit approval for privileged or
-  destructive changes. Provide narrowly scoped elevation instead of running the
-  entire bridge as root. Account for containerized deployments: managing the
-  physical host needs a host-native execution path, not just container access.
-- **Shared implementation:** keep inspection, operation planning, approvals and
-  result handling behind a shared host feature facade with thin OS/runtime
-  adapters. Verify project sessions cannot acquire host-administration scope,
-  stale results cannot cross sessions/accounts, and reconnect/reboot recovery
-  preserves operation identity. This host feature is independent of local/remote
-  project mode and is available only in project-less chat.
-
-### Agent questions and structured user replies
-
-- Add an `AskUserQuestion`-style agent tool for clarification and choices during
-  a run. Present concise questions, optional suggested answers and free-text
-  replies; support a small related group of questions when useful.
-- Persist pending questions and user replies in the database so they survive
-  reconnects and device changes. Resume the requesting run with the user's
-  answer as a tool result; handle cancellation and reject stale replies after
-  session/account changes. A suggested default is not an answer.
-- Share question policy, validation and result shaping across local and remote
-  project runs and project-less host chat, with thin transport adapters and
-  matching behavioral contracts. Use the shared form/component system, with
-  keyboard and phone support. Keep ordinary questions separate from tool
-  approvals and private terminal/password input.
-### Plugin background jobs
-
-Ephemeral agent follow-up monitors now use the durable host dispatcher; see
-[Monitors](monitors.md). General plugin callbacks and continuing skill jobs still
-need trigger contracts and integration with the planned plugin lifecycle: pin job
-versions, handle plugin disable/remove/update while work is pending, and verify
-restart recovery and deduplicated callback delivery through the shared facade in
-both project modes.
 
 ### Multi-user
 

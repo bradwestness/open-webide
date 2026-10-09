@@ -867,13 +867,13 @@ pub async fn run_local_agent(
         .with_value(Clone::clone)
         .session_skills(session_id)
         .await?;
+    openwebide_agent::scheduled::configure(&mut input.tools);
     openwebide_agent::skills::configure(
         &mut input.tools,
         &mut input.system_prompt,
         &skills,
         runtime.settings.context_limit,
     );
-    openwebide_agent::scheduled::configure(&mut input.tools);
     let plan = openwebide_agent::session::plan(&runtime, input);
     if !current() {
         return Err("Project access changed".into());

@@ -3594,6 +3594,51 @@ mod tests {
     }
 
     #[test]
+    fn upgrade_main_schema_preserves_skills_and_goals_and_adds_host_questions_and_monitors() {
+        block_on(async {
+            let db = RusqliteDb::open_in_memory().unwrap();
+            migrations::apply_through(&db, 40).await.unwrap();
+            let store = Store::new(db);
+            let user = store
+                .insert_user("upgrade", "hash", UserRole::Admin, 0)
+                .await
+                .unwrap()
+                .id;
+            store
+                .set_user_setting(user, "upgrade-marker", "keep")
+                .await
+                .unwrap();
+            store.migrate().await.unwrap();
+            store.migrate().await.unwrap();
+            assert_eq!(schema_version(&store.db).await, migrations::SCHEMA_VERSION);
+            assert_eq!(
+                store
+                    .get_user_setting(user, "upgrade-marker")
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some("keep")
+            );
+            for table in [
+                "project_skills",
+                "goal_workers",
+                "host_operations",
+                "agent_questions",
+                "monitors",
+            ] {
+                let rows = store
+                    .db
+                    .execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                        &[DbValue::Text(table.into())],
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(rows.rows.len(), 1, "{table}");
+            }
+        });
+    }
+    #[test]
     fn test_migration_dedups_existing_projects() {
         let db = RusqliteDb::open_in_memory().unwrap();
         block_on(async {
