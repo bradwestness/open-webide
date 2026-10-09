@@ -49,6 +49,9 @@ impl ApprovalMode {
         }
     }
     pub fn auto_approves(self, tool: &str) -> bool {
+        if tool == "host_apply" {
+            return false;
+        }
         match self {
             Self::Default | Self::Auto => false,
             Self::AutoAcceptEdits => tool == "write_file",

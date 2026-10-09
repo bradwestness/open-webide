@@ -313,6 +313,21 @@ terminal pane are done and in the changelog, but:
 
 ## Later
 
+### Agent questions and structured user replies
+
+- Add an `AskUserQuestion`-style agent tool for clarification and choices during
+  a run. Present concise questions, optional suggested answers and free-text
+  replies; support a small related group of questions when useful.
+- Persist pending questions and user replies in the database so they survive
+  reconnects and device changes. Resume the requesting run with the user's
+  answer as a tool result; handle cancellation and reject stale replies after
+  session/account changes. A suggested default is not an answer.
+- Share question policy, validation and result shaping across local and remote
+  project runs and project-less host chat, with thin transport adapters and
+  matching behavioral contracts. Use the shared form/component system, with
+  keyboard and phone support. Keep ordinary questions separate from tool
+  approvals and private terminal/password input.
+
 ### Multi-user
 
 Only needed once more than one account can exist (today registration closes

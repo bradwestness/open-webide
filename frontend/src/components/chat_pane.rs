@@ -713,6 +713,7 @@ pub fn ChatPane(
     let chat = expect_context::<ChatState>();
     let layout = expect_context::<LayoutState>();
     let projects = expect_context::<ProjectsState>();
+    let host_available = use_context::<crate::host_admin::HostState>().is_some();
     let assistance = crate::state_actions::assistance::ChatAssistance::new(
         expect_context::<crate::backend::Api>(),
         expect_context::<crate::state::auth::AuthState>(),
@@ -918,6 +919,7 @@ pub fn ChatPane(
                 on:drop=move |event: web_sys::DragEvent| { if let Some(files) = event.data_transfer().and_then(|transfer| transfer.files()) && files.length() > 0 { event.prevent_default(); prompt_composer.import(files); } }
             style=move || format!("width: {}px; flex: none;", layout.chat_width.get())
         >
+            <Show when=move||host_available && projects.active_project.get().is_none()><super::host_admin::HostPanel/></Show>
             <div class="messages tui-stream" node_ref=scroll_ref>
             <Show
                 when=move || !messages.handles.with(Vec::is_empty)

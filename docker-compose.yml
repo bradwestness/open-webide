@@ -1,6 +1,8 @@
 name: openwebide
 services:
   openwebide:
+    # SSH host administration is included; configure its connection in Settings → Host.
+    # Credentials use the optional docker-compose.ssh.yml agent-forwarding overlay.
     build: .
     image: openwebide:local
     ports:

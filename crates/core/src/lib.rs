@@ -27,6 +27,7 @@ pub mod file_type;
 pub mod git;
 pub mod highlight;
 pub mod host;
+pub mod host_admin;
 pub mod html;
 pub use host::*;
 pub mod reviews;

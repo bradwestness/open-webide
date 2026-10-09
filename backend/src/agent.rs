@@ -1300,6 +1300,8 @@ impl SpinTaskFactory {
         )
         .with_host(crate::bridge_client::SpinBridgeClient::for_host(
             self.store.clone(),
+            self.user.get(),
+            self.session,
         ));
         openwebide_agent::scheduled::ScheduledTools::new(
             openwebide_agent::memory::MemoryTools::new(

@@ -19,6 +19,7 @@ pub fn Settings(
     on_set_bridge_url: Callback<String>,
 ) -> impl IntoView {
     let tab = RwSignal::new(0_usize);
+    let host_available = use_context::<crate::host_admin::HostState>().is_some();
     let layout = expect_context::<crate::state::layout::LayoutState>();
     let layout_actions = use_context::<crate::state_actions::layout::LayoutActions>();
     let settings = expect_context::<SettingsState>();
@@ -44,8 +45,10 @@ pub fn Settings(
                 super::ui::DialogTab::new("Editor", "settings-tab-editor", "settings-panel-editor"),
                 super::ui::DialogTab::new("Models", "settings-tab-models", "settings-panel-models"),
                 super::ui::DialogTab::new("Bridge", "settings-tab-bridge", "settings-panel-bridge"),
+                super::ui::DialogTab::new("Host", "settings-tab-host", "settings-panel-host"),
             ] selected=tab.read_only().into() on_change=Callback::new(move |index| tab.set(index)) />
             <DialogBody class="settings-body ui-tabbed-body">
+                <div id="settings-panel-host" class="ui-tab-panel" role="tabpanel" aria-labelledby="settings-tab-host" tabindex="0" hidden=move||tab.get()!=4><Show when=move||host_available && tab.get()==4><super::host_admin::HostSettings/></Show></div>
                 <div id="settings-panel-general" class="ui-tab-panel" role="tabpanel" aria-labelledby="settings-tab-general" tabindex="0" hidden=move || tab.get() != 0>
                 <FormSection title="Appearance" description="Changes apply immediately." class="ui-form-grid">
                 <FormField label="Layout" group=true>

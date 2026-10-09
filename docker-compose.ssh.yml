@@ -1,4 +1,5 @@
-# Optional overlay for source, release or HTTPS Compose deployments.
+# Optional SSH authentication for Git and host administration in any Compose deployment.
+# Host administration itself is included by default; configure Settings → Host in the app.
 services:
   openwebide:
     environment:

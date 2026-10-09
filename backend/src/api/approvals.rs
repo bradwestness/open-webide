@@ -29,6 +29,9 @@ pub(crate) async fn decision(
     check: &ApprovalCheck,
 ) -> Result<ApprovalDecision, ApiError> {
     store.get_session(session, user).await?;
+    if check.call.name == "host_apply" {
+        return Ok(ApprovalDecision::default());
+    }
     let mode = store
         .get_user_setting(user, &ApprovalMode::setting_key(session))
         .await?

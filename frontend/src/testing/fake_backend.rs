@@ -56,6 +56,11 @@ type SettingsLoad = futures::channel::oneshot::Receiver<Result<BTreeMap<String, 
 
 #[derive(Default)]
 pub struct FakeBackend {
+    pub host_connection: RefCell<openwebide_core::host_admin::HostConnection>,
+    pub host_operations: RefCell<Vec<openwebide_core::host_admin::HostOperation>>,
+    pub host_results: RefCell<VecDeque<Deferred<openwebide_core::host_admin::HostResponse>>>,
+    pub host_requests: RefCell<Vec<(i64, openwebide_core::host_admin::HostRequest)>>,
+    pub host_inputs: RefCell<Vec<(i64, i64, String)>>,
     pub assistance_requests: RefCell<Vec<openwebide_core::AssistanceRequest>>,
     pub assistance_results: RefCell<VecDeque<Deferred<Option<String>>>>,
     pub scheduled: RefCell<Vec<openwebide_core::scheduled::ScheduledTask>>,
@@ -191,6 +196,53 @@ impl FakeBackend {
 }
 
 impl Backend for FakeBackend {
+    fn host_connection(
+        &self,
+    ) -> LocalBoxFuture<'_, Result<openwebide_core::host_admin::HostConnection, String>> {
+        Box::pin(async { Ok(self.host_connection.borrow().clone()) })
+    }
+    fn save_host_connection<'a>(
+        &'a self,
+        connection: &'a openwebide_core::host_admin::HostConnection,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::host_admin::HostConnection, String>> {
+        Box::pin(async move {
+            connection.validate()?;
+            let mut saved = connection.clone();
+            saved.revision += 1;
+            *self.host_connection.borrow_mut() = saved.clone();
+            Ok(saved)
+        })
+    }
+    fn host_view<'a>(
+        &'a self,
+        session: i64,
+        request: &'a openwebide_core::host_admin::HostRequest,
+    ) -> LocalBoxFuture<'a, Result<openwebide_core::host_admin::HostResponse, String>> {
+        Box::pin(async move {
+            self.host_requests
+                .borrow_mut()
+                .push((session, request.clone()));
+            let pending = self.host_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending.await.map_err(|error| error.to_string())?;
+            }
+            Ok(openwebide_core::host_admin::HostResponse::Operations(
+                self.host_operations.borrow().clone(),
+            ))
+        })
+    }
+    fn host_input<'a>(
+        &'a self,
+        session: i64,
+        input: &'a openwebide_core::host_admin::HostInput,
+    ) -> LocalBoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            self.host_inputs
+                .borrow_mut()
+                .push((session, input.operation, input.data.clone()));
+            Ok(())
+        })
+    }
     fn session_expired(&self) -> RwSignal<bool> {
         self.session_expired
     }

@@ -110,6 +110,13 @@ pub enum GitResponse {
 }
 
 pub trait ToolExecution: Send + Sync {
+    fn start_terminal(
+        &self,
+        id: String,
+        spec: SpawnSpec,
+    ) -> Result<std::sync::Arc<crate::terminals::session::Session>, BridgeError> {
+        crate::terminals::pty::spawn_pty(id, spec, 120, 30).map_err(BridgeError::Execution)
+    }
     fn host_info(&self) -> ExecutionFuture<openwebide_core::HostInfo> {
         Box::pin(async {
             Err(BridgeError::Execution(

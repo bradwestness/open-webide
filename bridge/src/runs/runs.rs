@@ -39,6 +39,7 @@ struct Delivery {
 pub struct Run {
     pub run_id: String,
     owner: i64,
+    host_administration: AtomicBool,
     session_id: i64,
     started_at: u64,
     running: AtomicBool,
@@ -60,6 +61,7 @@ impl Run {
         Self {
             run_id,
             owner,
+            host_administration: AtomicBool::new(false),
             session_id,
             started_at: now(),
             running: AtomicBool::new(true),
@@ -165,6 +167,7 @@ impl Run {
 
 #[derive(Debug, Default)]
 pub struct RunRegistry {
+    host_administration: AtomicBool,
     runs: Mutex<HashMap<String, Arc<Run>>>,
 }
 
@@ -180,6 +183,10 @@ pub struct StartRun {
 }
 
 impl RunRegistry {
+    /// Selected once at the server/paired-companion capability boundary.
+    pub(crate) fn configure_host_administration(&self, allowed: bool) {
+        self.host_administration.store(allowed, Ordering::SeqCst);
+    }
     pub fn get(&self, principal: &Principal, run_id: &str) -> Result<Arc<Run>, String> {
         let runs = self.runs.lock().unwrap();
         runs.get(run_id)
@@ -270,6 +277,10 @@ impl RunRegistry {
             start.session_id,
             4096,
         ));
+        run.host_administration.store(
+            self.host_administration.load(Ordering::SeqCst),
+            Ordering::SeqCst,
+        );
         {
             let mut runs = self.runs.lock().unwrap();
             if runs.contains_key(&start.run_id)
@@ -333,6 +344,14 @@ impl RunRegistry {
                 }
             }
             .map_err(|e| (RunRejectCode::PlanFailed, e))?;
+            if !run.host_administration.load(Ordering::SeqCst) {
+                plan.request
+                    .tools
+                    .retain(|tool| !openwebide_agent::host_admin::is_host_tool(&tool.name));
+                if plan.kind == RunKind::WebChat && plan.request.tools.is_empty() {
+                    plan.kind = RunKind::Chat;
+                }
+            }
             plan.environment.browser_preferences = start.browser_preferences.clone();
             if let Some(path) = &start.host_path {
                 openwebide_agent::scheduled::authorize_host_plan(&mut plan, path);
@@ -791,7 +810,7 @@ type BridgeMemoryExecutor<B> = openwebide_agent::memory::MemoryTools<
         openwebide_agent::vfs_executor::SessionToolExecutor<
             VfsToolExecutor<NativeFsVfs, BackendWebClient<B>, InProcessBridgeClient>,
             BackendWebClient<B>,
-            crate::runs::agent_host::HostInfoClient,
+            crate::runs::agent_host::HostInfoClient<B>,
         >,
         TodoPersistence<B>,
     >,
@@ -825,7 +844,7 @@ impl<B> Clone for BridgeTaskFactory<B> {
         }
     }
 }
-impl<B: RunBackend> BridgeTaskFactory<B> {
+impl<B: RunBackend + 'static> BridgeTaskFactory<B> {
     fn executor(&self) -> BridgeTaskExecutor<B> {
         let workspace = self.dir.as_ref().map(|dir| {
             VfsToolExecutor::with_web_and_bridge(
@@ -850,9 +869,13 @@ impl<B: RunBackend> BridgeTaskFactory<B> {
             },
             self.environment.clone(),
         )
-        .with_host(crate::runs::agent_host::HostInfoClient(
-            self.execution.clone(),
-        ));
+        .with_host(crate::runs::agent_host::HostInfoClient {
+            host_administration: self.run.host_administration.load(Ordering::SeqCst),
+            execution: self.execution.clone(),
+            backend: self.backend.clone(),
+            user: self.run.owner,
+            session: self.run.session_id,
+        });
         openwebide_agent::scheduled::ScheduledTools::new(
             openwebide_agent::memory::MemoryTools::new(
                 openwebide_agent::todo::TodoTools::new(

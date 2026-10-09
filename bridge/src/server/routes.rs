@@ -84,6 +84,9 @@ pub(super) async fn route(
         || path == "/environment"
         || path == "/scheduler/host"
         || path == "/host/info"
+        || path == "/host/admin"
+        || path == "/host/probe"
+        || path == "/host/input"
         || path.starts_with("/git/")
         || path == "/models/discover";
     if is_api_req && method != "OPTIONS" {
@@ -121,6 +124,95 @@ pub(super) async fn route(
 
     match (method.as_str(), path.as_str()) {
         ("OPTIONS", _) => Ok(preflight_response(req.headers(), allowed_origin)),
+        ("POST", "/host/probe" | "/host/input") => {
+            if origin.is_some() || config.pairing_token.is_some() {
+                return Ok(execution_response(
+                    Err(BridgeError::Forbidden(
+                        "Host administration requires the authenticated server bridge.".into(),
+                    )),
+                    allowed_origin,
+                ));
+            }
+            let result = async {
+                let backend = crate::runs::backend_client::BackendClient::new(
+                    config.backend_url.clone(),
+                    config.secret.clone(),
+                    crate::runs::http_client::ReqwestHttpClient::default(),
+                );
+                if path == "/host/probe" {
+                    use openwebide_core::host_admin::HostInventoryAdapter;
+                    let connection = crate::host_admin::connection(&backend)
+                        .await
+                        .map_err(BridgeError::Execution)?;
+                    let host =
+                        crate::host_admin::ssh::SshHost::new(connection, config.execution.clone())
+                            .map_err(BridgeError::Execution)?;
+                    serde_json::to_string(&host.overview().await.map_err(BridgeError::Execution)?)
+                        .map_err(|error| BridgeError::Execution(error.to_string()))
+                } else {
+                    #[derive(Deserialize)]
+                    #[serde(deny_unknown_fields)]
+                    struct InputPayload {
+                        user: i64,
+                        session: i64,
+                        input: openwebide_core::host_admin::HostInput,
+                    }
+                    let body: InputPayload = read_json(req.into_body(), 16 * 1024).await?;
+                    use crate::runs::backend_client::RunBackend;
+                    backend
+                        .host_journal(&openwebide_core::host_admin::HostJournalCommand::List {
+                            user: body.user,
+                            session: body.session,
+                        })
+                        .await
+                        .map_err(BridgeError::Execution)?;
+                    crate::host_admin::interactive::registry()
+                        .input(body.user, body.session, body.input)
+                        .map_err(BridgeError::Validation)?;
+                    Ok("{\"ok\":true}".into())
+                }
+            }
+            .await;
+            Ok(execution_response(result, allowed_origin))
+        }
+        ("POST", "/host/admin") => {
+            if origin.is_some() || config.pairing_token.is_some() {
+                return Ok(execution_response(
+                    Err(BridgeError::Forbidden(
+                        "Host administration requires the authenticated server bridge.".into(),
+                    )),
+                    allowed_origin,
+                ));
+            }
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct HostPayload {
+                user: i64,
+                session: i64,
+                request: openwebide_core::host_admin::HostRequest,
+            }
+            let result = async {
+                let body: HostPayload = read_json(req.into_body(), config.limits.max_body).await?;
+                let backend = std::sync::Arc::new(crate::runs::backend_client::BackendClient::new(
+                    config.backend_url.clone(),
+                    config.secret.clone(),
+                    crate::runs::http_client::ReqwestHttpClient::default(),
+                ));
+                let response = crate::host_admin::request(
+                    backend,
+                    config.execution.clone(),
+                    body.user,
+                    body.session,
+                    body.request,
+                )
+                .await
+                .map_err(BridgeError::Execution)?;
+                serde_json::to_string(&response)
+                    .map_err(|error| BridgeError::Execution(error.to_string()))
+            }
+            .await;
+            Ok(execution_response(result, allowed_origin))
+        }
         ("GET" | "POST", "/host/info") => Ok(execution_response(
             config.execution.host_info().await.and_then(|info| {
                 serde_json::to_string(&info)

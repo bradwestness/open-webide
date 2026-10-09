@@ -24,6 +24,7 @@ pub mod clients;
 pub mod compaction;
 pub mod context;
 pub mod executor;
+pub mod host_admin;
 pub mod memory;
 pub mod model;
 pub mod policy;

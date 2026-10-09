@@ -5,6 +5,7 @@ mod branches;
 mod chat_queue;
 mod editor_recovery;
 mod goals;
+mod host_admin;
 mod memories;
 mod model_setup;
 mod push;
@@ -932,12 +933,15 @@ impl<D: Db> Store<D> {
         let res = self
             .db
             .execute(
-                "DELETE FROM sessions WHERE id = ? AND user_id = ?",
+                "DELETE FROM sessions WHERE id = ? AND user_id = ? AND NOT EXISTS (SELECT 1 FROM host_operations WHERE session_id=sessions.id AND state IN ('running','awaiting_reconnect'))",
                 &[DbValue::Int(id), DbValue::Int(user_id.get())],
             )
             .await?;
         if res.changes == 0 {
-            return Err(StorageError::NotFound(format!("session {id}")));
+            self.get_session(id, user_id).await?;
+            return Err(StorageError::Conflict(
+                "Host maintenance is still active; finish it before deleting this session.".into(),
+            ));
         }
         Ok(())
     }

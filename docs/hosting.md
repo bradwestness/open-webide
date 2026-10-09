@@ -9,6 +9,8 @@ project directory and persist the app's database before using it for ongoing wor
   registry updates.
 - [HTTPS with Tailscale](tailscale.md): private access across devices without
   exposing the app publicly.
+- [Host administration](host-administration.md): configure SSH, inspect the physical
+  homelab machine and approve maintenance from project-less chat.
 - [Git authentication](git-ssh.md): SSH agents, container forwarding, host keys
   and HTTPS credential helpers.
 - [Execution bridge](execution-bridge.md): native execution, authentication,
