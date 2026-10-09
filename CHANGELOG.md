@@ -133,7 +133,7 @@ for what's still ahead.
   Preserve existing prompt libraries and session selections during migration;
   allow different accounts to use the same prompt names.
 
-- Show a compact syntax-preparation spinner in a reserved slot before Output,
+- Show a compact syntax-preparation spinner in a reserved slot after Output,
   keeping the existing controls stable. Hide it when grammar colors or terminal
   plain fallback are ready in either workspace mode.
 - Preserve TypeScript primitive-type colors without overlapping spans or treating
