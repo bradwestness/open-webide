@@ -3432,3 +3432,91 @@ cold origin/edit cancellation, failure/composition ownership, wrapped styled
 geometry and chunk cancellation, fragment scroll/Find, native pointer/edit
 mapping, wrapped row windows, repeated-row sharing and localized row reuse.
 Formatting and whitespace checks pass. Exact-head CI is checked separately.
+
+### Repeated production check of bounded wrapped startup
+
+Fresh paired samples compare the earlier wrapped bundle
+`openwebide-frontend-8bef8f071f0c7940.js` with pushed `8890d1d` bundle
+`openwebide-frontend-b536ded1cf465ba0.js`. Both use the same frozen backend,
+Spin manifest, Linux ARM64 Chromium 154.0.8037.92 and existing image
+`sha256:e1a372cac8e6c496251a7ea371631a8beb560d1c5c6cddd1b70a270da19bda8c`,
+with four CPUs, 10-GiB memory and 1-GiB shared memory. No builds ran during
+measurements. Each sample has a fresh account/runtime/browser and a 1,048,567-byte
+String source, exact source caret zero before beginning input, complete source
+verified afterward and prepared String styling through scroll and input.
+The checkout header identifies the mounted root at `8890d1d`; module hashes
+identify the independently mounted frontend bundles.
+
+[Baseline traces](editor-performance/wrapped-cold-native-baseline-linux.jsonl) and
+[candidate traces](editor-performance/wrapped-cold-native-candidate-linux.jsonl)
+retain every sample and all probe, worker, font and native events without truncation.
+
+| Bundle | Mode/sample | Load ms | Input ms | Scroll ms | Cold max frame ms | Overall max frame ms | Peak Chrome PSS KiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline | local 1 | 18994.7 | 1656.4 | 47.2 | 16082.6 | 16082.6 | 2996265 |
+| baseline | local 2 | 17634.5 | 1645.4 | 55.0 | 14882.7 | 14882.7 | 2804888 |
+| baseline | remote 1 | 18500.4 | 1688.9 | 44.6 | 15249.3 | 15249.3 | 2932197 |
+| baseline | remote 2 | 17720.0 | 1722.3 | 53.4 | 14832.8 | 14832.8 | 2822613 |
+| candidate | local 1 | 2721.9 | 1463.5 | 64.2 | 183.4 | 4833.1 | 1084287 |
+| candidate | local 2 | 2652.1 | 1408.6 | 37.9 | 150.0 | 4566.4 | 1104233 |
+| candidate | remote 1 | 2788.4 | 1370.3 | 38.8 | 183.3 | 4699.8 | 1107400 |
+| candidate | remote 2 | 2795.0 | 1404.1 | 48.4 | 183.3 | 4549.9 | 1107348 |
+
+Both bundles retain 547,721-px complete scroll height and 264-px width. The
+candidate installs an 8,782-unit native window at readiness. Startup and peak
+PSS materially improve in these repeated samples, but completion is still unproven:
+load and input remain above a second, and the overall frame maximum includes a
+remaining 4.5–4.8-second navigation stall. The trace attributes that stall to an
+unscoped, unsliced 748,983-unit movement probe when Ctrl+Home reveals the omitted
+wrapped origin. It is real application navigation, not a geometry oracle injected
+by this harness. This evidence makes retained wrapped caret navigation the next
+implementation target; it does not close the responsiveness or memory gates.
+
+### Exact retained wrapped caret navigation
+
+The shared core geometry now exposes exact wrapped endpoints and adjacent
+same-row boundaries. The existing EditorActions facade validates the current
+source, metrics and geometry orientation before reusing those coordinates in
+both modes. Sparse gaps and soft-wrap affinity retain browser fallback. The thin
+DOM adapter aligns current source paint with the actual scroll position before
+reading coordinates: queued Home/End commands can otherwise observe the previous
+scroll transform before its scroll event arrives. The regression checks both
+source selection and actual endpoint visibility, including consecutive Home/End.
+
+The production candidate `openwebide-frontend-7e2b607e36e267e5.js` uses the same
+frozen backend, image, resource limits and quiet measurement conditions as the
+preceding comparison. The mounted checkout remains `8890d1d` with this pending
+checkpoint; the independently mounted candidate bundle contains the caret fix.
+Each beginning/end sample verifies exact source caret zero/1,048,567 and complete
+source after input, with real String styling and unchanged complete dimensions.
+
+[Beginning traces](editor-performance/wrapped-retained-caret-beginning-linux.jsonl)
+and [end traces](editor-performance/wrapped-retained-caret-end-linux.jsonl) retain
+all four samples each without truncation.
+
+| Input position | Mode/sample | Load ms | Input ms | Scroll ms | Overall max frame ms | Peak Chrome PSS KiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| beginning | local 1 | 2732.8 | 1223.2 | 36.9 | 200.1 | 701667 |
+| beginning | local 2 | 2772.5 | 1332.3 | 43.2 | 166.7 | 727389 |
+| beginning | remote 1 | 2709.7 | 1291.4 | 51.7 | 183.4 | 724273 |
+| beginning | remote 2 | 2667.3 | 1277.5 | 42.5 | 183.3 | 711157 |
+| end | local 1 | 2685.7 | 1231.6 | 45.8 | 166.6 | 730673 |
+| end | local 2 | 2769.8 | 1239.7 | 35.2 | 166.7 | 713708 |
+| end | remote 1 | 2833.9 | 1216.1 | 41.1 | 183.3 | 709929 |
+| end | remote 2 | 2722.4 | 1249.1 | 43.9 | 183.4 | 736614 |
+
+The previous 748,983-unit navigation probe is absent. Beginning navigation needs
+no measurement probe; end navigation uses only a bounded 979-unit probe. Across
+all samples the largest probe is 11,706 units. Overall frame maxima fall from
+4.5–4.8 seconds in the preceding beginning samples to 166.6–200.1 ms here, and
+peak Chrome PSS falls from 1,084,287–1,107,400 to 701,667–736,614 KiB (see raw
+samples for exact values). These observations close this navigation regression,
+not the full responsiveness/memory gate: startup still takes 2.7–2.8 seconds and
+input 1.2–1.3 seconds. Unsupported geometry and physical PWA checks remain open.
+
+Verification: 573 parser-enabled and 430 minimal core tests pass, with strict
+native core and optimized WASM component-test Clippy and a release Trunk build.
+Optimized Chrome contracts pass for retained source/account/project/font/layout
+ownership, painted caret movement and Home/End visibility, independent primary
+caret/selection geometry, and wrapped fragment scroll/Find in both modes.
+Formatting and whitespace checks pass. Exact-head CI is tracked separately.

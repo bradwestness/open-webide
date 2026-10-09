@@ -801,17 +801,38 @@ pub(super) struct VisualMetrics {
     pub rows: usize,
 }
 
-pub(super) fn visual_metrics(
+/// Scroll events can follow queued commands by a frame. Align the current
+/// source paint before reading its browser coordinates, including retained
+/// carets and complete-layout fallbacks.
+fn current_source_paint(
     actions: EditorActions,
     input: &web_sys::HtmlTextAreaElement,
-) -> Option<VisualMetrics> {
-    let parent = input.parent_element()?;
-    let paint = parent.query_selector(".editor-highlight-content").ok()??;
+) -> Option<web_sys::Element> {
+    if !current_editor_target(actions, input) {
+        return None;
+    }
+    let paint = input
+        .parent_element()?
+        .query_selector(".editor-highlight-content")
+        .ok()??;
     if paint.get_attribute("data-editor-scope").as_deref()
         != Some(actions.projection_revision().to_string().as_str())
     {
         return None;
     }
+    let overlay = paint
+        .parent_element()?
+        .dyn_into::<web_sys::HtmlElement>()
+        .ok()?;
+    sync_highlight_scroll(input, &overlay);
+    Some(paint)
+}
+
+pub(super) fn visual_metrics(
+    actions: EditorActions,
+    input: &web_sys::HtmlTextAreaElement,
+) -> Option<VisualMetrics> {
+    let paint = current_source_paint(actions, input)?;
     let first = paint.query_selector(".editor-source-line").ok()??;
     let last = paint
         .query_selector(".editor-source-line:last-child")
@@ -886,12 +907,7 @@ pub(super) fn visual_layout(
     let source = actions.source();
     let projection = actions.projection()?;
     let parent = input.parent_element()?;
-    let paint = parent.query_selector(".editor-highlight-content").ok()??;
-    let overlay = paint
-        .parent_element()?
-        .dyn_into::<web_sys::HtmlElement>()
-        .ok()?;
-    sync_highlight_scroll(input, &overlay);
+    let paint = current_source_paint(actions, input)?;
     let painted = paint.text_content()?;
     let start: usize = paint.get_attribute("data-textarea-start")?.parse().ok()?;
     let end = start.checked_add(painted.encode_utf16().count())?;
@@ -1201,15 +1217,7 @@ pub(super) fn painted_caret_rect(
     let revision = actions.view_revision();
     let identity = super::editor_rows::metrics_identity(input)?;
     let (line, column) = actions.painted_source_caret(cache, offset, &identity)?;
-    let paint = input
-        .parent_element()?
-        .query_selector(".editor-highlight-content")
-        .ok()??;
-    if paint.get_attribute("data-editor-scope").as_deref()
-        != Some(actions.projection_revision().to_string().as_str())
-    {
-        return None;
-    }
+    let paint = current_source_paint(actions, input)?;
     let row = paint
         .query_selector(&format!(".editor-source-line[data-line='{}']", line + 1))
         .ok()??;
@@ -1301,8 +1309,7 @@ pub(super) fn probe_caret_rect(
         .partition_point(|line| line.visible_start <= visible)
         .checked_sub(1)?;
     let line = &projection.lines()[index];
-    let actual = input
-        .parent_element()?
+    let actual = current_source_paint(actions, input)?
         .query_selector(&format!(
             ".editor-source-line[data-line='{}']",
             line.source_line + 1

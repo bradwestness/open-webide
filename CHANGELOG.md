@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reveal omitted wrapped caret endpoints from exact retained glyph geometry in
+  both workspace modes. Align source paint with the current scroll position
+  before caret measurements, preserving consecutive Home/End jumps. Sparse gaps
+  and ambiguous soft-wrap boundaries retain complete-layout fallback.
+
 - Start wrapped and nonuniform editor files with bounded native input in both
   workspace modes. Paint exactly measured origin rows while complete layout
   prepares, keep partial geometry out of document extents, and preserve source,

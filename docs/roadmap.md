@@ -67,9 +67,9 @@ tracks the remaining work rather than every optimization already shipped.
 - [ ] **Cold startup and native input:** remove remaining full-source shaping in
   touch and unsupported-layout fallbacks. Desktop startup now uses bounded native
   input for wrapped and nonuniform rows, with exactly measured origin paint while
-  complete document extents prepare. Verify production startup and memory at the
-  near-limit boundary; finish touch pointer selection and source-owned caret/
-  selection while preserving composition mappings and complete-native fallback
+  complete document extents prepare. Finish production startup and memory costs
+  across admitted boundary workloads; finish touch pointer selection and
+  source-owned caret/selection while preserving composition mappings and complete-native fallback
   when bounded geometry cannot be proved.
 - [ ] **Tabbed, wrapped and bidirectional layout:** extend bounded preparation
   beyond eligible source-monotonic wrapped paragraphs with complete-word seams;
@@ -111,9 +111,10 @@ tracks the remaining work rather than every optimization already shipped.
   edit samples. Existing multi-second results do not satisfy this gate.
 - [ ] **Exact geometry and fallbacks:** retain complete-renderer extent/anchor/hit
   comparisons, font/feature/whitespace matrices, Unicode/caret mapping and failed-proof
-  fallback contracts. Current painted coverage and exact retained caret anchors avoid complete movement
-  probes; unpainted sparse gaps and unsupported layouts still require
-  complete-renderer fallback.
+  fallback contracts. Current painted coverage and exact retained caret anchors,
+  including wrapped endpoints and adjacent same-row boundaries, avoid complete
+  movement probes. Unpainted sparse gaps, ambiguous soft-wrap boundaries and
+  unsupported layouts still require complete-renderer fallback.
   Improvements must preserve source/account/project ownership,
   pending edits, themes, supported previews, agent context and both adapter contracts.
 - [ ] **Reliable CI and release/PWA checks:** pass the complete native/WASI/WASM,

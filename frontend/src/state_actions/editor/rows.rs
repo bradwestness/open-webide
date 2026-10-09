@@ -889,9 +889,6 @@ impl EditorActions {
         if cache.scope.as_ref()?.0.metrics != metrics {
             return None;
         }
-        if self.preferences().word_wrap {
-            return None;
-        }
         let projection = self.projection()?;
         let visible = projection.visible_offset(offset).ok()?;
         let row = projection
@@ -917,10 +914,13 @@ impl EditorActions {
             glyph
         };
         let geometry = self.measured_row_geometry(cache, row)?;
-        let openwebide_core::editor::MeasuredRowGeometry::Horizontal(geometry) = geometry.as_ref()
-        else {
+        if matches!(
+            geometry.as_ref(),
+            openwebide_core::editor::MeasuredRowGeometry::Wrapped(_)
+        ) != self.preferences().word_wrap
+        {
             return None;
-        };
+        }
         Some((row, geometry.caret(glyph)?))
     }
     pub fn row_source_slice(

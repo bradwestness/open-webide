@@ -101,6 +101,32 @@ impl GlyphRectangle {
     }
 }
 
+fn retained_caret(
+    anchors: &[GlyphRectangle],
+    glyphs: usize,
+    glyph: usize,
+) -> Option<GlyphRectangle> {
+    if glyph > glyphs {
+        return None;
+    }
+    let (anchor, left) = if glyph == glyphs {
+        let anchor = *anchors.last()?;
+        (anchor, anchor.left + anchor.width)
+    } else {
+        let at = anchors
+            .binary_search_by_key(&glyph, |anchor| anchor.glyph)
+            .ok()?;
+        let anchor = anchors[at];
+        (anchor, anchor.left)
+    };
+    Some(GlyphRectangle {
+        glyph,
+        left,
+        width: 0.0,
+        ..anchor
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct HorizontalGeometry {
     anchors: Vec<GlyphRectangle>,
@@ -147,26 +173,7 @@ impl HorizontalGeometry {
     /// Exact caret boundaries from retained LTR glyph rectangles. A sparse gap
     /// has no geometry; never interpolate a caret through unmeasured glyphs.
     pub fn caret(&self, glyph: usize) -> Option<GlyphRectangle> {
-        if glyph > self.glyphs {
-            return None;
-        }
-        let (anchor, left) = if glyph == self.glyphs {
-            let anchor = *self.anchors.last()?;
-            (anchor, anchor.left + anchor.width)
-        } else {
-            let at = self
-                .anchors
-                .binary_search_by_key(&glyph, |anchor| anchor.glyph)
-                .ok()?;
-            let anchor = self.anchors[at];
-            (anchor, anchor.left)
-        };
-        Some(GlyphRectangle {
-            glyph,
-            left,
-            width: 0.0,
-            ..anchor
-        })
+        retained_caret(&self.anchors, self.glyphs, glyph)
     }
     /// Include a measured anchor before the window for shaping context and a
     /// complete anchor glyph after it for validation. The adapter can reject an
@@ -250,6 +257,23 @@ impl WrappedGeometry {
             height,
         })
     }
+    /// Retain exact endpoints and adjacent same-row boundaries. An interior
+    /// anchor after an unknown gap may sit on a soft wrap with a different
+    /// caret affinity, so it must retain the complete browser fallback.
+    pub fn caret(&self, glyph: usize) -> Option<GlyphRectangle> {
+        if glyph != 0 && glyph != self.glyphs {
+            let at = self
+                .anchors
+                .binary_search_by_key(&glyph, |anchor| anchor.glyph)
+                .ok()?;
+            let previous = self.anchors.get(at.checked_sub(1)?)?;
+            let current = self.anchors.get(at)?;
+            if previous.glyph + 1 != glyph || previous.top.to_bits() != current.top.to_bits() {
+                return None;
+            }
+        }
+        retained_caret(&self.anchors, self.glyphs, glyph)
+    }
     pub fn source_interval(&self, rows: Range<f64>) -> Option<Range<usize>> {
         if !rows.start.is_finite()
             || !rows.end.is_finite()
@@ -284,6 +308,12 @@ pub enum MeasuredRowGeometry {
     Wrapped(WrappedGeometry),
 }
 impl MeasuredRowGeometry {
+    pub fn caret(&self, glyph: usize) -> Option<GlyphRectangle> {
+        match self {
+            Self::Horizontal(geometry) => geometry.caret(glyph),
+            Self::Wrapped(geometry) => geometry.caret(glyph),
+        }
+    }
     pub fn source_interval(
         &self,
         window: &super::RowPaintWindow,
@@ -499,6 +529,49 @@ mod tests {
         assert_eq!(geometry.source_interval(210.0..390.0), Some(0..501));
         assert_eq!(geometry.source_interval(220.0..390.0), Some(250..501));
         assert_eq!(geometry.anchors(250..501).unwrap(), &points[1..]);
+        assert_eq!(
+            geometry.caret(0).unwrap().left.to_bits(),
+            30.0_f64.to_bits()
+        );
+        assert!(geometry.caret(250).is_none());
+        assert!(geometry.caret(500).is_none());
+        assert_eq!(
+            geometry.caret(501).unwrap().top.to_bits(),
+            402.0_f64.to_bits()
+        );
+        assert_eq!(
+            geometry.caret(501).unwrap().left.to_bits(),
+            points[2].width.to_bits()
+        );
+        assert_eq!(
+            geometry.caret(0).unwrap().width.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert!(geometry.caret(1).is_none());
+        assert!(geometry.caret(502).is_none());
+        let adjacent = WrappedGeometry::new(
+            3,
+            100.0,
+            40.0,
+            vec![
+                anchor(0, 0.0),
+                anchor(1, 12.0),
+                GlyphRectangle {
+                    top: 22.0,
+                    ..anchor(2, 0.0)
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            adjacent.caret(1).unwrap().left.to_bits(),
+            12.0_f64.to_bits()
+        );
+        assert!(
+            adjacent.caret(2).is_none(),
+            "soft-wrap affinity needs a browser proof"
+        );
+        assert_eq!(adjacent.caret(3).unwrap().top.to_bits(), 22.0_f64.to_bits());
         let measured = MeasuredRowGeometry::Wrapped(geometry);
         let window = super::super::RowPaintWindow::Wrapped(super::super::EditorViewport {
             rows: 11..20,

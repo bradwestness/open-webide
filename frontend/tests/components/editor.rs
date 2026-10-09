@@ -17736,12 +17736,18 @@ async fn config_and_documentation_grammars_share_both_workspace_modes_without_pr
 fn retained_source_carets_are_sparse_and_scope_owned_in_both_modes() {
     use openwebide_core::{
         WorkspaceMode,
-        editor::{GlyphRectangle, HorizontalGeometry, Indentation, MeasuredRowGeometry, Selection},
+        editor::{
+            GlyphRectangle, HorizontalGeometry, Indentation, MeasuredRowGeometry, Selection,
+            WrappedGeometry,
+        },
         highlight::{Language, highlight_lines},
     };
     use openwebide_frontend::state_actions::editor::{EditorActions, EditorFragmentCache};
     use std::sync::Arc;
-    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+    for (mode, wrapped) in [WorkspaceMode::Local, WorkspaceMode::Remote]
+        .into_iter()
+        .flat_map(|mode| [false, true].map(move |wrapped| (mode, wrapped)))
+    {
         for change in 0..8 {
             let source = "e\u{301}😀".repeat(12_000);
             let initial = source.clone();
@@ -17755,6 +17761,10 @@ fn retained_source_carets_are_sparse_and_scope_owned_in_both_modes() {
                     .update(|projects| projects[0].mode = mode);
                 state.workspace.open_file.set(Some("carets.txt".into()));
                 state.workspace.content.set(initial.into());
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = wrapped);
                 *actions_slot.borrow_mut() = Some(EditorActions::new(state.workspace));
                 view! { <div/> }
             });
@@ -17793,18 +17803,25 @@ fn retained_source_carets_are_sparse_and_scope_owned_in_both_modes() {
             };
             let last = GlyphRectangle {
                 glyph: count - 1,
-                left: ((count - 1) * 8) as f64,
+                left: if wrapped {
+                    24.0
+                } else {
+                    ((count - 1) * 8) as f64
+                },
+                top: if wrapped { 4002.0 } else { first.top },
                 ..first
             };
-            let geometry =
-                HorizontalGeometry::new(count, (count * 8) as f64, 19.5, vec![first, last])
-                    .unwrap();
-            actions.retain_preparation_geometry(
-                &mut cache,
-                &paint,
-                0,
-                MeasuredRowGeometry::Horizontal(geometry),
-            );
+            let geometry = if wrapped {
+                MeasuredRowGeometry::Wrapped(
+                    WrappedGeometry::new(count, 100.0, 4019.5, vec![first, last]).unwrap(),
+                )
+            } else {
+                MeasuredRowGeometry::Horizontal(
+                    HorizontalGeometry::new(count, (count * 8) as f64, 19.5, vec![first, last])
+                        .unwrap(),
+                )
+            };
+            actions.retain_preparation_geometry(&mut cache, &paint, 0, geometry);
             assert_eq!(
                 actions.measured_source_caret(&mut cache, 0, "metrics"),
                 Some((
@@ -17821,7 +17838,7 @@ fn retained_source_carets_are_sparse_and_scope_owned_in_both_modes() {
                     0,
                     GlyphRectangle {
                         glyph: count,
-                        left: (count * 8) as f64,
+                        left: last.left + last.width,
                         width: 0.0,
                         ..last
                     }
@@ -17893,7 +17910,7 @@ fn retained_source_carets_are_sparse_and_scope_owned_in_both_modes() {
                     .state
                     .settings
                     .editor_preferences
-                    .update(|preferences| preferences.word_wrap = true),
+                    .update(|preferences| preferences.word_wrap = !wrapped),
                 6 => mounted
                     .state
                     .workspace
@@ -17921,27 +17938,43 @@ fn retained_source_carets_are_sparse_and_scope_owned_in_both_modes() {
 }
 
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
-export function capture_navigation_row_probes(root) {
-    const observer = new MutationObserver(() => {});
+export function capture_navigation_row_probes(root, allowedUnits) {
+    let count = 0;
+    const consume = records => {
+        for (const mutation of records) {
+            for (const node of mutation.addedNodes) {
+                if (node.nodeType !== 1) continue;
+                const measured = node.matches('.editor-row-measure') ||
+                    mutation.target.closest?.('.editor-row-measure');
+                if (!measured) continue;
+                const rows = [...node.querySelectorAll('.editor-source-line')];
+                if (node.matches('.editor-source-line')) rows.push(node);
+                count += rows.filter(row => row.textContent.length > allowedUnits).length;
+            }
+        }
+    };
+    const observer = new MutationObserver(consume);
     observer.observe(root, {childList:true, subtree:true});
     return () => {
-        const count = observer.takeRecords().reduce((count, mutation) => count +
-            [...mutation.addedNodes].filter(node => node.nodeType === 1 &&
-                node.matches('.editor-row-measure')).length, 0);
-        observer.disconnect();
-        return count;
+        consume(observer.takeRecords()); observer.disconnect(); return count;
     };
 }
 "#)]
 extern "C" {
-    fn capture_navigation_row_probes(root: &web_sys::Element) -> js_sys::Function;
+    fn capture_navigation_row_probes(
+        root: &web_sys::Element,
+        allowed_units: usize,
+    ) -> js_sys::Function;
 }
 
 #[wasm_bindgen_test]
 async fn painted_caret_movement_avoids_complete_row_probes_in_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::Selection};
     use openwebide_frontend::state_actions::editor::EditorActions;
-    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+    for (mode, wrapped) in [WorkspaceMode::Local, WorkspaceMode::Remote]
+        .into_iter()
+        .flat_map(|mode| [false, true].map(move |wrapped| (mode, wrapped)))
+    {
         let transport = std::rc::Rc::new(DeferredSyntax::default());
         let installed = transport.clone();
         let source = format!(
@@ -17965,6 +17998,10 @@ async fn painted_caret_movement_avoids_complete_row_probes_in_both_modes() {
                 .open_file
                 .set(Some("painted-carets.rs".into()));
             state.workspace.content.set(source.into());
+            state
+                .settings
+                .editor_preferences
+                .update(|preferences| preferences.word_wrap = wrapped);
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:520px;height:280px">{editor_view(state)}</div> }
         });
         let input: web_sys::HtmlTextAreaElement =
@@ -17997,11 +18034,100 @@ async fn painted_caret_movement_avoids_complete_row_probes_in_both_modes() {
                         .unwrap()
                         .is_some()
                     && !actions.syntax_preparation_pending()
+                    && actions.measured_rows().is_some()
+                    && !actions.native_geometry_pending()
             },
         )
         .await;
         settle().await;
-        let capture = capture_navigation_row_probes(&mounted.root);
+        if wrapped {
+            let scroll = openwebide_frontend::viewport::editor_scroll(&input);
+            openwebide_frontend::viewport::set_editor_scroll_top(
+                &input,
+                f64::from(scroll.scroll_height()) * 0.7,
+            );
+            input
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            wait_until("wrapped origin is outside current paint", || {
+                mounted
+                    .root
+                    .query_selector(".editor-source-line[data-paint-top]")
+                    .unwrap()
+                    .and_then(|row| row.get_attribute("data-paint-top"))
+                    .and_then(|top| top.parse::<f64>().ok())
+                    .is_some_and(|top| top > 1000.0)
+            })
+            .await;
+            let capture = capture_navigation_row_probes(&mounted.root, 65_536);
+            assert!(editor_key(&input, "Home", true, false).default_prevented());
+            wait_until("queued Home reveals the retained wrapped origin", || {
+                actions.queued_motion_ticket().is_none()
+                    && openwebide_frontend::viewport::editor_scroll(&input).scroll_top()
+                        < web_sys::window()
+                            .unwrap()
+                            .get_computed_style(&input)
+                            .unwrap()
+                            .unwrap()
+                            .get_property_value("line-height")
+                            .unwrap()
+                            .trim_end_matches("px")
+                            .parse::<f64>()
+                            .unwrap()
+            })
+            .await;
+            assert_eq!(actions.selection(&original), Some(Selection::caret(0)));
+            assert_eq!(
+                capture
+                    .call0(&wasm_bindgen::JsValue::NULL)
+                    .unwrap()
+                    .as_f64(),
+                Some(0.0),
+                "{mode:?}: an omitted wrapped endpoint must use retained geometry"
+            );
+            assert!(
+                openwebide_frontend::viewport::editor_scroll(&input).scroll_top()
+                    < web_sys::window()
+                        .unwrap()
+                        .get_computed_style(&input)
+                        .unwrap()
+                        .unwrap()
+                        .get_property_value("line-height")
+                        .unwrap()
+                        .trim_end_matches("px")
+                        .parse::<f64>()
+                        .unwrap()
+            );
+            settle().await;
+            let capture = capture_navigation_row_probes(&mounted.root, 65_536);
+            assert!(editor_key(&input, "End", true, false).default_prevented());
+            frame().await;
+            wait_until("queued End reveals the retained wrapped endpoint", || {
+                let scroll = openwebide_frontend::viewport::editor_scroll(&input);
+                actions.queued_motion_ticket().is_none()
+                    && actions.selection(&original) == Some(Selection::caret(original.len()))
+                    && scroll.scroll_top() + f64::from(scroll.client_height())
+                        >= f64::from(scroll.scroll_height()) - 19.5
+            })
+            .await;
+            assert_eq!(
+                capture
+                    .call0(&wasm_bindgen::JsValue::NULL)
+                    .unwrap()
+                    .as_f64(),
+                Some(0.0),
+                "{mode:?}: an omitted wrapped endpoint must use retained geometry"
+            );
+            assert_eq!(mounted.state.workspace.content.get_untracked(), original);
+            assert!(editor_key(&input, "Home", true, false).default_prevented());
+            wait_until("wrapped motion returns to origin", || {
+                actions.queued_motion_ticket().is_none()
+                    && actions.selection(&original) == Some(Selection::caret(0))
+            })
+            .await;
+            settle().await;
+        }
+        let capture = capture_navigation_row_probes(&mounted.root, 0);
         assert!(editor_key(&input, "Home", true, false).default_prevented());
         assert_eq!(actions.selection(&original), Some(Selection::caret(0)));
         for _ in 0..30 {
@@ -18016,6 +18142,10 @@ async fn painted_caret_movement_avoids_complete_row_probes_in_both_modes() {
             assert!(editor_key(&input, "ArrowLeft", false, false).default_prevented());
         }
         assert_eq!(actions.selection(&original), Some(Selection::caret(0)));
+        wait_until("caret motion queue drains", || {
+            actions.queued_motion_ticket().is_none()
+        })
+        .await;
         assert_eq!(mounted.state.workspace.content.get_untracked(), original);
         assert_eq!(
             capture
