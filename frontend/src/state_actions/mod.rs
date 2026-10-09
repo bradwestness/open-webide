@@ -34,3 +34,6 @@ pub mod chat_controls;
 
 pub mod navigation;
 pub mod omnibar;
+
+pub mod git_changes;
+pub mod git_history;

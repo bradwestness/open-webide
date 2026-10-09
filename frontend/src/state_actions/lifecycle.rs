@@ -404,6 +404,13 @@ pub fn install_project_effects(context: ProjectEffectContext) {
                     {
                         layout.terminal_height.set(width.clamp(140.0, 700.0));
                     }
+                    if let Some(width) = values
+                        .get("panel_history_width")
+                        .and_then(|value| value.parse::<f64>().ok())
+                        .filter(|width| width.is_finite())
+                    {
+                        layout.history_width.set(width.clamp(260.0, 1200.0));
+                    }
                     layout.sidebar_width.set(widths[0].clamp(140.0, 480.0));
                     layout.tree_width.set(widths[1].clamp(160.0, 650.0));
                     layout.chat_width.set(widths[2].clamp(260.0, 1000.0));

@@ -845,6 +845,40 @@ impl BackendApi {
         res.into_text()
     }
 
+    pub async fn git_stash(
+        &self,
+        project_id: Option<i64>,
+        request: &openwebide_core::git::GitStashRequest,
+    ) -> Result<openwebide_core::git::GitStashResult, String> {
+        self.post(&Self::git_endpoint(project_id, "stash"), request)
+            .await
+    }
+    pub async fn git_index_diff(&self, project_id: Option<i64>) -> Result<String, String> {
+        let diff: openwebide_core::GitDiff = self
+            .post(
+                &Self::git_endpoint(project_id, "index-diff"),
+                &serde_json::json!({}),
+            )
+            .await?;
+        Ok(diff.diff)
+    }
+    pub async fn git_history(
+        &self,
+        project_id: Option<i64>,
+        request: &openwebide_core::git::GitHistoryRequest,
+    ) -> Result<openwebide_core::git::GitHistoryPage, String> {
+        self.post(&Self::git_endpoint(project_id, "history"), request)
+            .await
+    }
+    pub async fn git_commit_diff(
+        &self,
+        project_id: Option<i64>,
+        request: &openwebide_core::git::GitCommitDiffRequest,
+    ) -> Result<openwebide_core::git::GitCommitDiff, String> {
+        self.post(&Self::git_endpoint(project_id, "commit-diff"), request)
+            .await
+    }
+
     pub async fn git_branches(
         &self,
         project_id: Option<i64>,

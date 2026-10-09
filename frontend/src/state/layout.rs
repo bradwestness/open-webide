@@ -5,6 +5,7 @@ use leptos::prelude::*;
 pub enum Panel {
     Sessions,
     Files,
+    History,
     Editor,
     Chat,
     Terminal,
@@ -15,13 +16,14 @@ impl Panel {
     pub const fn requires_project(self) -> bool {
         matches!(
             self,
-            Self::Files | Self::Editor | Self::Terminal | Self::Git | Self::Search
+            Self::Files | Self::History | Self::Editor | Self::Terminal | Self::Git | Self::Search
         )
     }
     pub const fn id(self) -> &'static str {
         match self {
             Self::Sessions => "sessions",
             Self::Files => "files",
+            Self::History => "history",
             Self::Editor => "editor",
             Self::Chat => "chat",
             Self::Terminal => "terminal",
@@ -33,6 +35,7 @@ impl Panel {
         match self {
             Self::Sessions => "Sessions",
             Self::Files => "Files",
+            Self::History => "History",
             Self::Editor => "Editor",
             Self::Chat => "Chat",
             Self::Terminal => "Terminal",
@@ -47,6 +50,7 @@ impl Panel {
 pub struct PanelVisibility {
     pub sessions: bool,
     pub files: bool,
+    pub history: bool,
     pub editor: bool,
     pub chat: bool,
     pub terminal: bool,
@@ -58,6 +62,7 @@ impl Default for PanelVisibility {
         Self {
             sessions: true,
             files: true,
+            history: false,
             editor: true,
             chat: true,
             terminal: false,
@@ -70,6 +75,7 @@ impl PanelVisibility {
     pub const fn for_project(mut self, available: bool) -> Self {
         if !available {
             self.files = false;
+            self.history = false;
             self.editor = false;
             self.terminal = false;
             self.git = false;
@@ -81,6 +87,7 @@ impl PanelVisibility {
         match panel {
             Panel::Sessions => self.sessions,
             Panel::Files => self.files,
+            Panel::History => self.history,
             Panel::Editor => self.editor,
             Panel::Chat => self.chat,
             Panel::Terminal => self.terminal,
@@ -92,6 +99,7 @@ impl PanelVisibility {
         match panel {
             Panel::Sessions => self.sessions = visible,
             Panel::Files => self.files = visible,
+            Panel::History => self.history = visible,
             Panel::Editor => self.editor = visible,
             Panel::Chat => self.chat = visible,
             Panel::Terminal => self.terminal = visible,
@@ -125,17 +133,38 @@ pub fn fit_visible_panels(
 
 /// The same sizing policy applies to every resizable tool window.
 pub fn fit_open_panels(viewport: f64, widths: [f64; 4], visibility: PanelVisibility) -> [f64; 4] {
+    let fitted = fit_history_panels(
+        viewport,
+        [
+            widths[0],
+            widths[1],
+            widths[2],
+            widths[3],
+            ActiveResizer::History.default(),
+        ],
+        visibility,
+    );
+    [fitted[0], fitted[1], fitted[2], fitted[3]]
+}
+
+pub fn fit_history_panels(
+    viewport: f64,
+    widths: [f64; 5],
+    visibility: PanelVisibility,
+) -> [f64; 5] {
     let kinds = [
         ActiveResizer::Sidebar,
         ActiveResizer::Tree,
         ActiveResizer::Chat,
         ActiveResizer::Terminal,
+        ActiveResizer::History,
     ];
     let visible = [
         visibility.sessions,
         visibility.files || visibility.git || visibility.search,
         visibility.chat,
         false,
+        visibility.history,
     ];
     let mut widths = std::array::from_fn(|i| {
         let width = if widths[i].is_finite() {
@@ -153,7 +182,7 @@ pub fn fit_open_panels(viewport: f64, widths: [f64; 4], visibility: PanelVisibil
         .map(|(_, width)| width)
         .sum::<f64>();
     let mut excess = (used + center + PANEL_RAILS_WIDTH - viewport).max(0.0);
-    for i in [2, 3, 1, 0] {
+    for i in [2, 4, 3, 1, 0] {
         if visible[i] {
             let shrink = excess.min(widths[i] - kinds[i].min());
             widths[i] -= shrink;
@@ -179,6 +208,7 @@ pub enum ActiveResizer {
     None,
     Sidebar,
     Tree,
+    History,
     Chat,
     Terminal,
 }
@@ -189,6 +219,7 @@ impl ActiveResizer {
             Self::None => 0.0,
             Self::Sidebar => 140.0,
             Self::Tree => 160.0,
+            Self::History => 260.0,
             Self::Chat => 260.0,
             Self::Terminal => 140.0,
         }
@@ -199,6 +230,7 @@ impl ActiveResizer {
             Self::None => 0.0,
             Self::Sidebar => 480.0,
             Self::Tree => 650.0,
+            Self::History => 1200.0,
             Self::Chat => 1000.0,
             Self::Terminal => 700.0,
         }
@@ -209,6 +241,7 @@ impl ActiveResizer {
             Self::None => 0.0,
             Self::Sidebar => 240.0,
             Self::Tree => 260.0,
+            Self::History => 480.0,
             Self::Chat => 420.0,
             Self::Terminal => 260.0,
         }
@@ -219,6 +252,7 @@ impl ActiveResizer {
             Self::None => "",
             Self::Sidebar => "panel_sidebar_width",
             Self::Tree => "panel_tree_width",
+            Self::History => "panel_history_width",
             Self::Chat => "panel_chat_width",
             Self::Terminal => "panel_terminal_height",
         }
@@ -241,6 +275,7 @@ pub struct LayoutState {
     pub terminal_cmd: RwSignal<Option<String>>,
     pub sidebar_width: RwSignal<f64>,
     pub tree_width: RwSignal<f64>,
+    pub history_width: RwSignal<f64>,
     pub chat_width: RwSignal<f64>,
     pub terminal_height: RwSignal<f64>,
     pub active_resizer: RwSignal<ActiveResizer>,
@@ -267,6 +302,7 @@ impl LayoutState {
                 for panel in [
                     Panel::Sessions,
                     Panel::Files,
+                    Panel::History,
                     Panel::Editor,
                     Panel::Chat,
                     Panel::Git,
@@ -295,6 +331,7 @@ impl LayoutState {
             terminal_cmd: RwSignal::new(None),
             sidebar_width: RwSignal::new(ActiveResizer::Sidebar.default()),
             tree_width: RwSignal::new(ActiveResizer::Tree.default()),
+            history_width: RwSignal::new(ActiveResizer::History.default()),
             chat_width: RwSignal::new(ActiveResizer::Chat.default()),
             terminal_height: RwSignal::new(ActiveResizer::Terminal.default()),
             active_resizer: RwSignal::new(ActiveResizer::None),
@@ -305,6 +342,7 @@ impl LayoutState {
         match kind {
             ActiveResizer::Sidebar => self.sidebar_width,
             ActiveResizer::Tree => self.tree_width,
+            ActiveResizer::History => self.history_width,
             ActiveResizer::Chat => self.chat_width,
             ActiveResizer::Terminal => self.terminal_height,
             ActiveResizer::None => panic!("a panel width requires a resize target"),
@@ -324,9 +362,10 @@ impl LayoutState {
             ActiveResizer::Tree,
             ActiveResizer::Chat,
             ActiveResizer::Terminal,
+            ActiveResizer::History,
         ];
         let widths = kinds.map(|kind| self.width(kind).get_untracked());
-        for (kind, width) in kinds.into_iter().zip(fit_open_panels(
+        for (kind, width) in kinds.into_iter().zip(fit_history_panels(
             viewport,
             widths,
             self.visible_panels.get_untracked(),
@@ -388,7 +427,24 @@ impl LayoutState {
         } else {
             0.0
         };
-        let viewport = viewport - PANEL_RAILS_WIDTH + if panels.editor { 0.0 } else { CENTER_MIN };
+        let history = if panels.history {
+            self.history_width.get_untracked()
+        } else {
+            0.0
+        };
+        if resizer == ActiveResizer::History {
+            return requested.clamp(resizer.min(), resizer.max()).min(
+                (viewport
+                    - PANEL_RAILS_WIDTH
+                    - sidebar
+                    - tree
+                    - chat
+                    - if panels.editor { CENTER_MIN } else { 0.0 })
+                .max(resizer.min()),
+            );
+        }
+        let viewport =
+            viewport - PANEL_RAILS_WIDTH - history + if panels.editor { 0.0 } else { CENTER_MIN };
         Self::clamp(resizer, requested, sidebar, tree, chat, viewport)
     }
 
@@ -411,7 +467,9 @@ impl LayoutState {
             ActiveResizer::Sidebar => tree_width + chat_width,
             ActiveResizer::Tree => sidebar_width + chat_width,
             ActiveResizer::Chat => sidebar_width + tree_width,
-            ActiveResizer::Terminal => sidebar_width + tree_width + chat_width,
+            ActiveResizer::Terminal | ActiveResizer::History => {
+                sidebar_width + tree_width + chat_width
+            }
         };
         let lower = resizer.min();
         let upper = resizer.max();
@@ -478,6 +536,32 @@ mod tests {
     }
 
     #[test]
+    fn history_width_releases_space_when_collapsed_and_preserves_editor_space() {
+        let visible = PanelVisibility {
+            history: true,
+            ..Default::default()
+        };
+        let widths = fit_history_panels(1600.0, [240.0, 260.0, 420.0, 260.0, 480.0], visible);
+        assert!(
+            widths[0] + widths[1] + widths[2] + widths[4] + CENTER_MIN + PANEL_RAILS_WIDTH
+                <= 1600.0
+        );
+        assert!(widths[4] >= ActiveResizer::History.min());
+        let hidden = PanelVisibility {
+            history: false,
+            ..visible
+        };
+        assert!(
+            (fit_history_panels(1200.0, [240.0, 260.0, 420.0, 260.0, 700.0], hidden)[4] - 700.0)
+                .abs()
+                < f64::EPSILON
+        );
+        let restored: PanelVisibility = serde_json::from_str(r#"{"files":true}"#).unwrap();
+        assert!(!restored.history);
+        assert!(!visible.for_project(false).history);
+    }
+
+    #[test]
     fn terminal_height_does_not_consume_horizontal_space() {
         let visible = PanelVisibility {
             terminal: true,
@@ -520,6 +604,7 @@ mod tests {
         let hidden = PanelVisibility {
             sessions: false,
             files: false,
+            history: false,
             editor: true,
             chat: true,
             terminal: false,

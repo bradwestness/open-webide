@@ -272,8 +272,22 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         ("GET", ["git", "status"]) => Some(Route::GitGet),
         ("GET", ["git", "path-status"]) => Some(Route::GitGet),
         ("GET", ["projects", _, "git", "path-status"]) => Some(Route::GitGet),
-        ("POST", ["git", "path-status" | "path"]) => Some(Route::GitPost),
-        ("POST", ["projects", _, "git", "path-status" | "path"]) => Some(Route::GitPost),
+        (
+            "POST",
+            [
+                "git",
+                "path-status" | "path" | "history" | "commit-diff" | "stash" | "index-diff",
+            ],
+        ) => Some(Route::GitPost),
+        (
+            "POST",
+            [
+                "projects",
+                _,
+                "git",
+                "path-status" | "path" | "history" | "commit-diff" | "stash" | "index-diff",
+            ],
+        ) => Some(Route::GitPost),
         ("GET", ["projects", _, "git", "status"]) => Some(Route::GitGet),
         ("GET", ["git", "diff"]) => Some(Route::GitGet),
         ("GET", ["projects", _, "git", "diff"]) => Some(Route::GitGet),

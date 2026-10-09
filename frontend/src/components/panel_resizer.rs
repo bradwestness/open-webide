@@ -21,6 +21,7 @@ pub fn PanelResizer(
     let panel = panel.unwrap_or(match kind {
         ActiveResizer::Sidebar => Panel::Sessions,
         ActiveResizer::Tree => Panel::Files,
+        ActiveResizer::History => Panel::History,
         ActiveResizer::Chat => Panel::Chat,
         ActiveResizer::Terminal => Panel::Terminal,
         ActiveResizer::None => Panel::Editor,
@@ -133,6 +134,7 @@ pub fn PanelResizer(
         match kind {
             ActiveResizer::Sidebar => "Drag to resize sidebar, double-click to reset",
             ActiveResizer::Tree => "Drag to resize file tree / diff viewer, double-click to reset",
+            ActiveResizer::History => "Drag to resize History, double-click to reset",
             ActiveResizer::Chat => "Drag to resize diff viewer / chat pane, double-click to reset",
             ActiveResizer::Terminal => "Drag to resize terminal, double-click to reset",
             ActiveResizer::None => "",

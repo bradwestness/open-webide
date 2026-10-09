@@ -46,6 +46,83 @@ pub enum GitRepository {
 }
 
 impl GitRepository {
+    pub async fn stash(
+        &self,
+        request: &openwebide_core::git::GitStashRequest,
+    ) -> Result<openwebide_core::git::GitStashResult, String> {
+        match self {
+            Self::Remote { api, project_id } => {
+                api.with_value(Clone::clone)
+                    .git_stash(*project_id, request)
+                    .await
+            }
+            Self::Local(client) => {
+                client
+                    .git_request(
+                        "stash",
+                        serde_json::to_value(request).map_err(|error| error.to_string())?,
+                    )
+                    .await
+            }
+        }
+    }
+    pub async fn index_diff(&self) -> Result<String, String> {
+        match self {
+            Self::Remote { api, project_id } => {
+                api.with_value(Clone::clone)
+                    .git_index_diff(*project_id)
+                    .await
+            }
+            Self::Local(client) => {
+                let diff: openwebide_core::GitDiff = client
+                    .git_request("index-diff", serde_json::json!({}))
+                    .await?;
+                Ok(diff.diff)
+            }
+        }
+    }
+
+    pub async fn history(
+        &self,
+        request: &openwebide_core::git::GitHistoryRequest,
+    ) -> Result<openwebide_core::git::GitHistoryPage, String> {
+        match self {
+            Self::Remote { api, project_id } => {
+                api.with_value(Clone::clone)
+                    .git_history(*project_id, request)
+                    .await
+            }
+            Self::Local(client) => {
+                client
+                    .git_request(
+                        "history",
+                        serde_json::to_value(request).map_err(|error| error.to_string())?,
+                    )
+                    .await
+            }
+        }
+    }
+    pub async fn commit_diff(
+        &self,
+        request: &openwebide_core::git::GitCommitDiffRequest,
+    ) -> Result<openwebide_core::git::GitCommitDiff, String> {
+        match self {
+            Self::Remote { api, project_id } => {
+                api.with_value(Clone::clone)
+                    .git_commit_diff(*project_id, request)
+                    .await
+            }
+            Self::Local(client) => {
+                client
+                    .git_request(
+                        "commit-diff",
+                        serde_json::to_value(request).map_err(|error| error.to_string())?,
+                    )
+                    .await
+            }
+        }
+    }
+
     pub async fn status(&self) -> Result<GitRepoStatus, String> {
         match self {
             Self::Remote { api, project_id } => {

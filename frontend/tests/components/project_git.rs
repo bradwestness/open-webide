@@ -27,30 +27,40 @@ export function gitHttp() {
             return json({exit_code: mock.found ? 0 : 1, stdout: body.command.startsWith('find ') && mock.found ? `./repos/local/${probe}\n` : '', stderr: ''});
         }
         if (mock.invalid) return json({error:'cwd does not exist: repos/local'}, 400);
+        if (path === '/git/history' && mock.deferHistory) await new Promise(resolve => { mock.historyResolve = resolve; });
+        if (path === '/git/commit-diff' && mock.deferDiff) await new Promise(resolve => { mock.diffResolve = resolve; });
+        if (path === '/git/history') return mock.historyError ? json({error:'history unavailable'}, 500) : json(mock.history || {commits:[],refs:[],has_more:false});
+        if (path === '/git/commit-diff') return mock.diffError ? json({error:'diff unavailable'}, 500) : json(mock.commitDiff || {files:[],diff:''});
         if (path === '/git/status') return json({branch:mock.currentBranch,commit_hash:'abc',commit_message:null,upstream:null,ahead:0,behind:0,is_clean:mock.clean,line_stats:{insertions:0,deletions:0},files:mock.clean?{}:{'main.rs':'modified'}});
         if (path === '/git/path-status' || path === '/git/path') return mock.pathError && path === '/git/path' ? json({error:'path action failed'}, 400) : json({has_head:true,staged:['a.txt'],unstaged:['a.txt'],untracked:[],renamed_from:{}});
         if (path === '/git/show') return json({content:'committed'});
+        if (path === '/git/stash') return json({stashes:mock.stashes || [],output:''});
+        if (path === '/git/index-diff') return json({diff:mock.indexDiff || 'staged diff'});
         if (path === '/git/diff') return json({diff:mock.diff || 'local diff'});
         if (path === '/git/branches') return mock.branchesError ? json({error:'cannot list branches'}, 400) : json(mock.branches);
         if (path === '/git/checkout') { if (mock.checkoutError) return json({error:'uncommitted changes'}, 400); const previous = mock.currentBranch; mock.currentBranch = body.branch; return json({branch:body.branch,previous_branch:previous,switched:true}); }
-        if (path === '/git/commit') return json({commit_hash:'abc',summary:'saved',is_signed:false});
-        if (path === '/git/sync') return json({remote:'origin',branch:'main',pulled_commits:0,pushed_commits:0,output:''});
+        if (path === '/git/commit') return mock.commitError ? json({error:'commit failed'},400) : json({commit_hash:'abc',summary:'saved',is_signed:false});
+        if (path === '/git/sync') return mock.syncError ? json({error:'sync failed'},400) : json({remote:'origin',branch:'main',pulled_commits:0,pushed_commits:0,output:''});
         throw new Error(path);
     };
     mock.restore = () => { window.fetch = original; };
     return mock;
 }
+export function gitHistoryFixture(mock, history, diff) { mock.history = JSON.parse(history); mock.commitDiff = JSON.parse(diff); }
 export function gitDiff(mock, diff) { mock.diff = diff; }
 export function gitBranches(mock, branches) { mock.branches = JSON.parse(branches); mock.currentBranch = "main"; }
 export function gitCalls(mock) { return JSON.stringify(mock.calls); }
+export function gitRelease(mock, field) { mock[field] = false; const resolve = field === "deferHistory" ? mock.historyResolve : mock.diffResolve; if (resolve) resolve(); }
 export function gitChange(mock, field, value) { mock[field] = value; }
 export function gitRestore(mock) { mock.restore(); }
 "#)]
 extern "C" {
     pub(super) fn gitHttp() -> JsValue;
     pub(super) fn gitDiff(mock: &JsValue, diff: &str);
+    pub(super) fn gitHistoryFixture(mock: &JsValue, history: &str, diff: &str);
     fn gitBranches(mock: &JsValue, branches: &str);
     pub(super) fn gitCalls(mock: &JsValue) -> String;
+    pub(super) fn gitRelease(mock: &JsValue, field: &str);
     pub(super) fn gitChange(mock: &JsValue, field: &str, value: bool);
     fn gitRestore(mock: &JsValue);
 }
@@ -163,6 +173,7 @@ async fn local_git_badges_and_all_actions_share_verified_bridge_repository() {
         message: "save".into(),
         paths: None,
         include_untracked: false,
+        staged_only: false,
     })
     .await
     .unwrap();

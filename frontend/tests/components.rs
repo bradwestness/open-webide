@@ -100,3 +100,9 @@ mod memories;
 
 #[path = "components/chat_details.rs"]
 mod chat_details;
+
+#[path = "components/git_history.rs"]
+mod git_history;
+
+#[path = "components/git_changes.rs"]
+mod git_changes;

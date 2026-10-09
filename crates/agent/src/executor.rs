@@ -545,6 +545,7 @@ impl<V: Vfs, W: WebClient, B: BridgeClient> VfsToolExecutor<V, W, B> {
             message: message.clone(),
             paths,
             include_untracked: false,
+            staged_only: false,
         };
 
         match self.bridge.git_commit(&req).await {

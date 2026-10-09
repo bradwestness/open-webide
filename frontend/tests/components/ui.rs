@@ -1113,3 +1113,22 @@ async fn prompt_responses_cannot_update_another_account_in_both_modes() {
         }
     }
 }
+
+#[wasm_bindgen_test]
+async fn overflow_actions_close_when_the_action_immediately_disables_its_button() {
+    let mounted = mount_test(move |_| {
+        let busy = RwSignal::new(false);
+        view! {<openwebide_frontend::components::dropdown::ActionMenu aria_label="Busy action"><button role="menuitem" disabled=move ||busy.get() on:click=move |_|busy.set(true)>"Run action"</button></openwebide_frontend::components::dropdown::ActionMenu>}
+    });
+    mounted.click("[aria-label=\"Busy action\"]");
+    settle().await;
+    mounted.click("[role=menuitem]");
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .query_selector(".ui-dropdown-menu")
+            .unwrap()
+            .is_none()
+    );
+}

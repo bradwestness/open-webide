@@ -15,11 +15,22 @@ pub struct HeadContent {
 pub struct GitState {
     pub active_project: RwSignal<Option<i64>>,
     pub status: RwSignal<Option<GitRepoStatus>>,
+    pub path_changes: RwSignal<Option<openwebide_core::git::GitPathChanges>>,
+    pub changes_revision: RwSignal<u64>,
     pub head_content: RwSignal<Option<HeadContent>>,
+    pub head_revision: RwSignal<u64>,
     pub branches: RwSignal<Vec<GitBranchInfo>>,
     pub branches_loading: RwSignal<bool>,
     pub branches_error: RwSignal<Option<String>>,
     pub branch_busy: RwSignal<bool>,
+    pub commit_message: RwSignal<String>,
+    pub commit_busy: RwSignal<bool>,
+    pub commit_error: RwSignal<Option<String>>,
+    pub sync_busy: RwSignal<Option<String>>,
+    pub sync_error: RwSignal<Option<String>>,
+    pub sync_notice: RwSignal<Option<String>>,
+    pub file_history: RwSignal<Option<String>>,
+    pub history_revision: RwSignal<u64>,
     pub branch_revision: RwSignal<u64>,
     statuses_by_project: RwSignal<HashMap<i64, Option<GitRepoStatus>>>,
 }
@@ -33,11 +44,22 @@ impl GitState {
         Self {
             active_project,
             status: RwSignal::new(None),
+            path_changes: RwSignal::new(None),
+            changes_revision: RwSignal::new(0),
             head_content: RwSignal::new(None),
+            head_revision: RwSignal::new(0),
             branches: RwSignal::new(Vec::new()),
             branches_loading: RwSignal::new(false),
             branches_error: RwSignal::new(None),
             branch_busy: RwSignal::new(false),
+            commit_message: RwSignal::new(String::new()),
+            commit_busy: RwSignal::new(false),
+            commit_error: RwSignal::new(None),
+            sync_busy: RwSignal::new(None),
+            sync_error: RwSignal::new(None),
+            sync_notice: RwSignal::new(None),
+            file_history: RwSignal::new(None),
+            history_revision: RwSignal::new(0),
             branch_revision: RwSignal::new(0),
             statuses_by_project: RwSignal::new(HashMap::new()),
         }
@@ -72,19 +94,29 @@ impl GitState {
             .with_untracked(|statuses| statuses.get(&target).cloned().flatten());
         self.reset_branches();
         self.status.set(status);
-        self.head_content.set(None);
+        self.reset_head_content();
         self.active_project.set(Some(target));
     }
 
     pub fn reset_branches(&self) {
+        self.file_history.set(None);
+        self.path_changes.set(None);
+        self.changes_revision.update(|revision| *revision += 1);
         self.branch_revision.update(|revision| *revision += 1);
         self.branches.set(Vec::new());
         self.branches_loading.set(false);
         self.branches_error.set(None);
         self.branch_busy.set(false);
+        self.commit_message.set(String::new());
+        self.commit_busy.set(false);
+        self.commit_error.set(None);
+        self.sync_busy.set(None);
+        self.sync_error.set(None);
+        self.sync_notice.set(None);
     }
 
     pub fn reset_head_content(&self) {
+        self.head_revision.update(|revision| *revision += 1);
         self.head_content.set(None);
     }
 
@@ -98,7 +130,7 @@ impl GitState {
     pub fn clear_active(&self) {
         self.reset_branches();
         self.status.set(None);
-        self.head_content.set(None);
+        self.reset_head_content();
     }
 
     pub fn forget_project(&self, project_id: i64) {

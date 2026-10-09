@@ -92,6 +92,26 @@ pub(crate) async fn git_post(
     let body = read_body(req, JSON_BODY_LIMIT).await?;
 
     match sub {
+        "stash" => {
+            let request = parse_json(body)?;
+            let result = crate::git::repo_stash(&state.store, &project_dir, &request).await?;
+            Ok(json_response(200, &result))
+        }
+        "index-diff" => {
+            let result = crate::git::repo_index_diff(&state.store, &project_dir).await?;
+            Ok(json_response(200, &result))
+        }
+        "history" => {
+            let request = parse_json(body)?;
+            let result = crate::git::repo_history(&state.store, &project_dir, &request).await?;
+            Ok(json_response(200, &result))
+        }
+        "commit-diff" => {
+            let request = parse_json(body)?;
+            let result = crate::git::repo_commit_diff(&state.store, &project_dir, &request).await?;
+            Ok(json_response(200, &result))
+        }
+
         "path-status" => {
             let changes = crate::git::repo_path_changes(&state.store, &project_dir).await?;
             Ok(json_response(200, &changes))

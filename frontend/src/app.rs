@@ -327,6 +327,8 @@ pub fn App() -> impl IntoView {
         request_open,
         refresh_git,
         on_sync_click,
+        on_commit: git_actions.on_commit,
+        on_checkout: git_actions.on_checkout,
     });
     expect_context::<crate::state_actions::file_tree::FileTreeActions>()
         .send_prompt
@@ -411,7 +413,7 @@ pub fn App() -> impl IntoView {
                             <crate::components::Configuration on_new_connection=on_new_connection on_edit_connection=on_edit_connection on_cancel_connection=on_cancel_connection on_delete_connection=on_delete_connection on_new_prompt=on_new_prompt on_edit_prompt=on_edit_prompt on_save_prompt=on_save_prompt on_cancel_prompt=on_cancel_prompt on_delete_prompt=on_delete_prompt />
                             <div class=move || format!("app-body{}{}", if active_resizer.get() != ActiveResizer::None { " is-resizing" } else { "" }, if layout.visible_panels.get().editor { "" } else { " editor-collapsed" })>
                             <div class="workspace-docks">
-                            <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::Editor, Panel::Chat] />
+                            <PanelRail panels=vec![Panel::Sessions, Panel::Files, Panel::History, Panel::Editor, Panel::Chat] />
                             <ToolPanel panel=Panel::Sessions>
                             <Sidebar on_select_session=on_select_session on_new_session=on_new_session on_rename_session=on_rename_session on_delete_session=on_delete_session />
                             </ToolPanel>
@@ -426,11 +428,15 @@ pub fn App() -> impl IntoView {
                             />
                                 </div>
                                 <div class="files-view" hidden=move || layout.preferences.with(|p| p.files_view != crate::state::responsive::FilesView::Changes)>
-            <GitPane on_load_branches=git_actions.on_load_branches on_select_branch=git_actions.on_select_branch on_new_branch=on_branch_click on_open=Callback::new(move |path| { request_open.run(path); }) on_load_git_diff=on_load_git_diff on_discard_git_diff=on_discard_git_diff />
+            <GitPane on_show_history=Callback::new(move |()| layout_actions.show.run(Panel::History)) on_commit=git_actions.on_commit on_sync=git_actions.on_sync on_load_branches=git_actions.on_load_branches on_select_branch=git_actions.on_select_branch on_new_branch=on_branch_click on_open=Callback::new(move |path| { request_open.run(path); }) on_load_git_diff=on_load_git_diff on_discard_git_diff=on_discard_git_diff />
                                 </div>
 
     </SearchPane>
                             </crate::components::FilesPanel>
+                            </ToolPanel>
+                            {move || git_state.file_history.get().map(|path|view!{<crate::components::git_history::FileHistory path=path on_open=request_open on_close=Callback::new(move |()|git_state.file_history.set(None)) />})}
+                            <ToolPanel panel=Panel::History>
+                                <crate::components::git_history::GitHistory on_open=Callback::new(move |path| { request_open.run(path); layout_actions.show.run(Panel::Editor); }) on_select_branch=git_actions.on_select_branch on_new_branch=on_branch_click />
                             </ToolPanel>
                             <ToolPanel panel=Panel::Editor>
                             <div class="center-pane">

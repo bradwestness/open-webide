@@ -107,3 +107,6 @@ pub use configuration::Configuration;
 pub mod editor_chrome;
 
 pub mod memories;
+
+pub mod git_changes;
+pub mod git_history;

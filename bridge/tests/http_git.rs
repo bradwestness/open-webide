@@ -100,3 +100,64 @@ async fn sync_authentication_failures_share_remote_and_browser_contracts() {
         assert_eq!(&bodies[..3], &bodies[3..]);
     }
 }
+
+#[tokio::test]
+async fn history_and_commit_diff_share_browser_and_backend_transport_contracts() {
+    let dir = TestDir::new();
+    init_git_repo(&dir.path).await;
+    for args in [
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["commit", "--allow-empty", "-m", "History fixture"],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(&dir.path)
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+    }
+    let port = start(dir.path.clone()).await;
+    for (endpoint, payload, expected) in [
+        (
+            "/git/history",
+            r#"{"cwd":".","offset":0,"search":"fixture"}"#,
+            200,
+        ),
+        ("/git/commit-diff", r#"{"cwd":".","hash":"HEAD"}"#, 200),
+        ("/git/index-diff", r#"{"cwd":"."}"#, 200),
+        ("/git/stash", r#"{"cwd":".","action":"list"}"#, 200),
+        (
+            "/git/stash",
+            r#"{"cwd":".","action":"drop","hash":"missing"}"#,
+            400,
+        ),
+        ("/git/history", r#"{"cwd":".","path":"../outside"}"#, 400),
+        ("/git/history", r#"{"cwd":".","reference":"--all"}"#, 400),
+        (
+            "/git/commit-diff",
+            r#"{"cwd":".","hash":"HEAD","parent":"HEAD"}"#,
+            400,
+        ),
+    ] {
+        let mut bodies = Vec::new();
+        for browser in [false, true] {
+            let mut headers = vec![("Content-Type", "application/json")];
+            if browser {
+                headers.push(("Origin", "http://localhost:3000"));
+            }
+            let response = post(port, endpoint, payload, &headers).await;
+            assert_eq!(response.status, expected, "{}", response.body);
+            bodies.push(response.body);
+        }
+        assert_eq!(bodies[0], bodies[1]);
+        if endpoint == "/git/history" && expected == 200 {
+            let page: openwebide_core::git::GitHistoryPage =
+                serde_json::from_str(&bodies[0]).unwrap();
+            assert_eq!(page.commits.len(), 1);
+            assert_eq!(page.commits[0].subject, "History fixture");
+        }
+    }
+}

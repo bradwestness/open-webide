@@ -29,6 +29,9 @@ pub struct GitActions {
     pub on_load_branches: Callback<()>,
     pub on_select_branch: Callback<String>,
     pub on_sync_click: Callback<()>,
+    pub on_sync: Callback<String>,
+    pub on_commit: Callback<openwebide_core::GitCommitRequest>,
+    pub on_checkout: Callback<(String, bool)>,
     pub on_load_diff: Callback<()>,
     pub on_discard_diff: Callback<()>,
 }
@@ -183,7 +186,12 @@ impl GitActions {
             let Some(project_id) = active_project.get_untracked() else {
                 return;
             };
-            if git.branch_busy.get_untracked() {
+            if use_context::<crate::state_actions::file_tree::FileTreeActions>()
+                .is_some_and(|files| files.busy.get_untracked())
+                || git.branch_busy.get_untracked()
+                || git.sync_busy.get_untracked().is_some()
+                || git.commit_busy.get_untracked()
+            {
                 return;
             }
             let branch = branch.trim().to_string();
@@ -222,6 +230,7 @@ impl GitActions {
                             }
                         });
                         git.reset_head_content();
+                        git.history_revision.update(|revision| *revision += 1);
                         refresh.run(());
                         on_load_branches.run(());
                         chat.notify(GitState::checkout_notice(&result));
@@ -256,43 +265,135 @@ impl GitActions {
             });
         });
 
-        let on_sync_click = Callback::new(move |()| {
-            let project_id = active_project.get();
+        let file_tree = use_context::<super::file_tree::FileTreeActions>();
+        let on_commit = Callback::new(move |request: openwebide_core::GitCommitRequest| {
+            let Some(project_id) = active_project.get_untracked() else {
+                return;
+            };
+            if file_tree.is_some_and(|actions| actions.busy.get_untracked())
+                || git.commit_busy.get_untracked()
+                || git.branch_busy.get_untracked()
+                || git.sync_busy.get_untracked().is_some()
+            {
+                return;
+            }
+            if request.message.trim().is_empty() {
+                return;
+            }
+            let generation = auth.generation.get_untracked();
+            let host_revision = project_git.revision();
+            let revision = git.branch_revision.get_untracked();
+            git.commit_busy.set(true);
+            git.commit_error.set(None);
+            spawn_local(async move {
+                let result = async {
+                    project_git
+                        .repository(Some(project_id))
+                        .await?
+                        .commit(&request)
+                        .await
+                }
+                .await;
+                if active_project.try_get_untracked() != Some(Some(project_id))
+                    || auth.generation.try_get_untracked() != Some(generation)
+                    || project_git.revision() != host_revision
+                    || git.branch_revision.try_get_untracked() != Some(revision)
+                {
+                    return;
+                }
+                git.commit_busy.set(false);
+                match result {
+                    Ok(result) => {
+                        if git.commit_message.get_untracked() == request.message {
+                            git.commit_message.set(String::new());
+                        }
+                        refresh.run(());
+                        git.history_revision.update(|revision| *revision += 1);
+                        chat.notify(format!(
+                            "Committed `{}`: {}",
+                            result.commit_hash, result.summary
+                        ));
+                    }
+                    Err(error) => {
+                        let error = format!("Git commit failed: {error}");
+                        ui.notify(error.clone());
+                        git.commit_error.set(Some(error));
+                    }
+                }
+            });
+        });
+
+        let on_sync = Callback::new(move |action: String| {
+            let Some(project_id) = active_project.get_untracked() else {
+                return;
+            };
+            if file_tree.is_some_and(|actions| actions.busy.get_untracked())
+                || git.sync_busy.get_untracked().is_some()
+                || git.branch_busy.get_untracked()
+                || git.commit_busy.get_untracked()
+            {
+                return;
+            }
+            let generation = auth.generation.get_untracked();
+            let host_revision = project_git.revision();
+            let revision = git.branch_revision.get_untracked();
+            git.sync_busy.set(Some(action.clone()));
+            git.sync_error.set(None);
+            git.sync_notice.set(None);
             spawn_local(async move {
                 let request = GitSyncRequest {
-                    action: "sync".into(),
+                    action: action.clone(),
                     remote: None,
                     branch: None,
                 };
-                match async {
+                let result = async {
                     project_git
-                        .repository(project_id)
+                        .repository(Some(project_id))
                         .await?
                         .sync(&request)
                         .await
                 }
-                .await
+                .await;
+                if active_project.try_get_untracked() != Some(Some(project_id))
+                    || auth.generation.try_get_untracked() != Some(generation)
+                    || project_git.revision() != host_revision
+                    || git.branch_revision.try_get_untracked() != Some(revision)
                 {
+                    return;
+                }
+                git.sync_busy.set(None);
+                match result {
                     Ok(result) => {
                         refresh.run(());
-                        chat.notify(format!(
-                            "Git synchronized with `{}/{}`:\n* Pulled: {} commits\n* Pushed: {} commits",
-                            result.remote,
-                            result.branch,
-                            result.pulled_commits,
-                            result.pushed_commits
-                        ));
+                        on_load_branches.run(());
+                        git.history_revision.update(|revision| *revision += 1);
+                        let notice = if result.output.trim().is_empty() {
+                            format!("Git {action} complete")
+                        } else {
+                            result.output
+                        };
+                        git.sync_notice.set(Some(notice.clone()));
+                        chat.notify(notice);
                     }
-                    Err(error) => ui.notify(format!("Git sync failed: {error}")),
+                    Err(error) => {
+                        let error = format!("Git {action} failed: {error}");
+                        ui.notify(error.clone());
+                        git.sync_error.set(Some(error));
+                    }
                 }
             });
         });
+        let on_sync_click = Callback::new(move |()| on_sync.run("sync".into()));
 
         let on_load_diff = Callback::new(move |()| {
             let Some(file_path) = open_file.get() else {
                 return;
             };
-            let project_id = active_project.get();
+            let project_id = active_project.get_untracked();
+            let generation = auth.generation.get_untracked();
+            let host_revision = project_git.revision();
+            git.head_revision.update(|revision| *revision += 1);
+            let revision = git.head_revision.get_untracked();
             spawn_local(async move {
                 match async {
                     project_git
@@ -304,7 +405,10 @@ impl GitActions {
                 .await
                 {
                     Ok(content) => {
-                        if active_project.get_untracked() == project_id
+                        if active_project.try_get_untracked() == Some(project_id)
+                            && auth.generation.try_get_untracked() == Some(generation)
+                            && project_git.revision() == host_revision
+                            && git.head_revision.try_get_untracked() == Some(revision)
                             && open_file.get_untracked().as_deref() == Some(file_path.as_str())
                         {
                             git.head_content.set(Some(HeadContent {
@@ -315,7 +419,10 @@ impl GitActions {
                         }
                     }
                     Err(error) => {
-                        if active_project.get_untracked() == project_id
+                        if active_project.try_get_untracked() == Some(project_id)
+                            && auth.generation.try_get_untracked() == Some(generation)
+                            && project_git.revision() == host_revision
+                            && git.head_revision.try_get_untracked() == Some(revision)
                             && open_file.get_untracked().as_deref() == Some(file_path.as_str())
                         {
                             git.head_content.set(Some(HeadContent {
@@ -345,6 +452,9 @@ impl GitActions {
             on_load_branches,
             on_select_branch,
             on_sync_click,
+            on_sync,
+            on_commit,
+            on_checkout: checkout,
             on_load_diff,
             on_discard_diff,
         }

@@ -397,6 +397,37 @@ pub async fn commit_changes(
         ));
     }
 
+    if req.staged_only && (req.paths.is_some() || req.include_untracked) {
+        return Err(GitError::Validation(
+            "A staged commit cannot also stage paths or untracked files".into(),
+        ));
+    }
+    if req.staged_only {
+        let prefix =
+            history_command(repo_dir, &["rev-parse".into(), "--show-prefix".into()]).await?;
+        let prefix = prefix.trim_end_matches('\n');
+        if !prefix.is_empty() {
+            let paths = history_command(
+                repo_dir,
+                &[
+                    "diff".into(),
+                    "--cached".into(),
+                    "--name-only".into(),
+                    "--no-renames".into(),
+                    "-z".into(),
+                    "--".into(),
+                ],
+            )
+            .await?;
+            if paths
+                .split('\0')
+                .filter(|path| !path.is_empty())
+                .any(|path| !path.starts_with(prefix))
+            {
+                return Err(GitError::Validation("Staged changes outside this project would be included. Open the repository root or unstage them first.".into()));
+            }
+        }
+    }
     let has_paths = req.paths.as_ref().is_some_and(|paths| !paths.is_empty());
 
     let (stdout, stderr, ok) = if has_paths {
@@ -424,7 +455,7 @@ pub async fn commit_changes(
         }
 
         let mut commit_args = vec!["commit", "-m", req.message.as_str()];
-        if !req.include_untracked {
+        if !req.include_untracked && !req.staged_only {
             commit_args.push("-a");
         }
         exec_git(&commit_args, repo_dir).await?
@@ -506,7 +537,28 @@ pub async fn checkout_branch(
             }
         }
     } else {
-        let (_stdout, stderr, ok) = exec_git(&["switch", target], repo_dir).await?;
+        let (_, _, local_exists) = exec_git(
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{target}"),
+            ],
+            repo_dir,
+        )
+        .await?;
+        let remote_ref = format!("refs/remotes/{target}");
+        let (_, _, remote_exists) =
+            exec_git(&["show-ref", "--verify", "--quiet", &remote_ref], repo_dir).await?;
+        let (_, stderr, ok) = if remote_exists && !local_exists {
+            let name = target
+                .split_once('/')
+                .map(|(_, name)| name)
+                .ok_or_else(|| GitError::Validation("Choose a remote branch".into()))?;
+            exec_git(&["switch", "--track", "-c", name, &remote_ref], repo_dir).await?
+        } else {
+            exec_git(&["switch", target], repo_dir).await?
+        };
         if !ok {
             return Err(GitError::Execution(format!(
                 "git switch failed: {}",
@@ -514,9 +566,13 @@ pub async fn checkout_branch(
             )));
         }
     }
+    let (branch, stderr, ok) = exec_git(&["symbolic-ref", "--short", "HEAD"], repo_dir).await?;
+    if !ok {
+        return Err(GitError::Execution(stderr));
+    }
 
     Ok(GitCheckoutResult {
-        branch: target.to_string(),
+        branch: branch.trim().to_string(),
         previous_branch,
         switched: true,
     })
@@ -535,9 +591,10 @@ fn sync_failure_detail(stderr: &str) -> String {
 
 /// Synchronize with remote (pull, push, or sync).
 pub async fn sync_repo(repo_dir: &Path, req: &GitSyncRequest) -> Result<GitSyncResult, GitError> {
-    if req.action != "pull" && req.action != "push" && req.action != "sync" {
+    if req.action != "pull" && req.action != "push" && req.action != "sync" && req.action != "fetch"
+    {
         return Err(GitError::Validation(format!(
-            "invalid sync action '{}': must be 'pull', 'push', or 'sync'",
+            "invalid sync action '{}': must be 'fetch', 'pull', 'push', or 'sync'",
             req.action
         )));
     }
@@ -545,11 +602,40 @@ pub async fn sync_repo(repo_dir: &Path, req: &GitSyncRequest) -> Result<GitSyncR
     let (current_branch_raw, _, _) =
         exec_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_dir).await?;
     let current_branch = current_branch_raw.trim();
-    let remote = req.remote.as_deref().unwrap_or("origin");
-    let branch = req.branch.as_deref().unwrap_or(current_branch);
+    let (configured_remote, _, _) = exec_git(
+        &[
+            "config",
+            "--get",
+            &format!("branch.{current_branch}.remote"),
+        ],
+        repo_dir,
+    )
+    .await?;
+    let (configured_merge, _, _) = exec_git(
+        &["config", "--get", &format!("branch.{current_branch}.merge")],
+        repo_dir,
+    )
+    .await?;
+    let configured_remote = configured_remote.trim();
+    let remote = req
+        .remote
+        .as_deref()
+        .unwrap_or(if configured_remote.is_empty() {
+            "origin"
+        } else {
+            configured_remote
+        });
+    let branch = req.branch.as_deref().unwrap_or_else(|| {
+        configured_merge
+            .trim()
+            .strip_prefix("refs/heads/")
+            .unwrap_or(current_branch)
+    });
 
     validate_remote(repo_dir, remote).await?;
-    validate_branch(branch).await?;
+    if req.action != "fetch" {
+        validate_branch(branch).await?;
+    }
 
     let mut output = String::new();
     let mut pulled_commits = 0;
@@ -570,6 +656,16 @@ pub async fn sync_repo(repo_dir: &Path, req: &GitSyncRequest) -> Result<GitSyncR
         }
     };
 
+    if req.action == "fetch" {
+        let (out, err, ok) = exec_git(&["fetch", "--prune", "--", remote], repo_dir).await?;
+        append_output(&mut output, &out, &err);
+        if !ok {
+            return Err(GitError::Execution(format!(
+                "git fetch failed: {}",
+                sync_failure_detail(&err)
+            )));
+        }
+    }
     if req.action == "pull" || req.action == "sync" {
         let (old_head_raw, _, _) = exec_git(&["rev-parse", "HEAD"], repo_dir).await?;
         let old_head = old_head_raw.trim().to_string();
@@ -614,7 +710,16 @@ pub async fn sync_repo(repo_dir: &Path, req: &GitSyncRequest) -> Result<GitSyncR
             _ => None,
         };
 
-        let (push_out, push_err, ok) = exec_git(&["push", "--", remote, branch], repo_dir).await?;
+        let refspec = if current_branch == branch {
+            branch.to_owned()
+        } else {
+            format!("HEAD:refs/heads/{branch}")
+        };
+        let (push_out, push_err, ok) = exec_git(
+            &["push", "--set-upstream", "--", remote, &refspec],
+            repo_dir,
+        )
+        .await?;
         append_output(&mut output, &push_out, &push_err);
         if !ok {
             return Err(GitError::Execution(format!(
@@ -641,6 +746,571 @@ pub async fn sync_repo(repo_dir: &Path, req: &GitSyncRequest) -> Result<GitSyncR
         pushed_commits,
         output,
     })
+}
+
+async fn history_command(repo: &Path, args: &[String]) -> Result<String, GitError> {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (out, err, ok) = exec_git(&args, repo).await?;
+    if ok {
+        Ok(out)
+    } else {
+        Err(GitError::Execution(err))
+    }
+}
+
+fn validate_history_revision(revision: &str) -> Result<(), GitError> {
+    if revision.is_empty()
+        || revision.starts_with('-')
+        || revision.len() > 256
+        || revision.chars().any(char::is_control)
+        || revision.contains("..")
+        || revision.contains([':', '~', '^', '{', '}', '\\'])
+    {
+        return Err(GitError::Validation(
+            "Select a branch, tag or commit hash".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn resolve_history_commit(repo: &Path, revision: &str) -> Result<String, GitError> {
+    validate_history_revision(revision)?;
+    Ok(history_command(
+        repo,
+        &[
+            "rev-parse".into(),
+            "--verify".into(),
+            "--end-of-options".into(),
+            format!("{revision}^{{commit}}"),
+        ],
+    )
+    .await?
+    .trim()
+    .into())
+}
+
+pub async fn get_history(
+    repo: &Path,
+    request: &openwebide_core::git::GitHistoryRequest,
+) -> Result<openwebide_core::git::GitHistoryPage, GitError> {
+    use openwebide_core::git::*;
+    if request.offset >= HISTORY_LIMIT || request.search.len() > 256 {
+        return Err(GitError::Validation(
+            "History limit reached; narrow the search or select a branch".into(),
+        ));
+    }
+    let refs_output = history_command(
+        repo,
+        &[
+            "for-each-ref".into(),
+            "--format=%(refname)%00%(objectname)%00%(*objectname)".into(),
+            "refs/heads".into(),
+            "refs/remotes".into(),
+            "refs/tags".into(),
+        ],
+    )
+    .await?;
+    let refs = refs_output
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split('\0').collect();
+            if fields.len() != 3 || fields[0].ends_with("/HEAD") {
+                return None;
+            }
+            let (kind, name) = if let Some(name) = fields[0].strip_prefix("refs/heads/") {
+                ("branch", name)
+            } else if let Some(name) = fields[0].strip_prefix("refs/remotes/") {
+                ("remote", name)
+            } else {
+                ("tag", fields[0].strip_prefix("refs/tags/")?)
+            };
+            Some(GitHistoryRef {
+                name: name.into(),
+                hash: if fields[2].is_empty() {
+                    fields[1]
+                } else {
+                    fields[2]
+                }
+                .into(),
+                kind: kind.into(),
+            })
+        })
+        .collect::<Vec<_>>();
+    // Unborn repositories have no commits; distinguish that from an invalid project.
+    let (_, _, has_head) = exec_git(&["rev-parse", "--verify", "HEAD"], repo).await?;
+    if !has_head && refs.is_empty() {
+        return Ok(GitHistoryPage::default());
+    }
+    let file_path = request
+        .path
+        .as_deref()
+        .map(|path| {
+            openwebide_core::workspace_entries::entry_path(path).map_err(GitError::Validation)
+        })
+        .transpose()?;
+    let mut args = vec![
+        "--literal-pathspecs".into(),
+        "log".into(),
+        "--topo-order".into(),
+        "--date=iso-strict".into(),
+        "--format=%x00%H%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%s%x00%B%x00".into(),
+        format!(
+            "--max-count={}",
+            if file_path.is_some() {
+                HISTORY_LIMIT + 1
+            } else {
+                HISTORY_PAGE_SIZE + 1
+            }
+        ),
+    ];
+    if file_path.is_some() {
+        args.extend(["--follow".into(), "--name-status".into(), "-z".into()]);
+    } else {
+        args.push(format!("--skip={}", request.offset));
+        if !request.search.is_empty() {
+            args.extend([
+                "--regexp-ignore-case".into(),
+                "--fixed-strings".into(),
+                format!("--grep={}", request.search),
+            ]);
+        }
+    }
+    if let Some(reference) = &request.reference {
+        args.push(resolve_history_commit(repo, reference).await?);
+    } else if file_path.is_some() {
+        args.push("HEAD".into());
+    } else {
+        args.extend(["--all".into(), "HEAD".into()]);
+    }
+    args.push("--".into());
+    if let Some(path) = &file_path {
+        args.push(path.clone());
+    }
+    let out = history_command(repo, &args).await?;
+    let fields: Vec<_> = out.split('\0').collect();
+    let mut cursor = 0;
+    let mut commits = Vec::new();
+    let prefix = if file_path.is_some() {
+        history_command(repo, &["rev-parse".into(), "--show-prefix".into()])
+            .await?
+            .trim_end_matches('\n')
+            .to_owned()
+    } else {
+        String::new()
+    };
+    let mut historical_path = file_path.map(|path| format!("{prefix}{path}"));
+    while cursor < fields.len() {
+        while cursor < fields.len() && fields[cursor].trim().is_empty() {
+            cursor += 1;
+        }
+        if cursor == fields.len() {
+            break;
+        }
+        let hash = fields[cursor].trim();
+        let Some(values) = fields.get(cursor + 1..cursor + 10) else {
+            return Err(GitError::Execution(
+                "Incomplete Git history response".into(),
+            ));
+        };
+        let history_path = historical_path
+            .as_ref()
+            .and_then(|path| path.strip_prefix(&prefix))
+            .map(str::to_owned);
+        if historical_path.is_some() && history_path.is_none() {
+            break;
+        }
+        cursor += 10;
+        if historical_path.is_some() {
+            // Git separates each fixed-width commit record from its NUL-delimited name-status rows.
+            if fields.get(cursor).is_some_and(|value| value.is_empty()) {
+                cursor += 1;
+            }
+            while cursor < fields.len() && !fields[cursor].is_empty() {
+                let status = fields[cursor].trim();
+                cursor += 1;
+                let Some(first) = fields.get(cursor) else {
+                    return Err(GitError::Execution(
+                        "Incomplete file history response".into(),
+                    ));
+                };
+                cursor += 1;
+                if status.starts_with('R') || status.starts_with('C') {
+                    let Some(second) = fields.get(cursor) else {
+                        return Err(GitError::Execution(
+                            "Incomplete rename history response".into(),
+                        ));
+                    };
+                    cursor += 1;
+                    if status.starts_with('R') && historical_path.as_deref() == Some(*second) {
+                        historical_path = Some((*first).into());
+                    }
+                }
+            }
+        }
+        commits.push(GitHistoryCommit {
+            history_path,
+            hash: hash.into(),
+            parents: values[0].split_whitespace().map(str::to_owned).collect(),
+            author: values[1].into(),
+            author_email: values[2].into(),
+            authored_at: values[3].into(),
+            committer: values[4].into(),
+            committer_email: values[5].into(),
+            committed_at: values[6].into(),
+            subject: values[7].into(),
+            message: values[8].trim_end().into(),
+            refs: refs
+                .iter()
+                .filter(|reference| reference.hash == hash)
+                .map(|reference| format!("{}: {}", reference.kind, reference.name))
+                .collect(),
+        });
+    }
+    if request.path.is_some() {
+        if !request.search.is_empty() {
+            let query = request.search.to_lowercase();
+            commits.retain(|commit| commit.message.to_lowercase().contains(&query));
+        }
+        commits = commits.into_iter().skip(request.offset).collect();
+    }
+    let has_more =
+        commits.len() > HISTORY_PAGE_SIZE && request.offset + HISTORY_PAGE_SIZE < HISTORY_LIMIT;
+    commits.truncate(HISTORY_PAGE_SIZE);
+    Ok(GitHistoryPage {
+        commits,
+        has_more,
+        refs,
+    })
+}
+
+pub async fn get_commit_diff(
+    repo: &Path,
+    request: &openwebide_core::git::GitCommitDiffRequest,
+) -> Result<openwebide_core::git::GitCommitDiff, GitError> {
+    use openwebide_core::git::*;
+    let hash = resolve_history_commit(repo, &request.hash).await?;
+    let parents = history_command(
+        repo,
+        &[
+            "show".into(),
+            "-s".into(),
+            "--format=%P".into(),
+            hash.clone(),
+            "--".into(),
+        ],
+    )
+    .await?;
+    let parent = match &request.parent {
+        Some(parent) => {
+            let parent = resolve_history_commit(repo, parent).await?;
+            if !parents
+                .split_whitespace()
+                .any(|candidate| candidate == parent)
+            {
+                return Err(GitError::Validation(
+                    "Selected commit is not a parent".into(),
+                ));
+            }
+            Some(parent)
+        }
+        None => parents.split_whitespace().next().map(str::to_owned),
+    };
+    let mut base = vec![
+        "--literal-pathspecs".into(),
+        "diff-tree".into(),
+        "--root".into(),
+        "--no-commit-id".into(),
+        "-r".into(),
+        "-M".into(),
+    ];
+    if let Some(parent) = parent {
+        base.push(parent);
+    }
+    base.push(hash);
+    let mut names = base.clone();
+    names.extend(["--name-status".into(), "-z".into(), "--".into(), ".".into()]);
+    let output = history_command(repo, &names).await?;
+    let prefix = history_command(repo, &["rev-parse".into(), "--show-prefix".into()]).await?;
+    let prefix = prefix.trim_end_matches('\n');
+    let mut records = output.split('\0').filter(|value| !value.is_empty());
+    let mut files = Vec::new();
+    while let Some(status) = records.next() {
+        let Some(first) = records.next() else {
+            break;
+        };
+        let (previous, path) = if status.starts_with(['R', 'C']) {
+            (Some(first), records.next().unwrap_or(first))
+        } else {
+            (None, first)
+        };
+        if let Some(path) = path.strip_prefix(prefix) {
+            files.push(GitCommitFile {
+                path: path.into(),
+                status: status.into(),
+                previous_path: previous
+                    .and_then(|path| path.strip_prefix(prefix))
+                    .map(str::to_owned),
+            });
+        }
+    }
+    base.extend([
+        "--no-ext-diff".into(),
+        "--no-textconv".into(),
+        "--no-color".into(),
+        "--patch".into(),
+        "--".into(),
+    ]);
+    if let Some(path) = &request.path {
+        let path =
+            openwebide_core::workspace_entries::entry_path(path).map_err(GitError::Validation)?;
+        if let Some(previous) = files
+            .iter()
+            .find(|file| file.path == path)
+            .and_then(|file| file.previous_path.as_ref())
+        {
+            base.push(previous.clone());
+        }
+        base.push(path);
+    } else {
+        base.push(".".into());
+    }
+    let mut diff = history_command(repo, &base).await?;
+    let truncated = diff.len() > 512 * 1024 || diff.lines().count() > 5000;
+    if truncated {
+        let line_end = diff
+            .match_indices('\n')
+            .nth(4999)
+            .map_or(diff.len(), |(index, _)| index + 1);
+        let mut end = line_end.min(512 * 1024);
+        while !diff.is_char_boundary(end) {
+            end -= 1;
+        }
+        diff.truncate(end);
+    }
+    Ok(GitCommitDiff {
+        files,
+        diff,
+        truncated,
+    })
+}
+
+/// Read only staged content, scoped to the opened project (including unborn branches).
+pub async fn get_index_diff(repo: &Path) -> Result<String, GitError> {
+    history_command(
+        repo,
+        &[
+            "--literal-pathspecs".into(),
+            "diff".into(),
+            "--cached".into(),
+            "--no-ext-diff".into(),
+            "--no-textconv".into(),
+            "--".into(),
+            ".".into(),
+        ],
+    )
+    .await
+}
+
+pub async fn manage_stash(
+    repo: &Path,
+    request: &openwebide_core::git::GitStashRequest,
+) -> Result<openwebide_core::git::GitStashResult, GitError> {
+    use openwebide_core::git::{GitStash, GitStashAction, GitStashResult};
+    let list = |output: String| -> Vec<GitStash> {
+        output
+            .split('\0')
+            .collect::<Vec<_>>()
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|fields| GitStash {
+                hash: fields[0].trim_start_matches('\n').into(),
+                reference: fields[1].into(),
+                subject: fields[2].into(),
+            })
+            .collect()
+    };
+    let args = vec![
+        "stash".into(),
+        "list".into(),
+        "--format=%H%x00%gd%x00%gs%x00".into(),
+    ];
+    let mut stashes = list(history_command(repo, &args).await?);
+    let mut output = String::new();
+    if request.action != GitStashAction::List {
+        let prefix = history_command(repo, &["rev-parse".into(), "--show-prefix".into()]).await?;
+        if !prefix.trim().is_empty() {
+            return Err(GitError::Validation(
+                "Open the repository root to manage stashes".into(),
+            ));
+        }
+        let command = match request.action {
+            GitStashAction::Save => {
+                let message = request.message.as_deref().unwrap_or("Open WebIDE changes");
+                if message.len() > 4096 || message.contains('\0') {
+                    return Err(GitError::Validation(
+                        "Stash message is too long or invalid".into(),
+                    ));
+                }
+                vec![
+                    "stash".into(),
+                    "push".into(),
+                    "--include-untracked".into(),
+                    "-m".into(),
+                    message.into(),
+                ]
+            }
+            GitStashAction::Apply | GitStashAction::Drop => {
+                let hash = request
+                    .hash
+                    .as_deref()
+                    .ok_or_else(|| GitError::Validation("Choose a stash first".into()))?;
+                let stash = stashes
+                    .iter()
+                    .find(|stash| stash.hash == hash)
+                    .ok_or_else(|| {
+                        GitError::Validation("This stash no longer exists; refresh the list".into())
+                    })?;
+                if request.action == GitStashAction::Apply {
+                    vec![
+                        "stash".into(),
+                        "apply".into(),
+                        "--index".into(),
+                        stash.hash.clone(),
+                    ]
+                } else {
+                    vec!["stash".into(), "drop".into(), stash.reference.clone()]
+                }
+            }
+            GitStashAction::List => unreachable!(),
+        };
+        output = history_command(repo, &command).await?;
+        stashes = list(history_command(repo, &args).await?);
+    }
+    Ok(GitStashResult { stashes, output })
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use openwebide_core::git::*;
+    #[tokio::test]
+    async fn history_merge_details_and_literal_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.name", "History Author"],
+            vec!["config", "user.email", "history@example.com"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            assert!(exec_git(&args, repo).await.unwrap().2);
+        }
+        assert!(
+            get_history(repo, &GitHistoryRequest::default())
+                .await
+                .unwrap()
+                .commits
+                .is_empty()
+        );
+        std::fs::write(repo.join("[literal]*.txt"), "first\n").unwrap();
+        assert!(exec_git(&["add", "."], repo).await.unwrap().2);
+        assert!(
+            exec_git(&["commit", "-m", "Root\n\nFull message"], repo)
+                .await
+                .unwrap()
+                .2
+        );
+        assert!(
+            exec_git(&["checkout", "-b", "topic"], repo)
+                .await
+                .unwrap()
+                .2
+        );
+        std::fs::write(repo.join("topic"), "topic\n").unwrap();
+        assert!(exec_git(&["add", "."], repo).await.unwrap().2);
+        assert!(exec_git(&["commit", "-m", "Topic"], repo).await.unwrap().2);
+        assert!(exec_git(&["checkout", "main"], repo).await.unwrap().2);
+        std::fs::write(repo.join("main"), "main\n").unwrap();
+        assert!(exec_git(&["add", "."], repo).await.unwrap().2);
+        assert!(exec_git(&["commit", "-m", "Main"], repo).await.unwrap().2);
+        assert!(
+            exec_git(&["merge", "--no-ff", "topic", "-m", "Merge topic"], repo)
+                .await
+                .unwrap()
+                .2
+        );
+        assert!(exec_git(&["tag", "v1"], repo).await.unwrap().2);
+        let page = get_history(repo, &GitHistoryRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(page.commits.len(), 4);
+        let merge = &page.commits[0];
+        assert_eq!(merge.parents.len(), 2);
+        assert!(page.refs.iter().any(|reference| reference.name == "v1"));
+        assert!(history_graph(&page.commits)[0].width >= 2);
+        for parent in &merge.parents {
+            let diff = get_commit_diff(
+                repo,
+                &GitCommitDiffRequest {
+                    hash: merge.hash.clone(),
+                    parent: Some(parent.clone()),
+                    path: None,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(diff.files.len(), 1);
+            assert!(diff.diff.contains("+"));
+        }
+        let root = page.commits.last().unwrap();
+        assert!(root.message.contains("Full message"));
+        let diff = get_commit_diff(
+            repo,
+            &GitCommitDiffRequest {
+                hash: root.hash.clone(),
+                parent: None,
+                path: Some("[literal]*.txt".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(diff.files[0].path, "[literal]*.txt");
+        assert!(diff.diff.contains("+first"));
+        let found = get_history(
+            repo,
+            &GitHistoryRequest {
+                search: "full MESSAGE".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(found.commits.len(), 1);
+        assert!(
+            get_history(
+                repo,
+                &GitHistoryRequest {
+                    reference: Some("--all".into()),
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            get_commit_diff(
+                repo,
+                &GitCommitDiffRequest {
+                    hash: merge.hash.clone(),
+                    parent: Some(root.hash.clone()),
+                    path: None
+                }
+            )
+            .await
+            .is_err()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1068,6 +1738,7 @@ mod tests {
             message: "commit f1 only".into(),
             paths: Some(vec!["file1.txt".into()]),
             include_untracked: false,
+            staged_only: false,
         };
         commit_changes(&td.path, &req).await.unwrap();
 
@@ -1100,6 +1771,7 @@ mod tests {
             message: "commit all tracked".into(),
             paths: None,
             include_untracked: false,
+            staged_only: false,
         };
         commit_changes(&td.path, &req).await.unwrap();
 
@@ -1206,6 +1878,587 @@ mod tests {
         assert!(
             !branches.iter().any(|b| b.name == "origin"),
             "phantom origin branch should not exist"
+        );
+    }
+    #[tokio::test]
+    async fn sync_respects_upstream_and_remote_checkout_preserves_dirty_work() {
+        let remote = TestDir::new();
+        assert!(
+            exec_git(&["init", "--bare", "-b", "trunk"], &remote.path)
+                .await
+                .unwrap()
+                .2
+        );
+        let repo = create_test_repo().await;
+        std::fs::write(repo.path.join("shared.txt"), "baseline\n").unwrap();
+        assert!(exec_git(&["add", "."], &repo.path).await.unwrap().2);
+        assert!(
+            exec_git(
+                &["-c", "commit.gpgsign=false", "commit", "-m", "Baseline"],
+                &repo.path
+            )
+            .await
+            .unwrap()
+            .2
+        );
+        assert!(
+            exec_git(
+                &["remote", "add", "upstream", remote.path.to_str().unwrap()],
+                &repo.path
+            )
+            .await
+            .unwrap()
+            .2
+        );
+        sync_repo(
+            &repo.path,
+            &GitSyncRequest {
+                action: "push".into(),
+                remote: Some("upstream".into()),
+                branch: Some("trunk".into()),
+            },
+        )
+        .await
+        .unwrap();
+        std::fs::write(repo.path.join("shared.txt"), "new main\n").unwrap();
+        assert!(
+            exec_git(
+                &["-c", "commit.gpgsign=false", "commit", "-am", "Update main"],
+                &repo.path
+            )
+            .await
+            .unwrap()
+            .2
+        );
+        let pushed = sync_repo(
+            &repo.path,
+            &GitSyncRequest {
+                action: "push".into(),
+                remote: None,
+                branch: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                pushed.remote.as_str(),
+                pushed.branch.as_str(),
+                pushed.pushed_commits
+            ),
+            ("upstream", "trunk", 1)
+        );
+        assert!(
+            exec_git(&["branch", "topic", "trunk"], &remote.path)
+                .await
+                .unwrap()
+                .2
+        );
+        sync_repo(
+            &repo.path,
+            &GitSyncRequest {
+                action: "fetch".into(),
+                remote: None,
+                branch: None,
+            },
+        )
+        .await
+        .unwrap();
+        let checked = checkout_branch(
+            &repo.path,
+            &GitCheckoutRequest {
+                branch: "upstream/topic".into(),
+                create_if_missing: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(checked.branch, "topic");
+        let branches = get_repo_branches(&repo.path).await.unwrap();
+        assert!(branches.iter().any(
+            |branch| branch.is_current && branch.upstream.as_deref() == Some("upstream/topic")
+        ));
+        std::fs::write(repo.path.join("shared.txt"), "topic change\n").unwrap();
+        assert!(
+            exec_git(
+                &[
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-am",
+                    "Topic change"
+                ],
+                &repo.path
+            )
+            .await
+            .unwrap()
+            .2
+        );
+        checkout_branch(
+            &repo.path,
+            &GitCheckoutRequest {
+                branch: "main".into(),
+                create_if_missing: false,
+            },
+        )
+        .await
+        .unwrap();
+        std::fs::write(repo.path.join("shared.txt"), "precious dirty work\n").unwrap();
+        assert!(
+            checkout_branch(
+                &repo.path,
+                &GitCheckoutRequest {
+                    branch: "topic".into(),
+                    create_if_missing: false
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path.join("shared.txt")).unwrap(),
+            "precious dirty work\n"
+        );
+    }
+    #[tokio::test]
+    async fn history_pages_are_bounded_and_large_diffs_are_marked() {
+        use openwebide_core::git::*;
+        let repo = create_test_repo().await;
+        std::fs::write(repo.path.join("large.txt"), "世界\n".repeat(6000)).unwrap();
+        assert!(exec_git(&["add", "."], &repo.path).await.unwrap().2);
+        assert!(
+            exec_git(
+                &["-c", "commit.gpgsign=false", "commit", "-m", "Root"],
+                &repo.path
+            )
+            .await
+            .unwrap()
+            .2
+        );
+        for index in 0..101 {
+            assert!(
+                exec_git(
+                    &[
+                        "-c",
+                        "commit.gpgsign=false",
+                        "commit",
+                        "--allow-empty",
+                        "-m",
+                        &format!("Revision {index}")
+                    ],
+                    &repo.path
+                )
+                .await
+                .unwrap()
+                .2
+            );
+        }
+        let first = get_history(&repo.path, &GitHistoryRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(first.commits.len(), HISTORY_PAGE_SIZE);
+        assert!(first.has_more);
+        let second = get_history(
+            &repo.path,
+            &GitHistoryRequest {
+                offset: HISTORY_PAGE_SIZE,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.commits.len(), 2);
+        assert!(!second.has_more);
+        assert!(
+            second
+                .commits
+                .iter()
+                .all(|commit| !first.commits.iter().any(|other| other.hash == commit.hash))
+        );
+        let root = second.commits.last().unwrap();
+        assert_eq!(root.subject, "Root");
+        let diff = get_commit_diff(
+            &repo.path,
+            &GitCommitDiffRequest {
+                hash: root.hash.clone(),
+                parent: None,
+                path: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(diff.truncated);
+        assert!(diff.diff.lines().count() <= 5000);
+        assert!(diff.diff.contains("世界"));
+        assert!(
+            get_history(
+                &repo.path,
+                &GitHistoryRequest {
+                    offset: HISTORY_LIMIT,
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn bulk_staging_and_commits_respect_nested_projects_on_unborn_branches() {
+        use openwebide_core::git::*;
+        let repo = create_test_repo().await;
+        let project = repo.path.join("src");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("old.rs"), "fn first() {}\n").unwrap();
+        std::fs::write(repo.path.join("outside.txt"), "outside\n").unwrap();
+        let staged = apply_path_action(
+            &project,
+            &GitPathRequest {
+                path: "".into(),
+                action: GitPathAction::StageAll,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(staged.staged.len(), 1);
+        assert!(!staged.has_head);
+        let unstaged = apply_path_action(
+            &project,
+            &GitPathRequest {
+                path: "".into(),
+                action: GitPathAction::UnstageAll,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(unstaged.staged.is_empty());
+        assert!(project.join("old.rs").exists());
+        apply_path_action(
+            &project,
+            &GitPathRequest {
+                path: "".into(),
+                action: GitPathAction::StageAll,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            exec_git(&["add", "outside.txt"], &repo.path)
+                .await
+                .unwrap()
+                .2
+        );
+        let request = GitCommitRequest {
+            message: "only project".into(),
+            paths: None,
+            include_untracked: false,
+            staged_only: true,
+        };
+        assert!(matches!(
+            commit_changes(&project, &request).await,
+            Err(GitError::Validation(_))
+        ));
+        assert!(
+            exec_git(&["rm", "--cached", "outside.txt"], &repo.path)
+                .await
+                .unwrap()
+                .2
+        );
+        commit_changes(&project, &request).await.unwrap();
+        assert!(
+            exec_git(&["mv", "old.rs", "new.rs"], &project)
+                .await
+                .unwrap()
+                .2
+        );
+        commit_changes(&project, &request).await.unwrap();
+        let history = get_history(
+            &project,
+            &GitHistoryRequest {
+                path: Some("new.rs".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(history.commits.len(), 2);
+        assert_eq!(history.commits[0].history_path.as_deref(), Some("new.rs"));
+        assert_eq!(history.commits[1].history_path.as_deref(), Some("old.rs"));
+        let old = &history.commits[1];
+        assert!(
+            get_commit_diff(
+                &project,
+                &GitCommitDiffRequest {
+                    hash: old.hash.clone(),
+                    path: old.history_path.clone(),
+                    parent: None
+                }
+            )
+            .await
+            .unwrap()
+            .diff
+            .contains("+fn first")
+        );
+    }
+
+    #[tokio::test]
+    async fn staged_commit_bulk_and_stash_preserve_index_and_worktree() {
+        use openwebide_core::git::*;
+        let repo = create_test_repo().await;
+        std::fs::write(repo.path.join("tracked.txt"), "base\n").unwrap();
+        assert!(exec_git(&["add", "."], &repo.path).await.unwrap().2);
+        assert!(
+            exec_git(&["commit", "-m", "base"], &repo.path)
+                .await
+                .unwrap()
+                .2
+        );
+        std::fs::write(repo.path.join("tracked.txt"), "staged\n").unwrap();
+        apply_path_action(
+            &repo.path,
+            &GitPathRequest {
+                path: "".into(),
+                action: GitPathAction::StageAll,
+            },
+        )
+        .await
+        .unwrap();
+        std::fs::write(repo.path.join("tracked.txt"), "unstaged\n").unwrap();
+        std::fs::write(repo.path.join("[new]*.txt"), "new\n").unwrap();
+        let changes = get_path_changes(&repo.path).await.unwrap();
+        assert!(changes.staged.contains("tracked.txt") && changes.unstaged.contains("tracked.txt"));
+        assert!(
+            get_index_diff(&repo.path)
+                .await
+                .unwrap()
+                .contains("+staged")
+        );
+        commit_changes(
+            &repo.path,
+            &GitCommitRequest {
+                message: "staged only".into(),
+                paths: None,
+                include_untracked: false,
+                staged_only: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            exec_git(&["show", "HEAD:tracked.txt"], &repo.path)
+                .await
+                .unwrap()
+                .0,
+            "staged\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path.join("tracked.txt")).unwrap(),
+            "unstaged\n"
+        );
+        let all = apply_path_action(
+            &repo.path,
+            &GitPathRequest {
+                path: "".into(),
+                action: GitPathAction::StageAll,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.staged.len(), 2);
+        let none = apply_path_action(
+            &repo.path,
+            &GitPathRequest {
+                path: "".into(),
+                action: GitPathAction::UnstageAll,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(none.staged.is_empty());
+        apply_path_action(
+            &repo.path,
+            &GitPathRequest {
+                path: "tracked.txt".into(),
+                action: GitPathAction::Stage,
+            },
+        )
+        .await
+        .unwrap();
+        let saved = manage_stash(
+            &repo.path,
+            &GitStashRequest {
+                action: GitStashAction::Save,
+                hash: None,
+                message: Some("remember".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved.stashes.len(), 1);
+        assert!(
+            get_path_changes(&repo.path)
+                .await
+                .unwrap()
+                .staged
+                .is_empty()
+        );
+        assert!(!repo.path.join("[new]*.txt").exists());
+        let hash = saved.stashes[0].hash.clone();
+        let applied = manage_stash(
+            &repo.path,
+            &GitStashRequest {
+                action: GitStashAction::Apply,
+                hash: Some(hash.clone()),
+                message: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(applied.stashes.len(), 1);
+        assert!(
+            get_path_changes(&repo.path)
+                .await
+                .unwrap()
+                .staged
+                .contains("tracked.txt")
+        );
+        assert!(repo.path.join("[new]*.txt").exists());
+        assert!(
+            manage_stash(
+                &repo.path,
+                &GitStashRequest {
+                    action: GitStashAction::Drop,
+                    hash: Some("missing".into()),
+                    message: None
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            manage_stash(
+                &repo.path,
+                &GitStashRequest {
+                    action: GitStashAction::Drop,
+                    hash: Some(hash),
+                    message: None
+                }
+            )
+            .await
+            .unwrap()
+            .stashes
+            .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn file_history_tracks_renames_and_selected_branch() {
+        use openwebide_core::git::*;
+        let repo = create_test_repo().await;
+        std::fs::write(repo.path.join("old.txt"), "first\n").unwrap();
+        assert!(exec_git(&["add", "."], &repo.path).await.unwrap().2);
+        assert!(
+            exec_git(&["commit", "-m", "first"], &repo.path)
+                .await
+                .unwrap()
+                .2
+        );
+        assert!(exec_git(&["branch", "before"], &repo.path).await.unwrap().2);
+        assert!(
+            exec_git(&["mv", "old.txt", "[new]*.txt"], &repo.path)
+                .await
+                .unwrap()
+                .2
+        );
+        assert!(
+            exec_git(&["commit", "-m", "rename"], &repo.path)
+                .await
+                .unwrap()
+                .2
+        );
+        std::fs::write(repo.path.join("[new]*.txt"), "second\n").unwrap();
+        assert!(
+            exec_git(&["commit", "-am", "second"], &repo.path)
+                .await
+                .unwrap()
+                .2
+        );
+        let history = get_history(
+            &repo.path,
+            &GitHistoryRequest {
+                path: Some("[new]*.txt".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(history.commits.len(), 3);
+        assert_eq!(
+            history.commits[0].history_path.as_deref(),
+            Some("[new]*.txt")
+        );
+        assert_eq!(history.commits[2].history_path.as_deref(), Some("old.txt"));
+        let renamed = &history.commits[1];
+        let rename_diff = get_commit_diff(
+            &repo.path,
+            &GitCommitDiffRequest {
+                hash: renamed.hash.clone(),
+                parent: None,
+                path: renamed.history_path.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(rename_diff.diff.contains("rename from old.txt"));
+        assert!(!rename_diff.diff.contains("+first"));
+        let root = &history.commits[2];
+        assert!(
+            get_commit_diff(
+                &repo.path,
+                &GitCommitDiffRequest {
+                    hash: root.hash.clone(),
+                    parent: None,
+                    path: root.history_path.clone()
+                }
+            )
+            .await
+            .unwrap()
+            .diff
+            .contains("+first")
+        );
+        let filtered = get_history(
+            &repo.path,
+            &GitHistoryRequest {
+                path: Some("[new]*.txt".into()),
+                search: "first".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(filtered.commits.len(), 1);
+        assert_eq!(filtered.commits[0].history_path.as_deref(), Some("old.txt"));
+        let other = get_history(
+            &repo.path,
+            &GitHistoryRequest {
+                path: Some("old.txt".into()),
+                reference: Some("refs/heads/before".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(other.commits.len(), 1);
+        assert!(
+            get_history(
+                &repo.path,
+                &GitHistoryRequest {
+                    path: Some("../secret".into()),
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_err()
         );
     }
 }

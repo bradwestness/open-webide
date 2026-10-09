@@ -275,7 +275,7 @@ pub fn ActionMenu(
             on_open=Callback::new(move |()| anchor.set(None)) label=|| view! { <Icon name=IconName::Ellipsis /> }>
             <div class="ui-action-items" on:click=move |event| {
                 if event.target().and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-                    .is_some_and(|target| target.closest("button:not(:disabled)").ok().flatten().is_some()) { open.set(false); }
+                    .is_some_and(|target| target.closest("button").ok().flatten().is_some()) { open.set(false); }
             }>{owner.with(|| children())}</div>
         </Dropdown>
         </span>

@@ -45,6 +45,7 @@ impl LayoutActions {
             layout
                 .terminal_height
                 .set(crate::state::layout::ActiveResizer::Terminal.default());
+            layout.history_width.set(ActiveResizer::History.default());
             layout.active_resizer.set(Default::default());
             pending.set_value(None);
         });
@@ -229,6 +230,7 @@ impl LayoutActions {
                 let visible = [
                     Panel::Sessions,
                     Panel::Files,
+                    Panel::History,
                     Panel::Editor,
                     Panel::Terminal,
                     Panel::Chat,

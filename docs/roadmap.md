@@ -5,6 +5,7 @@ What's left, grouped by how soon it's coming: **Next** (queued up), **Later**
 phases 1 through 14, telemetry, hardening, streaming, `/test`, database-backed
 theme and prompt history, frontend performance & polish, app branding and the chat
 welcome — moved to [CHANGELOG.md](../CHANGELOG.md).
+The [Git pane](git.md) now includes commit history and repository actions.
 
 ## Next
 
@@ -190,7 +191,7 @@ autocomplete) into the editor while keeping the core diagnostics engine
 ### Editor Git annotations
 
 - GitLens-style editor annotations showing line authorship, commit details and
-  history, with navigation to the relevant commit or diff.
+  history, with navigation to the relevant commit or diff in the [Git pane](git.md).
 - Use shared Git orchestration and the existing bridge adapters in both modes;
   guard asynchronous results against file, project and account changes.
 

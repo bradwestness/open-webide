@@ -71,7 +71,11 @@ impl BridgeCredentials {
         };
 
         if needs_refresh {
-            let (token, expires_at) = self.api.with_value(Clone::clone).bridge_token().await?;
+            let api = self
+                .api
+                .try_with_value(Clone::clone)
+                .ok_or("Bridge request superseded.")?;
+            let (token, expires_at) = api.bridge_token().await?;
             *self.cached_token.lock().unwrap() = Some((token.clone(), expires_at));
             Ok(token)
         } else {

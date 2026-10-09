@@ -882,6 +882,8 @@ async fn delayed_resolution_after_agent_write(dirty: bool, rejected: bool) {
             request_open: actions.request_open,
             refresh_git: Callback::new(|()| ()),
             on_sync_click: Callback::new(|()| ()),
+            on_commit: Callback::new(|_: openwebide_core::GitCommitRequest| ()),
+            on_checkout: Callback::new(|_: (String, bool)| ()),
         });
         send_copy.set(Some(chat_actions.send));
         view! {

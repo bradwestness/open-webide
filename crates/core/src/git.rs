@@ -109,6 +109,9 @@ pub struct GitCommitRequest {
     /// Auto-stage untracked files before committing.
     #[serde(default)]
     pub include_untracked: bool,
+    /// Commit the index exactly as staged, without staging worktree edits.
+    #[serde(default)]
+    pub staged_only: bool,
 }
 
 /// Result returned from a commit operation.
@@ -149,7 +152,7 @@ pub struct GitCheckoutResult {
 /// Request payload to synchronize with remote upstream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitSyncRequest {
-    /// Action to perform: "pull", "push", or "sync" (pull --rebase then push).
+    /// Action to perform: "fetch", "pull", "push", or "sync" (pull --rebase then push).
     #[serde(default = "default_sync_action")]
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -446,6 +449,8 @@ pub enum GitPathAction {
     Stage,
     Unstage,
     Revert,
+    StageAll,
+    UnstageAll,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -540,6 +545,29 @@ pub fn path_action_args(
     changes: &GitPathChanges,
     has_head: bool,
 ) -> Result<Vec<String>, String> {
+    if matches!(
+        request.action,
+        GitPathAction::StageAll | GitPathAction::UnstageAll
+    ) {
+        if !request.path.is_empty() {
+            return Err("Bulk Git actions must use the project root".into());
+        }
+        let args = match request.action {
+            GitPathAction::StageAll
+                if !changes.unstaged.is_empty() || !changes.untracked.is_empty() =>
+            {
+                vec!["add", "-A", "--", "."]
+            }
+            GitPathAction::UnstageAll if !changes.staged.is_empty() && has_head => {
+                vec!["reset", "HEAD", "--", "."]
+            }
+            GitPathAction::UnstageAll if !changes.staged.is_empty() => {
+                vec!["rm", "-r", "-f", "--cached", "--ignore-unmatch", "--", "."]
+            }
+            _ => return Err("There are no changes for this Git action".into()),
+        };
+        return Ok(args.into_iter().map(str::to_owned).collect());
+    }
     let path = crate::workspace_entries::entry_path(&request.path)?;
     let paths = changes.action_paths(&path)?;
     if request.action == GitPathAction::Revert
@@ -676,5 +704,393 @@ mod numstat_tests {
         assert_eq!(stats["new"].deletions, 4);
         assert!(!stats.contains_key("old"));
         assert!(!stats.contains_key("image.png"));
+    }
+}
+
+/// A bounded history query. Revisions are literal refs or full object IDs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHistoryRequest {
+    #[serde(default)]
+    pub offset: usize,
+    #[serde(default)]
+    pub search: String,
+    #[serde(default)]
+    pub reference: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+pub const HISTORY_PAGE_SIZE: usize = 100;
+pub const HISTORY_LIMIT: usize = 2000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHistoryCommit {
+    /// Path at this revision, following renames for a file history query.
+    #[serde(default)]
+    pub history_path: Option<String>,
+    pub hash: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub author_email: String,
+    pub authored_at: String,
+    pub committer: String,
+    pub committer_email: String,
+    pub committed_at: String,
+    pub subject: String,
+    pub message: String,
+    pub refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHistoryPage {
+    pub commits: Vec<GitHistoryCommit>,
+    pub has_more: bool,
+    pub refs: Vec<GitHistoryRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHistoryRef {
+    pub name: String,
+    pub hash: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitDiffRequest {
+    pub hash: String,
+    #[serde(default)]
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitFile {
+    pub path: String,
+    pub status: String,
+    pub previous_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitDiff {
+    #[serde(default)]
+    pub truncated: bool,
+    pub files: Vec<GitCommitFile>,
+    pub diff: String,
+}
+
+/// Topology segments carry a stable color through merges and lane compaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitGraphEdge {
+    pub from: usize,
+    pub to: usize,
+    pub color: usize,
+    pub through_commit: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitGraphRow {
+    pub lane: usize,
+    pub color: usize,
+    pub incoming: bool,
+    pub edges: Vec<GitGraphEdge>,
+    pub width: usize,
+}
+
+fn next_graph_color(lanes: &[(String, usize)], next_color: &mut usize) -> usize {
+    let color = (0..6)
+        .map(|offset| (*next_color + offset) % 6)
+        .find(|candidate| lanes.iter().all(|(_, color)| color != candidate))
+        .unwrap_or(*next_color);
+    *next_color = (color + 1) % 6;
+    color
+}
+
+pub fn history_graph(commits: &[GitHistoryCommit]) -> Vec<GitGraphRow> {
+    let mut lanes: Vec<(String, usize)> = Vec::new();
+    let mut next_color = 0;
+    commits
+        .iter()
+        .map(|commit| {
+            let existing = lanes.iter().position(|(hash, _)| hash == &commit.hash);
+            let lane = existing.unwrap_or_else(|| {
+                let color = next_graph_color(&lanes, &mut next_color);
+                lanes.push((commit.hash.clone(), color));
+                lanes.len() - 1
+            });
+            let color = lanes[lane].1;
+            let before = lanes.clone();
+            lanes.remove(lane);
+            for (index, parent) in commit.parents.iter().enumerate() {
+                if !lanes.iter().any(|(hash, _)| hash == parent) {
+                    let parent_color = if index == 0 {
+                        color
+                    } else {
+                        next_graph_color(&lanes, &mut next_color)
+                    };
+                    lanes.insert(
+                        (lane + index).min(lanes.len()),
+                        (parent.clone(), parent_color),
+                    );
+                }
+            }
+            let mut edges = Vec::new();
+            for (from, (hash, color)) in before.iter().enumerate() {
+                if from != lane
+                    && let Some(to) = lanes.iter().position(|(next, _)| next == hash)
+                {
+                    edges.push(GitGraphEdge {
+                        from,
+                        to,
+                        color: *color,
+                        through_commit: false,
+                    });
+                }
+            }
+            for parent in &commit.parents {
+                if let Some(to) = lanes.iter().position(|(next, _)| next == parent) {
+                    edges.push(GitGraphEdge {
+                        from: lane,
+                        to,
+                        color: lanes[to].1,
+                        through_commit: true,
+                    });
+                }
+            }
+            GitGraphRow {
+                lane,
+                color,
+                incoming: existing.is_some(),
+                edges,
+                width: before.len().max(lanes.len()),
+            }
+        })
+        .collect()
+}
+
+/// Repository stashes are addressed by commit hash so stale lists cannot select another stash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitStashAction {
+    List,
+    Save,
+    Apply,
+    Drop,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitStashRequest {
+    pub action: GitStashAction,
+    #[serde(default)]
+    pub hash: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitStash {
+    pub hash: String,
+    pub reference: String,
+    pub subject: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct GitStashResult {
+    pub stashes: Vec<GitStash>,
+    pub output: String,
+}
+
+#[cfg(test)]
+mod history_graph_tests {
+    use super::*;
+    fn commit(hash: &str, parents: &[&str]) -> GitHistoryCommit {
+        GitHistoryCommit {
+            history_path: None,
+            hash: hash.into(),
+            parents: parents.iter().map(|parent| (*parent).into()).collect(),
+            author: String::new(),
+            author_email: String::new(),
+            authored_at: String::new(),
+            committer: String::new(),
+            committer_email: String::new(),
+            committed_at: String::new(),
+            subject: String::new(),
+            message: String::new(),
+            refs: Vec::new(),
+        }
+    }
+    #[test]
+    fn merge_lanes_keep_unrelated_tracks_and_colors_through_compaction() {
+        let commits = [
+            commit("merge", &["main", "topic"]),
+            commit("main", &["root"]),
+            commit("topic", &["root"]),
+            commit("root", &[]),
+        ];
+        let graph = history_graph(&commits);
+        assert_eq!(graph[0].width, 2);
+        assert_ne!(graph[0].color, graph[2].color);
+        let topic = graph[1]
+            .edges
+            .iter()
+            .find(|edge| !edge.through_commit)
+            .unwrap();
+        assert_eq!((topic.from, topic.to), (1, 1));
+        assert_eq!(topic.color, graph[2].color);
+        assert!(graph[3].incoming);
+        assert!(graph[3].edges.is_empty());
+        assert_eq!(history_graph(&commits[..2]), graph[..2]);
+    }
+}
+
+#[cfg(test)]
+mod complex_history_graph_tests {
+    use super::*;
+
+    fn verify_history(nodes: &[(&str, &[&str])]) {
+        let commits = nodes
+            .iter()
+            .map(|(hash, parents)| GitHistoryCommit {
+                history_path: None,
+                hash: (*hash).into(),
+                parents: parents.iter().map(|hash| (*hash).into()).collect(),
+                author: String::new(),
+                author_email: String::new(),
+                authored_at: String::new(),
+                committer: String::new(),
+                committer_email: String::new(),
+                committed_at: String::new(),
+                subject: String::new(),
+                message: String::new(),
+                refs: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        let graph = history_graph(&commits);
+        for prefix in 1..=commits.len() {
+            assert_eq!(
+                history_graph(&commits[..prefix]),
+                graph[..prefix],
+                "paging must not move existing tracks"
+            );
+        }
+        for row in &graph {
+            let active = row
+                .edges
+                .iter()
+                .map(|edge| (edge.to, edge.color))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            if active.len() <= 6 {
+                let colors = active.values().collect::<std::collections::BTreeSet<_>>();
+                assert_eq!(
+                    colors.len(),
+                    active.len(),
+                    "active tracks must use distinct available colors"
+                );
+            }
+        }
+        for (index, commit) in commits.iter().enumerate() {
+            let row = &graph[index];
+            assert!(row.lane < row.width);
+            assert_eq!(
+                row.edges.iter().filter(|edge| edge.through_commit).count(),
+                commit.parents.len()
+            );
+            for (parent, edge) in commit
+                .parents
+                .iter()
+                .zip(row.edges.iter().filter(|edge| edge.through_commit))
+            {
+                assert_eq!(edge.from, row.lane);
+                let mut lane = edge.to;
+                let color = edge.color;
+                let parent_index = commits
+                    .iter()
+                    .position(|commit| &commit.hash == parent)
+                    .unwrap();
+                assert!(parent_index > index);
+                for intermediate in &graph[index + 1..parent_index] {
+                    assert_ne!(
+                        intermediate.lane, lane,
+                        "an unrelated commit must not consume this track"
+                    );
+                    let bypass = intermediate
+                        .edges
+                        .iter()
+                        .find(|edge| !edge.through_commit && edge.from == lane)
+                        .expect("parent track must continue through every intervening row");
+                    assert_eq!(
+                        bypass.color, color,
+                        "compaction must preserve a track's color"
+                    );
+                    lane = bypass.to;
+                }
+                assert_eq!(
+                    graph[parent_index].lane, lane,
+                    "track must end at its actual parent"
+                );
+                assert_eq!(graph[parent_index].color, color);
+                assert!(graph[parent_index].incoming);
+            }
+        }
+    }
+
+    #[test]
+    fn octopus_merge_preserves_parallel_tracks_until_their_shared_ancestor() {
+        verify_history(&[
+            ("octopus", &["main", "topic-a", "topic-b", "topic-c"]),
+            ("main", &["root"]),
+            ("topic-a", &["topic-a-base"]),
+            ("topic-b", &["root"]),
+            ("topic-c", &["root"]),
+            ("topic-a-base", &["root"]),
+            ("root", &[]),
+        ]);
+    }
+
+    #[test]
+    fn crisscross_merges_and_unrelated_roots_keep_parent_connections() {
+        verify_history(&[
+            ("tip", &["merge-a", "merge-b"]),
+            ("unrelated", &[]),
+            ("merge-a", &["a", "b"]),
+            ("merge-b", &["b", "a"]),
+            ("a", &["root"]),
+            ("b", &["root"]),
+            ("root", &[]),
+        ]);
+    }
+
+    #[test]
+    fn colors_avoid_long_running_tracks_after_closed_branches() {
+        verify_history(&[
+            ("old-tip", &["root"]),
+            ("side-a", &[]),
+            ("side-b", &[]),
+            ("side-c", &[]),
+            ("side-d", &[]),
+            ("side-e", &[]),
+            ("octopus", &["a", "b", "c", "d"]),
+            ("a", &["base"]),
+            ("b", &["base"]),
+            ("c", &["base"]),
+            ("d", &["base"]),
+            ("base", &["root"]),
+            ("root", &[]),
+        ]);
+    }
+
+    #[test]
+    fn squash_and_rebase_show_only_the_committed_ancestry() {
+        verify_history(&[
+            ("squash", &["main"]),
+            ("original-topic", &["original-base"]),
+            ("main", &["root"]),
+            ("original-base", &["root"]),
+            ("root", &[]),
+        ]);
+        verify_history(&[
+            ("rebased-tip", &["rebased-base"]),
+            ("rebased-base", &["updated-main"]),
+            ("old-tip", &["old-base"]),
+            ("updated-main", &["root"]),
+            ("old-base", &["root"]),
+            ("root", &[]),
+        ]);
     }
 }

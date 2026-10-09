@@ -9,6 +9,15 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add one top-level resizable History panel with coherent branch/merge tracks,
+  debounced search, branch/remotes/tag dropdowns, changed-file trees and read-only
+  syntax diffs with original line numbers and per-parent comparisons. Add file
+  history with rename tracking, a branch selector and dated timeline in a modal.
+  Rename Explorer to File Tree. Add staged/unstaged sections, individual and bulk
+  staging, staged-only commits, automatic editable commit summaries and stash
+  save/apply/drop. Share local/remote actions, fetch/pull/push and tracking checkout,
+  icon controls, action menus, bounded previews and stale-result guards.
+
 - Reuse unchanged styled paragraph suffix measurements across insertions and
   deletions, with exact source/run/glyph and browser-overlap validation. Replay in
   bounded batches and freshly measure the complete extent; shifted tab grids and

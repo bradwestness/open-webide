@@ -648,7 +648,7 @@ pub(super) fn FileEntryMenu(
                     label=|| view! {<Icon name=IconName::Ellipsis />}>
                     <div class="ui-action-items" on:click=move |event| {
                         if event.target().and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-                            .is_some_and(|target| target.closest("button:not(:disabled)").ok().flatten().is_some()) {open.set(false);}
+                            .is_some_and(|target| target.closest("button").ok().flatten().is_some()) {open.set(false);}
                     }>{move || changes.with(|result| result.as_ref().and_then(|result| result.as_ref().err()).map(|error| view! {<div class="form-hint" role="status">{format!("Git actions unavailable: {error}")}</div>}))}
                     {owner.with(|| view! {
                         {children.as_ref().map(|children| children())}
@@ -667,6 +667,7 @@ pub(super) fn FileEntryMenu(
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() on:click=move |_| actions.delete(&entry.get_value())><crate::components::ui::Icon name=crate::components::ui::IconName::X /><span>"Delete"</span></button>
                         })}
                         <h3 class="ui-menu-heading">"Git"</h3>
+                        {(!is_dir).then(|| view!{<button class="recent-item" role="menuitem" on:click=move |_| actions.history(&entry.get_value().path)><Icon name=IconName::FileClock /><span>"View file history"</span></button>})}
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !stage.get()
                             on:click=move |_| actions.git_action(&entry.get_value().path, GitPathAction::Stage)><crate::components::ui::Icon name=crate::components::ui::IconName::Plus /><span>{move || if untracked.get() {"Add / track"} else {"Stage"}}</span></button>
                         <button class="recent-item" role="menuitem" disabled=move || disabled.get() || !unstage.get()

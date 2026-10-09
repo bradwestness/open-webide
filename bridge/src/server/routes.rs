@@ -372,6 +372,22 @@ async fn handle_git(req: Request<Incoming>, config: &ServerConfig) -> Result<Str
         path: Option<String>,
     }
     let operation = match (method.as_str(), path.as_str()) {
+        ("POST", "/git/history") => {
+            GitOperation::History(serde_json::from_slice(&body).map_err(|error| {
+                BridgeError::Validation(format!("invalid history payload: {error}"))
+            })?)
+        }
+        ("POST", "/git/commit-diff") => {
+            GitOperation::CommitDiff(serde_json::from_slice(&body).map_err(|error| {
+                BridgeError::Validation(format!("invalid commit diff payload: {error}"))
+            })?)
+        }
+        ("POST", "/git/stash") => {
+            GitOperation::Stash(serde_json::from_slice(&body).map_err(|error| {
+                BridgeError::Validation(format!("invalid stash request: {error}"))
+            })?)
+        }
+        ("GET" | "POST", "/git/index-diff") => GitOperation::IndexDiff,
         ("GET" | "POST", "/git/status") => GitOperation::Status,
         ("GET" | "POST", "/git/path-status") => GitOperation::PathChanges,
         ("POST", "/git/path") => {

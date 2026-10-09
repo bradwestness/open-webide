@@ -15,6 +15,8 @@ pub struct GitAssistance {
     pub busy: RwSignal<bool>,
     pub error: RwSignal<Option<String>>,
     pub generate: Callback<AssistanceKind>,
+    pub generate_staged: Callback<()>,
+    connection: Signal<Option<i64>>,
 }
 impl GitAssistance {
     pub fn new(
@@ -25,6 +27,24 @@ impl GitAssistance {
         chat: ChatState,
         settings: SettingsState,
     ) -> Self {
+        let git = expect_context::<crate::state::git::GitState>();
+        let connection = Signal::derive(move || {
+            let project = projects.active_project.get();
+            let session = chat.active_session.get();
+            chat.sessions
+                .with(|sessions| {
+                    sessions
+                        .iter()
+                        .find(|entry| Some(entry.id) == session && entry.project_id == project)
+                        .and_then(|entry| entry.connection_id)
+                })
+                .or(settings.default_connection.get())
+                .or_else(|| {
+                    settings
+                        .model_setup
+                        .with(|setup| setup.defaults.primary.as_ref().map(|model| model.server_id))
+                })
+        });
         let draft = RwSignal::new(String::new());
         let kind = RwSignal::new(None);
         let busy = RwSignal::new(false);
@@ -40,30 +60,14 @@ impl GitAssistance {
             busy.set(false);
             error.set(None);
         });
-        let generate = Callback::new(move |requested: AssistanceKind| {
+        let generate_request = Callback::new(move |(requested, staged): (AssistanceKind, bool)| {
             if busy.get_untracked() || chat.streaming.get_untracked() {
                 return;
             }
             let Some(project) = projects.active_project.get_untracked() else {
                 return;
             };
-            let session_id = chat.active_session.get_untracked();
-            let connection_id = chat
-                .sessions
-                .with_untracked(|sessions| {
-                    sessions
-                        .iter()
-                        .find(|session| {
-                            Some(session.id) == session_id && session.project_id == Some(project)
-                        })
-                        .and_then(|session| session.connection_id)
-                })
-                .or(settings.default_connection.get_untracked())
-                .or_else(|| {
-                    settings.model_setup.with_untracked(|setup| {
-                        setup.defaults.primary.as_ref().map(|model| model.server_id)
-                    })
-                });
+            let connection_id = connection.get_untracked();
             let Some(connection_id) = connection_id else {
                 error.set(Some("Choose a model in Settings first.".into()));
                 return;
@@ -73,6 +77,7 @@ impl GitAssistance {
             revision.update_value(|revision| *revision += 1);
             let ticket = revision.get_value();
             let original = draft.get_untracked();
+            let original_message = git.commit_message.get_untracked();
             busy.set(true);
             error.set(None);
             spawn_local(async move {
@@ -90,11 +95,11 @@ impl GitAssistance {
                     if !current() || chat.streaming.get_untracked() { return Err("Draft request superseded.".into()); }
                     let repo = repository.repository(Some(project)).await?;
                     let status = repo.status().await?;
-                    let tracked_diff = repo.diff(None).await?;
+                    let tracked_diff = if staged {repo.index_diff().await?} else {repo.diff(None).await?};
                     let mut changes = tracked_diff.clone();
                     let mut new_files = Vec::new();
                     let workspace = Workspace::for_project(api, projects, project).ok_or("Reconnect the project folder first.")?;
-                    for (path, status) in status.files.iter().filter(|(_, status)| **status == GitFileStatus::Untracked).take(8) {
+                    for (path, status) in status.files.iter().filter(|(_, status)| !staged && **status == GitFileStatus::Untracked).take(8) {
                         let _ = status;
                         if let Ok(content) = workspace.read(path).await {
                             new_files.push((path.clone(), fingerprint(&content)));
@@ -109,7 +114,8 @@ impl GitAssistance {
                     let generated = api.with_value(Clone::clone).assistance(&request).await?.ok_or("The model could not produce a draft. Try again.")?;
                     // A diff changed during generation must not produce a misleading draft.
                     let fresh_status = repo.status().await?;
-                    if repo.diff(None).await? != tracked_diff || fresh_status.files != status.files || fresh_status.branch != status.branch { return Err("Changes moved while drafting. Try again.".into()); }
+                    let fresh_diff=if staged {repo.index_diff().await?} else {repo.diff(None).await?};
+                    if fresh_diff != tracked_diff || (!staged && fresh_status.files != status.files) || fresh_status.branch != status.branch { return Err("Changes moved while drafting. Try again.".into()); }
                     for (path, content) in new_files {
                         if fingerprint(&workspace.read(&path).await.map_err(|error| error.to_string())?) != content {
                             return Err("Files changed while drafting. Try again.".into());
@@ -127,6 +133,9 @@ impl GitAssistance {
                 busy.set(false);
                 match result {
                     Ok(text) if draft.get_untracked() == original => {
+                        if staged && git.commit_message.get_untracked() == original_message {
+                            git.commit_message.set(text.clone());
+                        }
                         draft.set(text);
                         kind.set(Some(requested));
                     }
@@ -137,13 +146,77 @@ impl GitAssistance {
                 }
             });
         });
+        let generate = Callback::new(move |requested| generate_request.run((requested, false)));
+        let generate_staged =
+            Callback::new(move |()| generate_request.run((AssistanceKind::Commit, true)));
         Self {
             draft,
             kind,
             busy,
             error,
             generate,
+            generate_staged,
+            connection,
         }
+    }
+    /// Draft once after staging settles, only while Changes is visible and the message is empty.
+    pub fn auto_commit(self, visible: Signal<bool>) {
+        let git = expect_context::<crate::state::git::GitState>();
+        let projects = expect_context::<ProjectsState>();
+        let auth = expect_context::<AuthState>();
+        let settings = expect_context::<SettingsState>();
+        let chat = expect_context::<ChatState>();
+        let pending = StoredValue::new(None);
+        let host = expect_context::<ProjectGit>();
+        Effect::new(move |_| {
+            settings.bridge_url.track();
+            projects.local_handles.track();
+            let connection = self.connection.get();
+            let staged = git
+                .path_changes
+                .with(|changes| changes.as_ref().map(|changes| changes.staged.clone()))
+                .unwrap_or_default();
+            if !visible.get()
+                || connection.is_none()
+                || staged.is_empty()
+                || !git.commit_message.with(String::is_empty)
+                || self.busy.get()
+                || chat.streaming.get()
+            {
+                return;
+            }
+            let identity = (
+                projects.active_project.get(),
+                auth.generation.get(),
+                git.changes_revision.get(),
+                staged,
+                connection,
+                host.revision(),
+            );
+            if pending.get_value().as_ref() == Some(&identity) {
+                return;
+            }
+            pending.set_value(Some(identity.clone()));
+            spawn_local(async move {
+                crate::util::sleep_ms(1000).await;
+                if pending.try_get_value().flatten().as_ref() == Some(&identity)
+                    && visible.try_get_untracked() == Some(true)
+                    && projects.active_project.try_get_untracked() == Some(identity.0)
+                    && auth.generation.try_get_untracked() == Some(identity.1)
+                    && git.changes_revision.try_get_untracked() == Some(identity.2)
+                    && git.path_changes.try_with_untracked(|changes| {
+                        changes.as_ref().map(|changes| changes.staged.clone())
+                    }) == Some(Some(identity.3.clone()))
+                    && host.revision() == identity.5
+                    && self.connection.try_get_untracked() == Some(identity.4)
+                    && chat.streaming.try_get_untracked() == Some(false)
+                    && git.commit_message.try_with_untracked(String::is_empty) == Some(true)
+                    && self.busy.try_get_untracked() == Some(false)
+                {
+                    self.generate_staged.run(());
+                }
+            });
+        });
     }
 }
 

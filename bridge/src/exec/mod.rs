@@ -84,6 +84,10 @@ pub struct GitRequest {
 }
 
 pub enum GitOperation {
+    History(openwebide_core::git::GitHistoryRequest),
+    CommitDiff(openwebide_core::git::GitCommitDiffRequest),
+    Stash(openwebide_core::git::GitStashRequest),
+    IndexDiff,
     Status,
     Diff(Option<String>),
     Show(String),
@@ -99,6 +103,9 @@ pub enum GitOperation {
 #[derive(Debug, serde::Serialize)]
 #[serde(untagged)]
 pub enum GitResponse {
+    History(openwebide_core::git::GitHistoryPage),
+    CommitDiff(openwebide_core::git::GitCommitDiff),
+    Stash(openwebide_core::git::GitStashResult),
     Status(openwebide_core::GitRepoStatus),
     Diff(openwebide_core::GitDiff),
     Show(openwebide_core::GitFileContent),
@@ -140,12 +147,24 @@ impl ToolExecution for HostExecution {
         Box::pin(async move {
             let dir = &request.cwd;
             Ok(match request.operation {
+                GitOperation::History(req) => {
+                    GitResponse::History(git::get_history(dir, &req).await?)
+                }
+                GitOperation::CommitDiff(req) => {
+                    GitResponse::CommitDiff(git::get_commit_diff(dir, &req).await?)
+                }
                 GitOperation::PathChanges => {
                     GitResponse::PathChanges(git::get_path_changes(dir).await?)
                 }
                 GitOperation::PathAction(req) => {
                     GitResponse::PathChanges(git::apply_path_action(dir, &req).await?)
                 }
+                GitOperation::Stash(request) => {
+                    GitResponse::Stash(git::manage_stash(dir, &request).await?)
+                }
+                GitOperation::IndexDiff => GitResponse::Diff(openwebide_core::GitDiff {
+                    diff: git::get_index_diff(dir).await?,
+                }),
                 GitOperation::Status => GitResponse::Status(git::get_repo_status(dir).await?),
                 GitOperation::Diff(path) => GitResponse::Diff(openwebide_core::GitDiff {
                     diff: git::get_repo_diff(dir, path.as_deref()).await?,
