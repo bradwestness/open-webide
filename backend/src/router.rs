@@ -240,6 +240,7 @@ fn resolve(method: &str, segments: &[&str]) -> Option<Route> {
         }
         ("GET", ["plugins"]) => Some(Route::ListPlugins),
         ("POST", ["plugins"]) => Some(Route::RecordPlugin),
+        ("POST", ["plugins", "prepare"]) => Some(Route::PreparePlugin),
         ("POST", ["projects", id, "plugins", "prepare"]) if numeric_id(id) => {
             Some(Route::PreparePlugin)
         }
@@ -1144,6 +1145,7 @@ mod tests {
             ("GET", "plugins", Route::ListPlugins),
             ("POST", "plugins", Route::RecordPlugin),
             ("POST", "projects/5/plugins/prepare", Route::PreparePlugin),
+            ("POST", "plugins/prepare", Route::PreparePlugin),
             ("GET", "git/status", Route::GitGet),
             ("GET", "git/path-status", Route::GitGet),
             ("GET", "projects/5/git/path-status", Route::GitGet),

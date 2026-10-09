@@ -370,10 +370,11 @@ capability.
   needed; declarative UI contributions are a later stage of this same system.
   The skills-only baseline is shipped: package/catalog schemas, offline authoring
   validation and CI, and a commit-pinned PR Review reference release. The status-bar
-  Plugins interface groups installed and available packages in compact searchable
-  lists, browses the official/custom Git catalogs and installs validated
-  immutable snapshots on either host, enables managed skills per project, applies manual version
-  changes/rollback and removes packages. Settings configures marketplace sources;
+  Plugins interface shows Installed and Available lists with individual marketplace
+  source labels, browses the official/custom Git catalogs and installs validated
+  immutable snapshots on either host (including server-host installation without an
+  open project), enables managed skills per project, applies manual version
+  changes/rollback and removes plugins. Settings configures marketplace sources;
   the official source is always available. Sources, caches and installation records
   are user-scoped database data, and runs pin their package skill content. Remaining
   work covers tool/runtime contributions, dependencies/configuration, automatic

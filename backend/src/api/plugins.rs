@@ -25,12 +25,14 @@ pub(crate) async fn prepare(
     path: &str,
     user: AuthedUser,
 ) -> Result<JsonResp, ApiError> {
-    let project = path_id(
-        path.strip_suffix("/plugins/prepare")
-            .ok_or_else(|| ApiError::bad_request("Expected plugin path"))?,
-        "/api/projects",
-    )?;
-    super::files::remote_project_path(state, user.id, project, "").await?;
+    if path != "/api/plugins/prepare" {
+        let project = path_id(
+            path.strip_suffix("/plugins/prepare")
+                .ok_or_else(|| ApiError::bad_request("Expected plugin path"))?,
+            "/api/projects",
+        )?;
+        super::files::remote_project_path(state, user.id, project, "").await?;
+    }
     let source: PluginSource = parse_json(read_body(req, 16 * 1024).await?)?;
     source
         .validate()

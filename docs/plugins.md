@@ -1,14 +1,16 @@
 # Plugins and marketplaces
 
 The **Plugins** button beside **Output** in the status bar opens discovery and
-package management. Browse the official marketplace and any custom public Git
+plugin management. Browse the official marketplace and any custom public Git
 marketplaces configured for your account. Installed and available plugins appear
 in compact rows with publisher/version details and inline actions. Search filters
-both sections. Use a row’s gear menu or click its name to inspect release details
-and select a version, then install it on the open
-project's execution host. Packages currently contribute agent skills.
+both sections. Listings show their marketplace as a Source label, with the official
+source named Open WebIDE. Click a row’s name to inspect plugin details
+and use the gear menu to choose a release. Install it on the open project's
+execution host, or on the server host when no project is open. Plugins currently
+contribute agent skills.
 
-Installation does not enable a package. **Enable for project** loads the verified
+Installation does not enable a plugin. **Enable for project** loads the verified
 instructions/resources into the database as managed project skills. They appear
 in Skills and use the existing `skill_list` and `skill_read` agent tools. Their
 package provenance is visible; update, disable or remove them through Plugins.

@@ -69,7 +69,7 @@ pub struct FakeBackend {
     pub plugin_loads:
         RefCell<VecDeque<Deferred<Vec<openwebide_core::plugins::PluginInstallation>>>>,
     pub plugin_preparations: RefCell<VecDeque<Deferred<openwebide_core::plugins::PreparedPlugin>>>,
-    pub plugin_requests: RefCell<Vec<(i64, openwebide_core::plugins::PluginSource)>>,
+    pub plugin_requests: RefCell<Vec<(Option<i64>, openwebide_core::plugins::PluginSource)>>,
     pub plugin_records: RefCell<Vec<openwebide_core::plugins::RecordPlugin>>,
     pub questions: RefCell<Vec<openwebide_core::questions::AgentQuestion>>,
     pub question_commands: RefCell<Vec<(i64, openwebide_core::questions::QuestionCommand)>>,
@@ -352,7 +352,7 @@ impl Backend for FakeBackend {
     }
     fn prepare_plugin<'a>(
         &'a self,
-        project: i64,
+        project: Option<i64>,
         source: &'a openwebide_core::plugins::PluginSource,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::PreparedPlugin, String>> {
         Box::pin(async move {

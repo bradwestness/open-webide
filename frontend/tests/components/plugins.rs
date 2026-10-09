@@ -10,7 +10,15 @@ use wasm_bindgen_test::*;
 
 #[wasm_bindgen_test]
 async fn plugins_guard_preparation_before_recording_on_account_project_and_host_changes() {
-    for boundary in ["account", "project", "host", "success", "unpaired"] {
+    for boundary in [
+        "account",
+        "project",
+        "host",
+        "success",
+        "unpaired",
+        "projectless",
+        "projectless-stale",
+    ] {
         let fake = Rc::new(FakeBackend::default());
         let (send, receive) = futures::channel::oneshot::channel();
         fake.plugin_preparations.borrow_mut().push_back(receive);
@@ -42,6 +50,10 @@ async fn plugins_guard_preparation_before_recording_on_account_project_and_host_
         });
         settle().await;
         let (plugins, actions) = captured.get().unwrap();
+        if boundary.starts_with("projectless") {
+            mounted.state.projects.active_project.set(None);
+            settle().await;
+        }
         if boundary == "unpaired" {
             mounted
                 .state
@@ -65,6 +77,7 @@ async fn plugins_guard_preparation_before_recording_on_account_project_and_host_
         match boundary {
             "account" => mounted.state.auth.logout(),
             "project" => mounted.state.projects.active_project.set(None),
+            "projectless-stale" => mounted.state.projects.active_project.set(Some(1)),
             "host" => mounted
                 .state
                 .settings
@@ -75,8 +88,11 @@ async fn plugins_guard_preparation_before_recording_on_account_project_and_host_
         // Exercise the synchronous guard before reactive invalidation also runs.
         send.send(Ok(prepared)).unwrap();
         settle().await;
-        if boundary == "success" {
+        if boundary == "success" || boundary == "projectless" {
             assert_eq!(fake.plugin_records.borrow().len(), 1);
+            if boundary == "projectless" {
+                assert_eq!(fake.plugin_requests.borrow()[0].0, None);
+            }
             assert_eq!(plugins.installations.get_untracked().len(), 1);
             assert!(mounted.root.text_content().unwrap().contains("PR Review"));
         } else {
@@ -458,20 +474,34 @@ async fn plugins_only_custom_marketplaces_can_be_removed_in_both_modes() {
 #[wasm_bindgen_test]
 async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_modes() {
     use openwebide_frontend::components::{PluginsDialog, Settings, StatusBar};
-    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+    for mode in [
+        Some(WorkspaceMode::Local),
+        Some(WorkspaceMode::Remote),
+        None,
+    ] {
         let fake = Rc::new(FakeBackend::default());
         let catalog = openwebide_core::plugins::testing::catalog();
         fake.marketplaces
             .borrow_mut()
             .sources
             .push(catalog.source.clone());
-        fake.marketplaces.borrow_mut().catalogs.push(catalog);
+        fake.marketplaces
+            .borrow_mut()
+            .catalogs
+            .push(catalog.clone());
+        let mut official = catalog;
+        official.source = openwebide_core::plugins::marketplace::MarketplaceSource::official();
+        official.catalog.name = "OpenWebIDE Official".into();
+        fake.marketplaces.borrow_mut().catalogs.push(official);
         let mounted = mount_test_with_backend(fake, move |state| {
             state.seed_project();
             state
                 .projects
                 .projects
-                .update(|projects| projects[0].mode = mode);
+                .update(|projects| projects[0].mode = mode.unwrap_or(WorkspaceMode::Remote));
+            if mode.is_none() {
+                state.projects.active_project.set(None);
+            }
             state.auth.set_user(User {
                 id: UserId::new(1),
                 username: "test".into(),
@@ -507,17 +537,31 @@ async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_mod
                 .unwrap()
                 .contains("Add marketplace")
         );
-        assert!(
-            mounted
-                .root
-                .text_content()
-                .unwrap()
-                .contains("Installed packages")
-        );
+        assert!(mounted.root.text_content().unwrap().contains("Installed"));
         assert!(
             mounted
                 .root
                 .query_selector("[role='menu']")
+                .unwrap()
+                .is_none()
+        );
+        let text = mounted.root.text_content().unwrap();
+        assert!(text.contains("Source: Test marketplace"));
+        assert!(text.contains("Source: Open WebIDE"));
+        assert!(!text.contains("OpenWebIDE Official"));
+        assert!(!text.contains("Installed packages"));
+        assert_eq!(
+            mounted
+                .root
+                .query_selector_all(".plugin-entry")
+                .unwrap()
+                .length(),
+            2
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector(".plugin-catalog-name")
                 .unwrap()
                 .is_none()
         );
@@ -587,7 +631,7 @@ async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_mod
                 .unwrap()
                 .contains("Refresh marketplaces")
         );
-        mounted.click_text("Install a pinned package manually");
+        mounted.click_text("Install a pinned plugin manually");
         settle().await;
         assert!(
             mounted
@@ -598,9 +642,34 @@ async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_mod
         );
         mounted.click_text("Cancel");
         settle().await;
+        if mode.is_none() {
+            assert!(
+                !mounted
+                    .element(".plugin-row-actions > button")
+                    .has_attribute("disabled")
+            );
+        }
+        mounted.click(".plugin-name");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("https://git.example.org/plugins.git")
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector("button[aria-label='Plugin release']")
+                .unwrap()
+                .is_none()
+        );
+        mounted.click(".plugin-name");
+        settle().await;
         mounted.click("button[aria-label='Available plugin actions']");
         settle().await;
-        mounted.click_text("Release details");
+        mounted.click_text("Choose release");
         settle().await;
         assert!(
             mounted
@@ -635,13 +704,7 @@ async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_mod
                 .unwrap()
                 .contains("Add marketplace")
         );
-        assert!(
-            !mounted
-                .root
-                .text_content()
-                .unwrap()
-                .contains("Installed packages")
-        );
+        assert!(!mounted.root.text_content().unwrap().contains("Installed"));
         assert!(
             mounted
                 .root

@@ -1184,11 +1184,14 @@ impl BackendApi {
     }
     pub async fn prepare_plugin(
         &self,
-        project: i64,
+        project: Option<i64>,
         source: &openwebide_core::plugins::PluginSource,
     ) -> Result<openwebide_core::plugins::PreparedPlugin, String> {
-        self.post(&format!("/projects/{project}/plugins/prepare"), source)
-            .await
+        let path = project.map_or_else(
+            || "/plugins/prepare".into(),
+            |id| format!("/projects/{id}/plugins/prepare"),
+        );
+        self.post(&path, source).await
     }
     pub async fn record_plugin(
         &self,

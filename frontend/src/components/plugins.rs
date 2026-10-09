@@ -46,10 +46,10 @@ pub fn Plugins() -> impl IntoView {
             <PanelSearchRow unpadded=true>
                 <input type="search" class="form-input panel-search-input" aria-label="Search plugins" placeholder="Search plugins…" maxlength="128"
                     prop:value=move ||state.search.get() on:input=move |event|state.search.set(event_target_value(&event))/>
-                <ActionMenu aria_label="Plugin actions" icon=IconName::Menu>
+                <ActionMenu aria_label="Plugin actions">
                     <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||state.busy.get() on:click=move |_|actions.refresh.run(())><Icon name=IconName::RefreshCw/><span>"Refresh installations"</span></button>
                     <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||state.busy.get() on:click=move |_|actions.refresh_catalogs.run(())><Icon name=IconName::RefreshCw/><span>"Refresh marketplaces"</span></button>
-                    <button type="button" role="menuitem" class="ui-dropdown-item recent-item" on:click=move |_|manual.update(|open| *open = !*open)><Icon name=IconName::Plus/><span>"Install a pinned package manually"</span></button>
+                    <button type="button" role="menuitem" class="ui-dropdown-item recent-item" on:click=move |_|manual.update(|open| *open = !*open)><Icon name=IconName::Plus/><span>"Install a pinned plugin manually"</span></button>
                     <button type="button" role="menuitem" class="ui-dropdown-item recent-item" on:click=move |_| {
                         ui.plugins_open.set(false);
                         settings.requested_tab.set(5);
@@ -60,33 +60,27 @@ pub fn Plugins() -> impl IntoView {
             <Show when=move ||state.busy.get()><p class="form-hint" role="status">"Working…"</p></Show>
             <Show when=move ||state.error.get().is_some()><p class="error" role="alert">{move ||state.error.get().unwrap_or_default()}</p></Show>
             <For each=move ||state.failures.get() key=|f|(f.source.repository.clone(),f.source.reference.clone(),f.source.path.clone()) children=move |failure|view!{<p class="error" role="alert">{format!("{}: {} Previously cached releases remain available.",failure.source.repository,failure.message)}</p>}/>
-            <Show when=move ||projects.active_project.get().is_none()><p class="form-hint">"Open a project to install or enable a plugin on its host."</p></Show>
-            <PluginSection title="Installed packages" count=Signal::derive(move ||filtered_installations(state).len())>
+            <Show when=move ||projects.active_project.get().is_none()><p class="form-hint">"Install plugins on the server host, then open a project to enable them."</p></Show>
+            <PluginSection title="Installed" count=Signal::derive(move ||filtered_installations(state).len())>
                 <For each=move ||filtered_installations(state) key=|e|(e.prepared.source.repository.clone(),e.prepared.source.path.clone(),e.revision) children=move |entry|view!{<InstalledPackage entry=entry/>}/>
                 <Show when=move ||state.loaded.get() && !state.busy.get() && filtered_installations(state).is_empty()><p class="form-hint plugin-empty">{move ||if state.search.get().is_empty(){"No plugins installed yet."}else{"No installed plugins match your search."}}</p></Show>
             </PluginSection>
             <PluginSection title="Available" count=Signal::derive(move ||state.marketplaces.with(|m|m.catalogs.iter().map(|c|filtered_catalog(state,c).len()).sum()))>
-                <For each=move ||state.marketplaces.get().catalogs key=|c|(c.source.repository.clone(),c.source.reference.clone(),c.source.path.clone(),c.commit.clone()) children=move |catalog| {
-                    let cache=StoredValue::new(catalog);
-                    view!{<Show when=move ||!filtered_catalog(state,&cache.get_value()).is_empty()>
-                        <p class="form-hint plugin-catalog-name">{cache.with_value(|c|c.catalog.name.clone())}</p>
-                        <For each=move ||filtered_catalog(state,&cache.get_value()) key=|p|(p.publisher.clone(),p.name.clone()) children=move |plugin|view!{<CatalogPackage catalog=cache.get_value() plugin=plugin/>}/>
-                    </Show>}
-                }/>
+                <For each=move ||available_plugins(state) key=|(catalog,plugin)|(catalog.source.repository.clone(),catalog.source.reference.clone(),catalog.source.path.clone(),catalog.commit.clone(),plugin.publisher.clone(),plugin.name.clone()) children=move |(catalog,plugin)|view!{<CatalogPackage catalog=catalog plugin=plugin/>}/>
                 <Show when=move ||state.loaded.get()&&!state.busy.get()&&state.marketplaces.with(|m|m.catalogs.iter().all(|c|filtered_catalog(state,c).is_empty()))><p class="form-hint plugin-empty">{move ||if state.search.get().is_empty(){"No available plugins. Refresh marketplaces from the menu."}else{"No available plugins match your search."}}</p></Show>
             </PluginSection>
-            <Show when=move ||manual.get()><FormSection title="Install a pinned package manually"><div class="ui-section-content">
+            <Show when=move ||manual.get()><FormSection title="Install a pinned plugin manually"><div class="ui-section-content">
                 <FormField label="Repository URL"><TextInput label="Plugin repository URL" value=state.repository.read_only() on_change=Callback::new(move |v|state.repository.set(v)) maxlength=2048 disabled=state.busy.read_only()/></FormField>
                 <FormField label="Commit"><TextInput label="Plugin commit" value=state.commit.read_only() on_change=Callback::new(move |v|state.commit.set(v)) maxlength=64 disabled=state.busy.read_only()/></FormField>
-                <FormField label="Package directory"><TextInput label="Plugin package directory" value=state.path.read_only() on_change=Callback::new(move |v|state.path.set(v)) maxlength=512 disabled=state.busy.read_only()/></FormField>
+                <FormField label="Plugin directory"><TextInput label="Plugin directory" value=state.path.read_only() on_change=Callback::new(move |v|state.path.set(v)) maxlength=512 disabled=state.busy.read_only()/></FormField>
                 <p class="form-hint">"Use a full commit ID and the directory containing plugin.json. Use . for the repository root."</p>
-                <InlineActions><Button disabled=Signal::derive(move ||state.busy.get()||projects.active_project.get().is_none()) on_click=Callback::new(move |_|actions.install.run(()))><Icon name=IconName::Plus/>"Install on project host"</Button></InlineActions>
+                <InlineActions><Button disabled=Signal::derive(move ||state.busy.get()) on_click=Callback::new(move |_|actions.install.run(()))><Icon name=IconName::Download/>"Install on host"</Button></InlineActions>
                 <InlineActions><Button variant=ButtonVariant::Ghost on_click=Callback::new(move |_|manual.set(false))>"Cancel"</Button></InlineActions>
             </div></FormSection></Show>
         </div>
     }
 }
-/// Search and package lifecycle controls opened from the status bar.
+/// Search and plugin lifecycle controls opened from the status bar.
 #[component]
 pub fn PluginsDialog() -> impl IntoView {
     let ui = expect_context::<crate::state::ui::UiState>();
@@ -99,7 +93,7 @@ pub fn PluginsDialog() -> impl IntoView {
     }
 }
 
-/// Marketplace configuration stays separate from discovery and package lifecycle.
+/// Marketplace configuration stays separate from discovery and plugin lifecycle.
 #[component]
 pub fn PluginMarketplaceSources() -> impl IntoView {
     let state = expect_context::<PluginsState>();
@@ -111,7 +105,7 @@ pub fn PluginMarketplaceSources() -> impl IntoView {
             <Show when=move ||state.busy.get()><p class="form-hint" role="status">"Working…"</p></Show>
             <Show when=move ||state.error.get().is_some()><p class="error" role="alert">{move ||state.error.get().unwrap_or_default()}</p></Show>
             <div class="ui-section-content">
-                <p class="form-hint">"Each catalog lists packages in its own public Git repository. Leave the reference empty to follow its default branch."</p>
+                <p class="form-hint">"Each catalog lists plugins in its own public Git repository. Leave the reference empty to follow its default branch."</p>
                 <For each=move ||state.marketplaces.get().sources key=|s|(s.repository.clone(),s.reference.clone(),s.path.clone()) children=move |source| {
                     let official=source==MarketplaceSource::official();let remove=StoredValue::new(source.clone());
                     view!{<div class="ui-section-content"><p class="form-hint">{format!("{} · {} · {}",source.repository,if source.reference.is_empty(){"default branch"}else{&source.reference},source.path)}</p><Show when=move ||official><p class="form-hint">"Official marketplace · always available"</p></Show><Show when=move ||!official><InlineActions><Button disabled=state.busy.read_only() on_click=Callback::new(move |_|{let mut sources=state.marketplaces.get_untracked().sources;sources.retain(|s|s!=&remove.get_value());actions.save_sources.run(sources);})>"Remove marketplace"</Button></InlineActions></Show></div>}
@@ -165,6 +159,26 @@ fn filtered_catalog(state: PluginsState, catalog: &CachedMarketplace) -> Vec<Cat
         .cloned()
         .collect()
 }
+fn available_plugins(state: PluginsState) -> Vec<(CachedMarketplace, CatalogPlugin)> {
+    state
+        .marketplaces
+        .get()
+        .catalogs
+        .into_iter()
+        .flat_map(|catalog| {
+            filtered_catalog(state, &catalog)
+                .into_iter()
+                .map(move |plugin| (catalog.clone(), plugin))
+        })
+        .collect()
+}
+fn marketplace_name(catalog: &CachedMarketplace) -> String {
+    if catalog.source == MarketplaceSource::official() {
+        "Open WebIDE".into()
+    } else {
+        catalog.catalog.name.clone()
+    }
+}
 #[component]
 fn PluginSection(
     title: &'static str,
@@ -180,6 +194,7 @@ fn PluginRow(
     name: String,
     description: String,
     publisher: String,
+    #[prop(into)] source: Signal<String>,
     #[prop(into)] version: Signal<String>,
     #[prop(into)] status: Signal<String>,
     on_details: Callback<()>,
@@ -191,7 +206,7 @@ fn PluginRow(
         <div class="plugin-info">
             <button type="button" class="btn ghost plugin-name" on:click=move |_|on_details.run(())>{name}</button>
             <p class="plugin-description" title=description_title>{description}</p>
-            <p class="plugin-metadata"><span>{publisher}</span><span>{move ||version.get()}</span><span>{move ||status.get()}</span></p>
+            <p class="plugin-metadata"><span>{publisher}</span><span>{move ||version.get()}</span><span>{move ||status.get()}</span><Show when=move ||!source.get().is_empty()><span>{move ||format!("Source: {}", source.get())}</span></Show></p>
         </div>
         <div class="plugin-row-actions">{children()}</div>
     </div>}
@@ -200,8 +215,8 @@ fn PluginRow(
 fn CatalogPackage(catalog: CachedMarketplace, plugin: CatalogPlugin) -> impl IntoView {
     let state = expect_context::<PluginsState>();
     let actions = expect_context::<ProjectPluginActions>();
-    let projects = expect_context::<ProjectsState>();
     let details = RwSignal::new(false);
+    let versions = RwSignal::new(false);
     let version = RwSignal::new(plugin.releases[0].version.clone());
     let options = StoredValue::new(
         plugin
@@ -242,15 +257,19 @@ fn CatalogPackage(catalog: CachedMarketplace, plugin: CatalogPlugin) -> impl Int
         });
     });
     view! {<div class="plugin-entry">
-        <PluginRow name=plugin.display_name description=plugin.description publisher=plugin.publisher version=version.read_only()
+        <PluginRow name=plugin.display_name description=plugin.description publisher=plugin.publisher source=Signal::derive(move ||inspect.with_value(|(catalog,_)|marketplace_name(catalog))) version=version.read_only()
             status=Signal::derive(move ||if installed.get(){"Installed".into()}else{String::new()}) on_details=Callback::new(move |()|details.update(|open| *open = !*open))>
-            <Button size=ButtonSize::Sm disabled=Signal::derive(move ||state.busy.get()||projects.active_project.get().is_none()||installed.get()) on_click=install><Icon name=IconName::Plus/>{move ||if installed.get(){"Installed"}else{"Install"}}</Button>
+            <Button size=ButtonSize::Sm disabled=Signal::derive(move ||state.busy.get()||installed.get()) on_click=install><Icon name=IconName::Download/>{move ||if installed.get(){"Installed"}else{"Install"}}</Button>
             <ActionMenu aria_label="Available plugin actions" icon=IconName::Settings>
-                <button type="button" role="menuitem" class="ui-dropdown-item recent-item" on:click=move |_|details.update(|open| *open = !*open)><Icon name=IconName::Info/><span>"Release details"</span></button>
+                <button type="button" role="menuitem" class="ui-dropdown-item recent-item" on:click=move |_|versions.update(|open| *open = !*open)><Icon name=IconName::GitBranch/><span>"Choose release"</span></button>
+                <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||state.busy.get()||installed.get() on:click=move |event|install.run(event)><Icon name=IconName::Download/><span>"Install on host"</span></button>
             </ActionMenu>
         </PluginRow>
-        <Show when=move ||details.get()><div class="plugin-details ui-section-content">
+        <Show when=move ||versions.get()><div class="plugin-details ui-section-content">
             <FormField label="Release"><DropdownSelect label="Plugin release" value=version.read_only() options=Signal::derive(move ||options.get_value()) on_change=Callback::new(move |v|version.set(v)) disabled=state.busy.read_only()/></FormField>
+        </div></Show>
+        <Show when=move ||details.get()><div class="plugin-details ui-section-content">
+            <p class="form-hint">{inspect.with_value(|(_,p)|p.description.clone())}</p>
             <p class="form-hint">{move ||selected.get().map(|s|format!("{} · {} · {}",s.repository,s.path,s.commit))}</p>
         </div></Show>
     </div>}
@@ -285,6 +304,7 @@ fn InstalledPackage(entry: PluginInstallation) -> impl IntoView {
     });
     view! {<div class="plugin-entry">
         <PluginRow name=manifest.display_name description=manifest.description publisher=manifest.publisher
+            source=Signal::derive(move ||state.marketplaces.with(|marketplaces|entry.with_value(|entry|marketplaces.catalogs.iter().find(|catalog|catalog.source.repository==entry.prepared.source.repository).map(marketplace_name).unwrap_or_default())))
             version=Signal::derive(move ||entry.with_value(|e|e.prepared.manifest.version.clone()))
             status=Signal::derive(move ||binding.get().map_or_else(||"Not enabled in this project".into(),|b|format!("{} in this project: {}",if b.enabled{"Enabled"}else{"Disabled"},b.prepared.manifest.version)))
             on_details=Callback::new(move |()|details.update(|open| *open = !*open))>
@@ -294,7 +314,6 @@ fn InstalledPackage(entry: PluginInstallation) -> impl IntoView {
             <ActionMenu aria_label="Installed plugin actions" icon=IconName::Settings>
                 <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||state.busy.get()||projects.active_project.get().is_none()||current.get() on:click=move |_|actions.enable.run(entry.get_value())><Icon name=IconName::Check/><span>{move ||if enabled.get(){"Apply installed version"}else{"Enable for project"}}</span></button>
                 <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||state.busy.get()||!enabled.get() on:click=move |_|{if let Some(binding)=binding.get_untracked(){actions.disable.run(binding);}}><Icon name=IconName::Pause/><span>"Disable for project"</span></button>
-                <button type="button" role="menuitem" class="ui-dropdown-item recent-item" on:click=move |_|details.update(|open| *open = !*open)><Icon name=IconName::Info/><span>"Package details"</span></button>
                 <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||state.busy.get() on:click=move |_|confirming.set(true)><Icon name=IconName::Trash2/><span>"Uninstall"</span></button>
             </ActionMenu>
         </PluginRow>
@@ -302,6 +321,6 @@ fn InstalledPackage(entry: PluginInstallation) -> impl IntoView {
             <p class="form-hint">{entry.with_value(|e|format!("{} · {} · {} · {} host(s)",e.prepared.source.repository,e.prepared.source.path,e.prepared.source.commit,e.hosts.len()))}</p>
             <p class="form-hint">{entry.with_value(|e|format!("Skills: {}",e.prepared.manifest.contributions.skills.iter().map(|s|s.path.clone()).collect::<Vec<_>>().join(", ")))}</p>
         </div></Show>
-        <Show when=move ||confirming.get()><div class="plugin-details ui-section-content"><p class="form-hint">"Uninstall removes this package’s managed skills from all your projects. Host caches remain available to running tasks."</p><InlineActions><Button variant=ButtonVariant::Danger disabled=state.busy.read_only() on_click=Callback::new(move |_|actions.remove.run(entry.get_value()))>"Confirm uninstall"</Button><Button variant=ButtonVariant::Ghost on_click=Callback::new(move |_|confirming.set(false))>"Cancel"</Button></InlineActions></div></Show>
+        <Show when=move ||confirming.get()><div class="plugin-details ui-section-content"><p class="form-hint">"Uninstall removes this plugin’s managed skills from all your projects. Host caches remain available to running tasks."</p><InlineActions><Button variant=ButtonVariant::Danger disabled=state.busy.read_only() on_click=Callback::new(move |_|actions.remove.run(entry.get_value()))>"Confirm uninstall"</Button><Button variant=ButtonVariant::Ghost on_click=Callback::new(move |_|confirming.set(false))>"Cancel"</Button></InlineActions></div></Show>
     </div>}
 }

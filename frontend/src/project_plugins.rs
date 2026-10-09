@@ -12,7 +12,7 @@ use leptos::{prelude::*, task::spawn_local};
 use openwebide_core::plugins::{marketplace::*, *};
 
 enum PluginTransport {
-    Remote(Api, i64),
+    Remote(Api, Option<i64>),
     Local(BrowserBridgeClient),
 }
 impl PluginTransport {
@@ -30,7 +30,10 @@ impl PluginTransport {
         match self {
             Self::Remote(api, id) => {
                 api.with_value(Clone::clone)
-                    .plugin_package(*id, expected)
+                    .plugin_package(
+                        id.ok_or("Open a project before enabling a plugin.")?,
+                        expected,
+                    )
                     .await
             }
             Self::Local(client) => client.plugin_package(expected).await,
@@ -258,7 +261,6 @@ async fn run_operation(
             }
         }
         Operation::Install(selection) => {
-            let id = project.ok_or("Open a project before installing a plugin.")?;
             let (source, expected) = if let Some(selection) = selection {
                 let markets = state.marketplaces.get_untracked();
                 let catalog = markets
@@ -296,11 +298,8 @@ async fn run_operation(
                     })
                     .map(|e| e.revision)
             });
-            let transport = match host
-                .resolve_guarded(Some(id), true, current.clone())
-                .await?
-            {
-                ProjectExecution::Remote { api, .. } => PluginTransport::Remote(api, id),
+            let transport = match host.resolve_guarded(project, true, current.clone()).await? {
+                ProjectExecution::Remote { api, .. } => PluginTransport::Remote(api, project),
                 ProjectExecution::Local(client) => PluginTransport::Local(client),
             };
             if !current() {
@@ -317,7 +316,7 @@ async fn run_operation(
                     || e.version != prepared.manifest.version
             }) {
                 return Err(
-                    "Package identity or version does not match its marketplace release.".into(),
+                    "Plugin identity or version does not match its marketplace release.".into(),
                 );
             }
             if !current() {
@@ -345,7 +344,7 @@ async fn run_operation(
                 .resolve_guarded(Some(id), true, current.clone())
                 .await?
             {
-                ProjectExecution::Remote { api, .. } => PluginTransport::Remote(api, id),
+                ProjectExecution::Remote { api, .. } => PluginTransport::Remote(api, Some(id)),
                 ProjectExecution::Local(client) => PluginTransport::Local(client),
             };
             if !current() {
@@ -357,7 +356,7 @@ async fn run_operation(
                 || package.prepared.manifest != entry.prepared.manifest
                 || package.prepared.digest != entry.prepared.digest
             {
-                return Err("Plugin host returned different package content.".into());
+                return Err("Plugin host returned different plugin content.".into());
             }
             if !current() {
                 return Ok(());

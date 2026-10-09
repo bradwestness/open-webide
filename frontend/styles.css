@@ -3696,7 +3696,7 @@ button.browser-item {
 .tree-item.tree-row-depth, .modal .btn.tree-item.tree-row-depth { padding-inline-start: calc(var(--space-2) + var(--tree-depth) * var(--space-3)); font-size: var(--font-caption); }
 .git-history-folder > div { padding-inline-start: 0; }
 
-/* Compact package discovery uses the shared controls and theme tokens. */
+/* Compact plugin discovery uses the shared controls and theme tokens. */
 .plugin-section.ui-disclosure-panel { border: 0; background: transparent; }
 .plugin-section > .ui-disclosure-toggle { background: transparent; padding: var(--space-2) 0; color: var(--text); }
 .plugin-section-title { font-weight: 600; }
@@ -3710,6 +3710,6 @@ button.browser-item {
 .plugin-metadata { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0; color: var(--text-muted); font-size: var(--font-caption); }
 .plugin-row-actions { display: flex; gap: var(--space-2); align-items: center; }
 .plugin-details { padding: var(--space-4); background: var(--bg); border-radius: var(--radius-sm); overflow-wrap: anywhere; }
-.plugin-catalog-name, .plugin-empty { padding: var(--space-2) 0; }
+.plugin-empty { padding: var(--space-2) 0; }
 .phone-layout .plugin-row { grid-template-columns: 24px minmax(0, 1fr); }
 .phone-layout .plugin-row-actions { grid-column: 2; justify-content: flex-end; }

@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Show plugins in a single Available list with individual marketplace source labels; use Open WebIDE branding and consistent plugin terminology.
+
+- Install plugins on the server host without opening a project; project activation remains explicit. Use the standard overflow icon and download action, with plugin details on the title and release/management actions in the gear menu.
 - Browse plugins in compact, searchable Installed and Available lists with counts, publisher/version metadata, inline actions and per-package gear menus. Keep release details and manual pinned installation behind secondary controls.
 - Open plugin search and package lifecycle controls beside Output in the status bar, with a direct link to marketplace-only settings. Use the shared magnifier search row, hamburger action menu, Lucide add icons and modal spacing.
 - Keep the official plugin marketplace permanently available, restore it in older account settings, and allow removal only for custom sources.

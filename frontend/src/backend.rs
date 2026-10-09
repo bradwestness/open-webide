@@ -587,7 +587,7 @@ pub trait Backend {
     }
     fn prepare_plugin<'a>(
         &'a self,
-        _project: i64,
+        _project: Option<i64>,
         _source: &'a openwebide_core::plugins::PluginSource,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::PreparedPlugin, String>> {
         Box::pin(async { Err("Plugin installation is unavailable".into()) })
@@ -1519,7 +1519,7 @@ impl Backend for BackendApi {
     }
     fn prepare_plugin<'a>(
         &'a self,
-        project: i64,
+        project: Option<i64>,
         source: &'a openwebide_core::plugins::PluginSource,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::PreparedPlugin, String>> {
         Box::pin(BackendApi::prepare_plugin(self, project, source))
