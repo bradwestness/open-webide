@@ -119,7 +119,9 @@ tracks the remaining work rather than every optimization already shipped.
   regions and languages without brackets while preserving scope boundaries.
 - [ ] **Source ownership and storage:** finish remaining external parser snapshots,
   changed-revision source comparisons, transport serialization, diff shaping and
-  native-text materialization. Parser-free entry equality now uses the same
+  native-text materialization. Worker delta reconstruction now copies validated
+  prefix/replacement/suffix UTF-8 slices across bounded tasks; initial capacity
+  allocation and message decoding remain. Parser-free entry equality now uses the same
   resumable comparison and passes validated replacements to plain-row reuse;
   paint/transport comparisons still sit outside those jobs.
   Folded/bounded projection tables still assemble

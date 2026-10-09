@@ -75,7 +75,9 @@ struct SyntaxTask {
     key: String,
     language: Language,
     tab_width: usize,
-    source: std::sync::Arc<String>,
+    source: Option<std::sync::Arc<String>>,
+    resolution: Option<super::transfer::SourceResolution>,
+    source_length: usize,
     previous: Option<(u32, std::sync::Arc<super::SyntaxAnalysis>)>,
     change: Option<crate::editor::TextChange>,
     document: super::SyntaxDocument,
@@ -134,14 +136,20 @@ impl SyntaxPreparations<String> {
                 new_end: start.checked_add(text.len())?,
             }),
         };
-        let source = std::sync::Arc::new(request.source.resolve(base_source)?);
+        let resolution = request.source.prepare_resolution(
+            previous
+                .as_ref()
+                .map(|(_, analysis)| analysis.source_snapshot().clone()),
+        )?;
         let document = self.take_document(&request.document, request.language)?;
         Some(Start::Task(Box::new(SyntaxTask {
             ticket: request.ticket,
             key: request.document,
             language: request.language,
             tab_width: request.tab_width,
-            source,
+            source: None,
+            resolution: Some(resolution),
+            source_length: length,
             previous,
             change,
             document,
@@ -154,13 +162,28 @@ impl SyntaxTask {
         should_continue: &mut impl FnMut() -> bool,
         should_yield: &mut impl FnMut() -> bool,
     ) -> Option<(SyntaxStatus, Option<std::sync::Arc<super::SyntaxAnalysis>>)> {
+        if let Some(resolution) = &mut self.resolution {
+            loop {
+                if !should_continue() {
+                    return Some((SyntaxStatus::Cancelled, None));
+                }
+                if resolution.is_ready() {
+                    break;
+                }
+                if should_yield() {
+                    return None;
+                }
+                resolution.advance(crate::highlight::LEXICAL_BATCH_BYTES);
+            }
+            self.source = self.resolution.take().unwrap().finish();
+        }
         let change = self
             .previous
             .as_ref()
             .zip(self.change.as_ref())
             .map(|((_, analysis), change)| (analysis.source_snapshot(), change));
         self.document.prepare_resolved_cooperative(
-            self.source.clone(),
+            self.source.as_ref()?.clone(),
             self.tab_width,
             should_continue,
             should_yield,
@@ -183,7 +206,7 @@ impl SyntaxTask {
             if published {
                 self.document.publication = Some((self.ticket, prepared));
             }
-            service.install_document(self.key, self.language, self.document, self.source.len());
+            service.install_document(self.key, self.language, self.document, self.source_length);
         }
         Some(message)
     }
@@ -235,7 +258,7 @@ impl SyntaxWorker {
         self.active.is_some() || !self.queued.is_empty()
     }
     pub fn retained_request_bytes(&self) -> usize {
-        self.active.as_ref().map_or(0, |task| task.source.len())
+        self.active.as_ref().map_or(0, |task| task.source_length)
             + self.queued.iter().map(request_bytes).sum::<usize>()
     }
     pub fn enqueue(&mut self, message: &str) -> Option<String> {
@@ -271,7 +294,7 @@ impl SyntaxWorker {
                 Start::Reply(reply) => return Some(reply),
                 Start::Task(task) => {
                     let queued_bytes = self.queued.iter().map(request_bytes).sum::<usize>();
-                    if queued_bytes.saturating_add(task.source.len())
+                    if queued_bytes.saturating_add(task.source_length)
                         > super::MAX_SYNTAX_SOURCE_BYTES
                     {
                         return control_reply(task.ticket, SyntaxStatus::Cancelled);
@@ -357,6 +380,102 @@ impl SyntaxReply {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warm_worker_source_reconstruction_yields_before_parser_and_releases_cancelled_work() {
+        for ending in ["\n", "\r\n"] {
+            for cancel in [false, true] {
+                let source = format!(
+                    "/*{}*/{ending}{}fn original() {{}}{ending}",
+                    "文😀 ".repeat(20_000),
+                    ending.repeat(20_000)
+                );
+                let mut worker = SyntaxWorker::default();
+                let initial =
+                    SyntaxRequest::new(1, "resolved".into(), Language::Rust, &source, 4, None);
+                let initial_message = serde_json::to_string(&initial).unwrap();
+                let initial_reply = worker
+                    .service
+                    .handle_message(&initial_message, || true)
+                    .unwrap();
+                let previous = SyntaxReply::receive(&initial_reply, 1, &source)
+                    .unwrap()
+                    .1
+                    .unwrap();
+                let changed = format!("// 文😀{ending}{source}");
+                let request = SyntaxRequest::new(
+                    2,
+                    "resolved".into(),
+                    Language::Rust,
+                    &changed,
+                    4,
+                    Some((1, &previous)),
+                );
+                assert!(matches!(request.source, SyntaxSource::Replace { .. }));
+                let message = serde_json::to_string(&request).unwrap();
+                assert!(worker.enqueue(&message).is_none());
+                let mut checks = 0;
+                assert!(
+                    worker
+                        .advance(
+                            || true,
+                            || {
+                                checks += 1;
+                                checks >= 2
+                            }
+                        )
+                        .is_none()
+                );
+                let task = worker.active.as_ref().unwrap();
+                assert!(
+                    task.source.is_none(),
+                    "an incomplete source cannot reach parsing"
+                );
+                assert!(!task.resolution.as_ref().unwrap().is_ready());
+                assert_eq!(task.document.text.as_str(), source);
+                assert_eq!(worker.retained_request_bytes(), changed.len());
+                let reply = worker.advance(|| !cancel, || false).unwrap();
+                assert!(!worker.has_work());
+                assert_eq!(worker.retained_request_bytes(), 0);
+                let (status, prepared) =
+                    SyntaxReply::receive_reusing(&reply, 2, &changed, Some((1, &previous)))
+                        .unwrap();
+                if cancel {
+                    assert_eq!(status, SyntaxStatus::Cancelled);
+                    assert!(prepared.is_none());
+                } else {
+                    assert!(matches!(status, SyntaxStatus::Ready { .. }));
+                    let (_, expected) = super::super::SyntaxDocument::new(Language::Rust)
+                        .unwrap()
+                        .prepare(&changed, 4, || true);
+                    assert_eq!(
+                        serde_json::to_value(prepared.unwrap().transfer_data()).unwrap(),
+                        serde_json::to_value(expected.unwrap().transfer_data()).unwrap()
+                    );
+                }
+                let recovered = SyntaxRequest::new(
+                    3,
+                    "resolved".into(),
+                    Language::Rust,
+                    "fn recovered() {}",
+                    4,
+                    None,
+                );
+                assert!(
+                    worker
+                        .enqueue(&serde_json::to_string(&recovered).unwrap())
+                        .is_none()
+                );
+                let reply = worker.advance(|| true, || false).unwrap();
+                assert!(
+                    SyntaxReply::receive(&reply, 3, "fn recovered() {}")
+                        .unwrap()
+                        .1
+                        .is_some()
+                );
+            }
+        }
+    }
 
     #[test]
     fn synchronous_and_yielding_message_adapters_publish_identical_results() {
