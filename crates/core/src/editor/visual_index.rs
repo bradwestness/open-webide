@@ -187,6 +187,43 @@ impl VisualLineIndex {
         Some(result)
     }
 
+    /// Exact glyphs at ordered paint boundaries. Interior cluster bytes are
+    /// omitted, matching paragraph anchor admission. Nearby queries share one
+    /// traversal; sparse gaps resume at retained source checkpoints.
+    pub(super) fn boundary_glyphs(&self, body: &str, bytes: &[usize]) -> Option<Vec<usize>> {
+        if !self.valid_body(body)
+            || bytes.len() > super::MAX_ROW_GEOMETRY_ANCHORS
+            || bytes.last().is_some_and(|byte| *byte > body.len())
+            || bytes.windows(2).any(|pair| pair[0] > pair[1])
+        {
+            return None;
+        }
+        let mut cursor = Position::default();
+        let mut result = Vec::with_capacity(bytes.len());
+        for &target in bytes {
+            let checkpoint = self
+                .0
+                .points
+                .partition_point(|point| point.byte <= target)
+                .checked_sub(1)?;
+            let point = self.0.points[checkpoint];
+            if point.byte > cursor.byte {
+                cursor = point;
+            }
+            let mut clusters = body.get(cursor.byte..)?.graphemes(true);
+            while cursor.byte < target {
+                let cluster = clusters.next()?;
+                cursor.byte += cluster.len();
+                cursor.native += cluster.encode_utf16().count();
+                cursor.glyph += 1;
+            }
+            if cursor.byte == target {
+                result.push(cursor.glyph);
+            }
+        }
+        Some(result)
+    }
+
     pub fn index_at_byte(&self, body: &str, byte: usize) -> Option<usize> {
         if !self.valid_body(body) || byte > body.len() {
             return None;
@@ -209,6 +246,49 @@ impl VisualLineIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ordered_paint_boundaries_match_complete_grapheme_coordinates() {
+        for body in [
+            String::new(),
+            "word 文😀e\u{301}\t ".repeat(800),
+            "🇺🇸🇫🇷👩‍👩‍👧‍👦क्ष ".repeat(400),
+            format!("{}e{}tail", "x".repeat(513), "\u{301}".repeat(1000)),
+        ] {
+            let index = VisualLineIndex::new(&body).unwrap();
+            let boundaries = body
+                .grapheme_indices(true)
+                .map(|(byte, _)| byte)
+                .chain(std::iter::once(body.len()))
+                .collect::<Vec<_>>();
+            let queries = (0..=body.len()).collect::<Vec<_>>();
+            for queries in queries.chunks(1024) {
+                let expected = queries
+                    .iter()
+                    .filter_map(|byte| boundaries.binary_search(byte).ok())
+                    .collect::<Vec<_>>();
+                assert_eq!(index.boundary_glyphs(&body, queries), Some(expected));
+            }
+            assert_eq!(
+                index.boundary_glyphs(&body, &[0, 0, body.len(), body.len()]),
+                Some(vec![0, 0, boundaries.len() - 1, boundaries.len() - 1])
+            );
+            let sparse = boundaries.iter().copied().step_by(97).collect::<Vec<_>>();
+            assert_eq!(
+                index.boundary_glyphs(&body, &sparse),
+                Some((0..boundaries.len()).step_by(97).collect())
+            );
+            assert_eq!(index.boundary_glyphs(&body, &[]), Some(Vec::new()));
+            assert!(index.boundary_glyphs(&body, &[body.len() + 1]).is_none());
+            assert!(index.boundary_glyphs(&body, &[1, 0]).is_none());
+            assert!(index.boundary_glyphs("mismatched length", &[0]).is_none());
+            assert!(
+                index
+                    .boundary_glyphs(&body, &vec![0; super::super::MAX_ROW_GEOMETRY_ANCHORS + 1])
+                    .is_none()
+            );
+        }
+    }
+
     #[test]
     fn tab_metadata_retains_exact_source_snapshot() {
         let prefix = "文😀e\u{301}".repeat(10000);

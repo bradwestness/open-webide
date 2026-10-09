@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share Unicode traversal across ordered styled-paragraph anchor boundaries,
+  preserving exact grapheme admission and sparse-checkpoint fallbacks.
+
 - Use production tooltip styling in browser regressions, avoiding layout-induced
   dismissal and cascading menu/composer focus failures.
 
