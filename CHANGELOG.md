@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Preserve pending commit detail while loading older history in both project modes;
+  verify disposed file-open callbacks complete safely without async errors.
+
 - Polish Changes and History without refresh layout shifts: retain matching results
   on failures, anchor feedback, group composer actions and reserve header progress.
   Draft staged commits with the exact primary model and visible context/output/

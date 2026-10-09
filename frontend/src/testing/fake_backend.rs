@@ -154,6 +154,7 @@ pub struct FakeBackend {
     pub persisted_edits: RefCell<BTreeMap<(i64, String), PersistedEdit>>,
     pub resolution_error: RefCell<Option<String>>,
     pub file_write_results: RefCell<VecDeque<Deferred<()>>>,
+    pub file_read_results: RefCell<VecDeque<Deferred<String>>>,
     pub file_list_results: RefCell<VecDeque<Deferred<Vec<FileEntry>>>>,
     pub pending_results: RefCell<VecDeque<Deferred<Vec<PersistedEdit>>>>,
     pub resolution_results: RefCell<VecDeque<Deferred<()>>>,
@@ -1182,6 +1183,12 @@ impl Backend for FakeBackend {
             self.calls.borrow_mut().push(Call::Request {
                 method: "read_file",
             });
+            let pending = self.file_read_results.borrow_mut().pop_front();
+            if let Some(pending) = pending {
+                return pending
+                    .await
+                    .unwrap_or_else(|_| Err("response dropped".into()));
+            }
             self.read(project_id, path)
         })
     }

@@ -37,13 +37,29 @@ impl ProjectHost {
     ) -> Self {
         let local = StoredValue::new_local(HashMap::new());
         let epoch = StoredValue::new_local(Rc::new(Cell::new(0u64)));
+        let previous = StoredValue::new_local(None);
         Effect::new(move |_| {
-            projects.projects.track();
-            projects.local_handles.track();
-            settings.bridge_url.track();
-            auth.generation.track();
-            local.update_value(HashMap::clear);
-            epoch.with_value(|epoch| epoch.set(epoch.get().wrapping_add(1)));
+            let identity = (
+                projects.projects.with(|projects| {
+                    projects
+                        .iter()
+                        .map(|project| (project.id, (project.mode, project.path.clone())))
+                        .collect::<std::collections::BTreeMap<_, _>>()
+                }),
+                projects.local_handles.with(|handles| {
+                    handles
+                        .iter()
+                        .map(|(id, handle)| (*id, handle.clone()))
+                        .collect::<std::collections::BTreeMap<_, _>>()
+                }),
+                settings.bridge_url.get(),
+                auth.generation.get(),
+            );
+            if previous.with_value(|previous| previous.as_ref() != Some(&identity)) {
+                local.update_value(HashMap::clear);
+                epoch.with_value(|epoch| epoch.set(epoch.get().wrapping_add(1)));
+            }
+            previous.set_value(Some(identity));
         });
         Self {
             api,

@@ -43,6 +43,7 @@ export function gitHttp() {
         if (path === '/git/branches') return mock.branchesError ? json({error:'cannot list branches'}, 400) : json(mock.branches);
         if (path === '/git/checkout') { if (mock.checkoutError) return json({error:'uncommitted changes'}, 400); const previous = mock.currentBranch; mock.currentBranch = body.branch; return json({branch:body.branch,previous_branch:previous,switched:true}); }
         if (path === '/git/commit') return mock.commitError ? json({error:'commit failed'},400) : json({commit_hash:'abc',summary:'saved',is_signed:false});
+        if (path === '/git/sync' && mock.deferSync) await new Promise(resolve => { mock.syncResolve = resolve; });
         if (path === '/git/sync') return mock.syncError ? json({error:'sync failed'},400) : json({remote:'origin',branch:'main',pulled_commits:0,pushed_commits:0,output:''});
         throw new Error(path);
     };
@@ -53,7 +54,7 @@ export function gitHistoryFixture(mock, history, diff) { mock.history = JSON.par
 export function gitDiff(mock, diff) { mock.diff = diff; }
 export function gitBranches(mock, branches) { mock.branches = JSON.parse(branches); mock.currentBranch = "main"; }
 export function gitCalls(mock) { return JSON.stringify(mock.calls); }
-export function gitRelease(mock, field) { mock[field] = false; const resolve = field === "deferHistory" ? mock.historyResolve : field === "deferPaths" ? mock.pathsResolve : mock.diffResolve; if (resolve) resolve(); }
+export function gitRelease(mock, field) { mock[field] = false; const resolve = field === "deferSync" ? mock.syncResolve : field === "deferHistory" ? mock.historyResolve : field === "deferPaths" ? mock.pathsResolve : mock.diffResolve; if (resolve) resolve(); }
 export function gitChange(mock, field, value) { mock[field] = value; }
 export function gitRestore(mock) { mock.restore(); }
 "#)]
