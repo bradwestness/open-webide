@@ -493,14 +493,14 @@ impl SyntaxDocument {
                 protected.push((range, closed, kind));
             }
         }
-        Structure::prepare_parsed(
+        Some(Structure::prepare_parsed(
             self.text.clone(),
             self.language,
             protected,
             scopes,
             opaque_starts,
             contexts.selections,
-        )
+        ))
     }
 
     fn clear(&mut self) {

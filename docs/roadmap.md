@@ -124,7 +124,11 @@ tracks the remaining work rather than every optimization already shipped.
   work. The final bracket pass now retains its stack and region/scope cursors
   across bounded batches, hiding incomplete structures until publication. It
   skips opaque regions and languages without brackets while preserving scope
-  boundaries. Metadata collection, validation/sorting and final paint assembly
+  boundaries. Final structure metadata now validates, orders and deduplicates
+  across bounded batches, preserving stable range order and rejecting invalid
+  coordinates before bracket linking. Nearly ordered lists avoid scratch tables;
+  heavily disordered lists use a bounded stable merge fallback. Context collection,
+  earlier reconciliation/sorting, scratch allocation and final paint assembly
   remain unbounded.
 - [ ] **Source ownership and storage:** finish remaining external parser snapshots,
   changed-revision source comparisons, transport serialization, diff shaping and

@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Validate, stably order and deduplicate final syntax structure metadata across
+  bounded worker batches, retaining exact source ownership and hiding incomplete
+  contexts in both workspace modes.
+
 - Settle Git sync and file-open requests safely after scope changes or closed dialogs,
   preserve editor reads across chat-session changes, and retain pending history
   selections while loading more commits. Keep timeline popovers inside their panel

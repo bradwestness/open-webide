@@ -3047,3 +3047,41 @@ reply, including all 8,000 linked brackets. Parser/record caps and runtime/test
 deadlines remain unchanged. The unchanged browser fixture now passes through
 cold and warm worker requests in each workspace mode with LF/CRLF, retaining
 exact fresh-analysis comparison and all 8,000 paired-bracket assertions.
+
+### Cooperative final structure metadata (2026-10-09)
+
+The owned final structure job now validates scopes, protected ranges and selection
+coordinates, stably orders protected/selection/opaque metadata and deduplicates
+selection/opaque lists across bounded batches before bracket linking. Each
+metadata operation examines, compares or moves a constant number of records.
+Invalid metadata remains rejected after yielding; unfinished structures remain
+hidden, and cancellation or source replacement drops their exact source owner.
+
+Already ordered lists need only a bounded linear check. Nearly ordered parser
+ranges use adjacent stable moves without scratch tables. This adaptive path has
+an eight-operations-per-record limit, then uses an indexed stable merge fallback
+with bounded initialization, merge, permutation and record moves. Scratch capacity
+allocation remains outside the record budget. Earlier context collection and
+reconciliation/sorting, final paint/fold assembly and transport still need bounded
+work; this checkpoint does not complete those requirements.
+
+All 558 parser-enabled and 422 minimal core tests pass (4.36/4.96 seconds),
+including the unchanged short-slice completion limit. Independent tests compare
+stable sort/dedup results and lexical bracket oracles through one/seven/256-unit
+batches with LF/CRLF. Other tests cover reversed order, equal-key stability,
+constant comparisons per step, nearly ordered enclosing ranges without scratch
+tables, persistent invalid-range rejection and source release. Strict core and release WASM component-test lint
+pass. All seven optimized Chromium cooperative contracts pass in 8.52 seconds
+through both workspace modes, including cold/warm embedded scopes, cancellation,
+stale results, worker transport and browser fallback.
+
+A refreshed production baseline, before this metadata change, admits a truly
+styled 1,048,567-byte string and verifies complete-source beginning edits in both
+modes. [Raw Linux traces](editor-performance/structure-metadata-baseline-linux.jsonl)
+record one fresh browser/runtime per mode under the existing four-CPU/10-GB
+container limits. Local/remote load-to-paint was 7,447/6,535 ms, horizontal
+scroll-to-paint 28/23 ms and beginning-edit-to-paint 162/342 ms. Peak Chrome PSS
+was 714,384/694,216 KiB, with 350/200-ms maximum frames. Complete source and
+String styling were preserved; these timing/memory results still fail the goal's
+responsiveness gate. These are instrumented single samples, not repeated release
+proof or evidence that final metadata ordering fixes the long-row shaping cost.
