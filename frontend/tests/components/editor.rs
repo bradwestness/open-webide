@@ -8924,69 +8924,76 @@ async fn cooperative_worker_row_index_preserves_dense_rows_in_both_modes() {
                 actions.install_syntax_transport(installed);
                 view! { <span>{move || actions.syntax_is_pending().to_string()}</span> }
             });
-            wait_until("dense row worker request", || {
-                !transport.pending.borrow().is_empty()
-            })
-            .await;
-            let DeferredSyntaxReply { message, sender } =
-                transport.pending.borrow_mut().pop_front().unwrap();
+            let cold_source = source.clone();
             let mut worker = SyntaxWorker::default();
-            assert!(worker.enqueue(&message).is_none());
-            let actions = EditorActions::new(mounted.state.workspace);
-            let mut batches = 0;
-            let reply = loop {
-                batches += 1;
-                assert!(batches < 2_000);
-                let mut checks = 0;
-                if let Some(reply) = worker.advance(
-                    || true,
-                    || {
-                        checks += 1;
-                        checks >= 4
-                    },
-                ) {
-                    break reply;
+            for (index, source) in [source.clone(), format!("// changed 文😀{ending}{source}")]
+                .into_iter()
+                .enumerate()
+            {
+                if index > 0 {
+                    mounted.state.workspace.content.set(source.clone().into());
                 }
-                assert!(actions.syntax_is_pending());
-                assert!(
-                    mounted
-                        .state
-                        .workspace
-                        .editor_preparation
-                        .get_untracked()
-                        .is_none()
+                wait_until("dense row worker request", || {
+                    !transport.pending.borrow().is_empty()
+                })
+                .await;
+                let DeferredSyntaxReply { message, sender } =
+                    transport.pending.borrow_mut().pop_front().unwrap();
+                assert!(worker.enqueue(&message).is_none());
+                let actions = EditorActions::new(mounted.state.workspace);
+                let mut batches = 0;
+                let reply = loop {
+                    batches += 1;
+                    assert!(batches < 2_000);
+                    let mut checks = 0;
+                    if let Some(reply) = worker.advance(
+                        || true,
+                        || {
+                            checks += 1;
+                            checks >= 4
+                        },
+                    ) {
+                        break reply;
+                    }
+                    assert!(actions.syntax_is_pending());
+                    let previous = mounted.state.workspace.editor_preparation.get_untracked();
+                    if index == 0 {
+                        assert!(previous.is_none());
+                    } else {
+                        assert_eq!(previous.unwrap().analysis.unwrap().source(), cold_source);
+                    }
+                    if batches % 4 == 0 {
+                        openwebide_frontend::util::yield_task().await;
+                    }
+                };
+                assert!(batches > 10, "{mode:?}: dense index preparation must yield");
+                sender.send(Ok(reply)).unwrap();
+                wait_until("dense row syntax published", || {
+                    !actions.syntax_is_pending()
+                })
+                .await;
+                let prepared = mounted
+                    .state
+                    .workspace
+                    .editor_preparation
+                    .get_untracked()
+                    .unwrap();
+                let analysis = prepared.analysis.unwrap();
+                assert_eq!(analysis.source(), source);
+                assert_eq!(
+                    analysis.highlights().unwrap().len(),
+                    source.split('\n').count()
                 );
-                if batches % 4 == 0 {
-                    openwebide_frontend::util::yield_task().await;
-                }
-            };
-            assert!(batches > 10, "{mode:?}: dense index preparation must yield");
-            sender.send(Ok(reply)).unwrap();
-            wait_until("dense row syntax published", || {
-                !actions.syntax_is_pending()
-            })
-            .await;
-            let prepared = mounted
-                .state
-                .workspace
-                .editor_preparation
-                .get_untracked()
-                .unwrap();
-            let analysis = prepared.analysis.unwrap();
-            assert_eq!(analysis.source(), source);
-            assert_eq!(
-                analysis.highlights().unwrap().len(),
-                source.split('\n').count()
-            );
-            let (_, expected) = openwebide_core::editor::SyntaxDocument::new(
-                openwebide_core::highlight::Language::Rust,
-            )
-            .unwrap()
-            .prepare_shared(std::sync::Arc::new(source.clone()), 4, || true);
-            assert_eq!(
-                serde_json::to_value(analysis.transfer_data()).unwrap(),
-                serde_json::to_value(expected.unwrap().transfer_data()).unwrap()
-            );
+                let (_, expected) = openwebide_core::editor::SyntaxDocument::new(
+                    openwebide_core::highlight::Language::Rust,
+                )
+                .unwrap()
+                .prepare_shared(std::sync::Arc::new(source.clone()), 4, || true);
+                assert_eq!(
+                    serde_json::to_value(analysis.transfer_data()).unwrap(),
+                    serde_json::to_value(expected.unwrap().transfer_data()).unwrap()
+                );
+            }
         }
     }
 }
