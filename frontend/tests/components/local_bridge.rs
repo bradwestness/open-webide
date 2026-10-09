@@ -335,6 +335,12 @@ async fn local_runs_use_discovered_tools_and_hide_them_when_bridge_cannot_see_fo
         state.seed_project();
         state.seed_connection();
         state.seed_session();
+        // This contract varies bridge discovery, not the model's tool-schema budget.
+        state.fake.connections.borrow_mut()[0].context_limit = Some(32768);
+        state
+            .settings
+            .connections
+            .update(|connections| connections[0].context_limit = Some(32768));
         state
             .projects
             .projects
@@ -376,6 +382,11 @@ async fn local_runs_use_discovered_tools_and_hide_them_when_bridge_cannot_see_fo
                 break;
             }
         }
+        assert!(
+            mounted.state.chat.error.get_untracked().is_none(),
+            "{:?}",
+            mounted.state.chat.error.get_untracked()
+        );
         let requests = mounted.state.fake.completion_requests.borrow();
         assert_eq!(requests.len(), before + 1);
         let tools = &requests.last().unwrap().tools;
@@ -1296,7 +1307,7 @@ async fn browser_chat_and_agent_compact_before_reply_and_keep_history() {
                         model: "qwen3:8b".into(),
                     },
                     settings: ModelSettings {
-                        context_limit: Some(8192),
+                        context_limit: Some(32768),
                         tools: Some(tools),
                         ..Default::default()
                     },
@@ -1307,7 +1318,7 @@ async fn browser_chat_and_agent_compact_before_reply_and_keep_history() {
                     id: 1,
                     session_id: 1,
                     role: Role::Assistant,
-                    content: "original history ".repeat(4000),
+                    content: "original history ".repeat(16000),
                     created_at: 0,
                     usage: None,
                     tool_calls: None,
@@ -1360,7 +1371,7 @@ async fn browser_chat_and_agent_compact_before_reply_and_keep_history() {
                 ConversationEntry::ToolStep(_) | ConversationEntry::Task(_) => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(messages[0].content, "original history ".repeat(4000));
+        assert_eq!(messages[0].content, "original history ".repeat(16000));
         let saved = messages
             .iter()
             .find(|message| openwebide_core::Compaction::parse(&message.content).is_some())

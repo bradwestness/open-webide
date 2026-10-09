@@ -744,7 +744,7 @@ body {
   color: var(--text-muted);
 }
 
-/* Keep the final progress slot fixed so right-aligned controls never move. */
+/* Keep the progress slot fixed so Output stays anchored at the right edge. */
 .status-preparation { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 1.5em; width: 1.5em; }
 
 .status.online {

@@ -128,18 +128,76 @@ impl LineEdit {
         (scan.status == LineReplacementStatus::Ready).then_some(scan.rows)
     }
 
+    #[cfg(feature = "editor-parser")]
+    pub fn prepare_publication(&self, replacement: Vec<Line>) -> LinePublication {
+        LinePublication {
+            replaced: self.rows.clone(),
+            start: self.bytes.start,
+            end: self.bytes.end,
+            old_end: self.old_end,
+            replacement,
+            next: Vec::new(),
+            complete: false,
+        }
+    }
+
     pub fn apply(&self, rows: &mut Vec<Line>, mut replacement: Vec<Line>) {
         for row in &mut rows[self.rows.end..] {
-            row.start = self.bytes.end + (row.start - self.old_end);
-            row.body_end = self.bytes.end + (row.body_end - self.old_end);
-            row.end = self.bytes.end + (row.end - self.old_end);
+            *row = shifted_line(row, self.old_end, self.bytes.end);
         }
         for row in &mut replacement {
-            row.start += self.bytes.start;
-            row.body_end += self.bytes.start;
-            row.end += self.bytes.start;
+            *row = shifted_line(row, 0, self.bytes.start);
         }
         rows.splice(self.rows.clone(), replacement);
+    }
+}
+
+fn shifted_line(row: &Line, old_start: usize, new_start: usize) -> Line {
+    Line {
+        start: new_start + (row.start - old_start),
+        body_end: new_start + (row.body_end - old_start),
+        end: new_start + (row.end - old_start),
+    }
+}
+
+/// Retain the complete old index while assembling its replacement in row batches.
+/// Dropping pending work leaves the original coordinates untouched.
+#[cfg(feature = "editor-parser")]
+pub(super) struct LinePublication {
+    replaced: Range<usize>,
+    start: usize,
+    end: usize,
+    old_end: usize,
+    replacement: Vec<Line>,
+    next: Vec<Line>,
+    complete: bool,
+}
+#[cfg(feature = "editor-parser")]
+impl LinePublication {
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+    pub fn advance(&mut self, rows: &[Line], budget: usize) -> bool {
+        let total = rows.len() - self.replaced.len() + self.replacement.len();
+        let end = total.min(self.next.len().saturating_add(budget));
+        while self.next.len() < end {
+            let index = self.next.len();
+            let row = if index < self.replaced.start {
+                rows[index].clone()
+            } else if index < self.replaced.start + self.replacement.len() {
+                let row = &self.replacement[index - self.replaced.start];
+                shifted_line(row, 0, self.start)
+            } else {
+                let row = &rows[index - self.replacement.len() + self.replaced.len()];
+                shifted_line(row, self.old_end, self.end)
+            };
+            self.next.push(row);
+        }
+        self.complete = self.next.len() == total;
+        self.complete
+    }
+    pub fn finish(self) -> Option<Vec<Line>> {
+        self.complete.then_some(self.next)
     }
 }
 
@@ -582,6 +640,84 @@ mod tests {
         assert_eq!(doc.selections(), &[Selection { anchor: 9, head: 5 }]);
         doc.undo();
         assert_eq!(doc.text(), "a😀z");
+    }
+}
+
+#[cfg(all(test, feature = "editor-parser"))]
+mod publication_tests {
+    use super::*;
+
+    #[test]
+    fn batched_index_matches_complete_unicode_crlf_indexes_for_all_edit_positions() {
+        for old in ["", "文😀", "a\r\nb\n", "a\n\nlast", "\r\n", "first\nlast\r"] {
+            let original = lines(old);
+            let positions = old
+                .char_indices()
+                .map(|(index, _)| index)
+                .chain(std::iter::once(old.len()))
+                .collect::<Vec<_>>();
+            for &start in &positions {
+                for &end in positions.iter().filter(|&&end| end >= start) {
+                    for inserted in ["", "😀", "\n", "\r\n", "文\r\nnew\n"] {
+                        let source = format!("{}{inserted}{}", &old[..start], &old[end..]);
+                        let edit = LineEdit::new(
+                            &original,
+                            old.len(),
+                            source.len(),
+                            start..end,
+                            start + inserted.len(),
+                        );
+                        let replacement = line_iter(&source[edit.bytes.clone()])
+                            .filter(|row| !edit.trim_suffix_row(Some(row)))
+                            .collect::<Vec<_>>();
+                        let mut synchronous = original.clone();
+                        edit.apply(&mut synchronous, replacement.clone());
+                        assert_eq!(synchronous, lines(&source));
+                        for budget in [1, 2, 256] {
+                            let mut job = edit.prepare_publication(replacement.clone());
+                            assert!(!job.advance(&original, 0));
+                            loop {
+                                let before = job.next.len();
+                                let complete = job.advance(&original, budget);
+                                assert!(job.next.len() - before <= budget);
+                                assert_eq!(
+                                    original,
+                                    lines(old),
+                                    "pending publication preserves its base"
+                                );
+                                if complete {
+                                    break;
+                                }
+                            }
+                            assert_eq!(
+                                job.finish().unwrap(),
+                                lines(&source),
+                                "{old:?} {start}..{end} {inserted:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn abandoning_large_prefix_and_suffix_publication_keeps_original_coordinates() {
+        let old = "文😀\r\n".repeat(40_000);
+        let original = lines(&old);
+        for row in [0, 20_000, 39_999] {
+            let start = original[row].start;
+            let source = format!("{}new\n{}", &old[..start], &old[start..]);
+            let edit = LineEdit::new(&original, old.len(), source.len(), start..start, start + 4);
+            let replacement = line_iter(&source[edit.bytes.clone()])
+                .filter(|row| !edit.trim_suffix_row(Some(row)))
+                .collect();
+            let mut job = edit.prepare_publication(replacement);
+            assert!(!job.advance(&original, 256));
+            assert_eq!(job.next.len(), 256);
+            assert!(job.finish().is_none());
+            assert_eq!(original, lines(&old));
+        }
     }
 }
 

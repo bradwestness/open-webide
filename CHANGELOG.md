@@ -9,6 +9,12 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Yield while publishing parser line indexes after large-file edits, preserving
+  the previous coordinates until the complete replacement is ready. Cancelled
+  or superseded work cannot publish partial indexes in either workspace mode.
+- Keep browser discovery and compaction fixtures sized for expanded tool schemas,
+  preserving over-capacity compaction coverage and bridge timeout checks.
+
 - Carry cursor-provided parent context through syntax color classifiers and
   retained part checks, avoiding repeated tree searches on wide documents while
   preserving parent-dependent colors, folds and editing contexts.
@@ -202,7 +208,7 @@ for what's still ahead.
   Preserve existing prompt libraries and session selections during migration;
   allow different accounts to use the same prompt names.
 
-- Show a compact syntax-preparation spinner in a reserved slot after Output,
+- Show a compact syntax-preparation spinner in a reserved slot before Output,
   keeping the existing controls stable. Hide it when grammar colors or terminal
   plain fallback are ready in either workspace mode.
 - Preserve TypeScript primitive-type colors without overlapping spans or treating

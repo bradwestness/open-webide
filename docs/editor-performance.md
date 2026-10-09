@@ -2915,3 +2915,52 @@ modes, including dense admitted rows and warm parser/plain-source replacement.
 Dense
 source record budgets, final metadata/paint assembly, actual styled near-limit
 rendering, geometry, memory and physical device gates remain open.
+
+
+### Cooperative parser index publication (2026-10-09)
+
+Changed-row scanning now feeds a retained publication job. It copies the old
+prefix, translates replacement coordinates and shifts retained suffix coordinates
+in batches of at most 256 rows, observing cancellation/yield between batches.
+The old index stays intact until the entire replacement is ready; publication
+swaps the completed Vec once before constructing the parser InputEdit. Work is
+bound to the exact old/new source allocations. Cancellation, source supersession
+and synchronous takeover discard partial publication. Both workspace adapters
+use the same syntax-worker/facade implementation. Coordinate translation policy
+is shared with synchronous LineEdit application, which retains its in-place
+primitive to avoid copying unchanged prefixes during ordinary document edits.
+
+This removes an uninterrupted parser suffix-shift/splice pass. It still copies
+the complete index over multiple batches and may grow Vec capacity during a
+batch. Allocator behavior, synchronous document indexes, final context/paint
+assembly and transport serialization remain open performance gates.
+
+Publication regressions compare a complete line-iterator oracle at every Unicode
+edit boundary with empty, LF, CRLF and multi-row replacements. Batches include
+zero/one-row budgets, large unchanged prefixes and suffixes, and discarded jobs.
+Parser regressions cover cancellation, supersession, synchronous takeover and
+fresh-analysis equality after completed publication. Existing embedded-body
+phase tests explicitly prime index publication before testing their own yield
+boundaries, preserving their parser assertions.
+
+All 528 parser-enabled and 405 minimal core contracts pass. Strict core lint
+passes. The expanded worker browser fixture retains one worker through a
+49,000-row cold load and a beginning-of-file edit, for LF/CRLF in each workspace
+mode, with exact fresh-analysis comparison and no partial frontend publication.
+All six optimized cooperative Chromium contracts pass in 6.68 seconds.
+Strict release WASM component-test lint also passes. These results do not prove
+the full editor responsiveness, memory or physical device gates.
+
+CI run `37902004036` finished with native, WASM, Windows and Docker jobs green,
+but two local-bridge browser fixtures failed: discovery missed its expected completion count, while compaction had no
+room for a summary after tool schemas expanded. Both fixtures still use an
+8,192-token model budget. The CI completion gate remains open until fixture corrections and
+the complete browser suite are verified.
+
+The two CI fixtures now use a 32,768-token model capacity. Compaction history
+increases proportionally from 4,000 to 16,000 repeated entries, so both plain and
+tool-enabled cases still exceed capacity and must compact. Discovery adds an
+explicit no-error assertion. All 24 local-bridge Chromium contracts pass in
+19.03 seconds, retaining discovery fallback/timeout and compaction persistence
+assertions. No production model limits or test deadlines changed. Full CI on
+the new checkpoint remains to be verified.

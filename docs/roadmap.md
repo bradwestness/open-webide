@@ -104,8 +104,10 @@ tracks the remaining work rather than every optimization already shipped.
   shares the resumable UTF-8 comparison used by plain-row preparation. Syntax
   admission now counts newlines across bounded worker/browser tasks before
   parsing or serialization. Changed-row scanning now retains a source-owned
-  replacement job across byte/row budgets; suffix shifts, splice/allocation and
-  final index publication still need bounded work.
+  replacement job across byte/row budgets. Parser index publication now copies
+  retained prefixes and shifts suffixes in bounded row batches while preserving
+  the original index until completion; Vec growth/allocation remains. Synchronous
+  document indexes still shift/splice in place.
   Resolved worker parser
   replacements reuse their validated spans only
   for the exact retained base allocation. Intersecting plain fallback rows retain
