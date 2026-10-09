@@ -18467,6 +18467,159 @@ async fn bounded_wrapped_paragraphs_preserve_complete_styled_geometry_in_both_mo
 }
 
 #[wasm_bindgen_test]
+async fn wrapped_paragraph_edits_reuse_exact_source_owned_geometry_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::{
+        components::{bounded_wrapped_matches_complete, take_paragraph_suffix_probes},
+        state_actions::editor::EditorActions,
+    };
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for (styled, reconnect) in [false, true]
+            .into_iter()
+            .flat_map(|styled| [false, true].map(move |reconnect| (styled, reconnect)))
+        {
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let body = if reconnect {
+                // Production String pattern at a smaller size: require
+                // measured reconnection before reusing shifted geometry.
+                "文😀 words ".repeat(16_000)
+            } else {
+                // Different wrapping phase may require fresh measurements.
+                "word 文😀e\u{301} != -> café ".repeat(8000)
+            };
+            let source = if styled {
+                format!("const VALUE: &str = \"{body}\";")
+            } else {
+                body
+            };
+            let original = source.clone();
+            let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+            let capture = slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some(
+                    if styled {
+                        "wrapped-suffix.rs"
+                    } else {
+                        "wrapped-suffix.txt"
+                    }
+                    .into(),
+                ));
+                let actions = EditorActions::new(state.workspace);
+                capture.set(Some(actions));
+                if styled {
+                    actions.install_syntax_transport(installed);
+                }
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = true);
+                state.workspace.content.set(source.into());
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+            });
+            let actions = slot.get().unwrap();
+            let ready = |expected: &str| {
+                if styled && !transport.pending.borrow().is_empty() {
+                    transport.respond(true);
+                }
+                mounted
+                    .state
+                    .workspace
+                    .editor_paragraph_cache
+                    .with_untracked(|cache| {
+                        cache.as_ref().is_some_and(|cache| {
+                            !cache.rows.is_empty()
+                                && (!styled || cache.paint.prepared_source)
+                                && cache.paint.projection.line_body(0) == Some(expected)
+                        })
+                    })
+                    && actions.measured_rows().is_some()
+                    && !actions.native_geometry_pending()
+            };
+            super::support::wait_until_with_timeout(
+                "initial retained wrapped measurements",
+                30_000,
+                || ready(&original),
+            )
+            .await;
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            let mut previous = original;
+            for change in 0..3 {
+                let mut changed = previous.clone();
+                let at = if change == 0 {
+                    previous.find("word").unwrap()
+                } else if change == 1 {
+                    0
+                } else {
+                    previous.len()
+                };
+                if change == 0 {
+                    changed.replace_range(at..at + 1, "z");
+                } else {
+                    changed.insert(at, 'z');
+                }
+                take_paragraph_suffix_probes();
+                actions
+                    .native_input(
+                        changed.clone(),
+                        Selection::caret(at + 1),
+                        "insertText",
+                        f64::from(change + 1),
+                    )
+                    .unwrap();
+                super::support::wait_until_with_timeout(
+                    "edited wrapped replay and complete geometry",
+                    30_000,
+                    || ready(&changed),
+                )
+                .await;
+                let reused = take_paragraph_suffix_probes();
+                if change == 0 || (change == 1 && styled && reconnect) {
+                    assert!(
+                        reused > 2,
+                        "{mode:?} styled={styled} reconnect={reconnect} change={change} reused={reused}"
+                    );
+                }
+                let scope = mounted
+                    .state
+                    .workspace
+                    .editor_paragraph_cache
+                    .get_untracked()
+                    .unwrap()
+                    .paint;
+                assert!(
+                    bounded_wrapped_matches_complete(&input, &scope, actions).await,
+                    "{mode:?} styled={styled} reconnect={reconnect} change={change}: every retained glyph and complete extent"
+                );
+                let suffix = actions.paragraph_suffix(&scope, 0).unwrap();
+                let mut plan = actions.prepare_wrapped_paragraph(&scope, 0).unwrap();
+                assert!(actions.resume_paragraph_measurements(&scope, 0, &mut plan) > 2);
+                mounted
+                    .state
+                    .auth
+                    .generation
+                    .update(|generation| *generation += 1);
+                assert_eq!(actions.resume_paragraph_suffix(&suffix, &mut plan), 0);
+                assert!(plan.probe().is_some());
+                mounted
+                    .state
+                    .auth
+                    .generation
+                    .update(|generation| *generation -= 1);
+                assert_eq!(actions.source(), changed);
+                previous = changed;
+            }
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn wrapped_chunk_cancellation_discards_old_geometry_in_both_modes() {
     #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
     export function interruptWrappedChunk(input, prefix) {

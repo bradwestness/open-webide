@@ -3520,3 +3520,68 @@ Optimized Chrome contracts pass for retained source/account/project/font/layout
 ownership, painted caret movement and Home/End visibility, independent primary
 caret/selection geometry, and wrapped fragment scroll/Find in both modes.
 Formatting and whitespace checks pass. Exact-head CI is tracked separately.
+
+### Reusing completed wrapped paragraph probes
+
+Wrapped and unwrapped layout now share the retained ParagraphMeasurements cache
+and the EditorActions replay facade. Geometry policies stay in Rust core; the DOM
+adapter supplies actual styled rectangles and yields between suffix batches.
+Wrapped replay verifies exact source bytes, original clipped paint-run boundaries,
+byte/glyph mapping, scoped font/layout provenance and dense incoming overlap.
+Original paint-run anchors can survive source shifts. A changed incoming gap can
+translate the first visual row only with dense proof across its line break and
+reconnection through the normal fresh-probe gate. Overflow-sensitive changed-gap
+probes and missing anchors fall back to fresh measurement. The terminal probe is
+always fresh, so cached intermediate geometry cannot authorize terminal extents.
+The existing quarter-pixel overlap tolerance and 128-K retained-rectangle budget
+are unchanged.
+
+The browser regression preserves the complex Unicode/operator workload whose
+wrapping phase may not reconnect after a prefix insertion. It also exercises the
+actual production String pattern, requiring positive shifted suffix reuse where
+its measured phase reconnects. Both workloads compare every retained anchor and
+complete dimensions against independently laid-out complete source in both modes.
+The existing five-family/healing/ligature/whitespace matrix still passes.
+
+The optimized production candidate `openwebide-frontend-d2e8c2ef5615904a.js` was
+measured with the same frozen backend, image, Chromium version and four-CPU/
+10-GiB/1-GiB-shm limits as the preceding retained-caret checkpoint. No local builds
+ran during these samples. The mounted checkout header is `39c1ba2`; the separate
+candidate bundle contains this pending replay checkpoint. The actual source is
+1,048,567 bytes with prepared String styling, exact beginning/end source caret,
+complete source verified after input and unchanged 547,721-by-264-px dimensions.
+
+[Beginning traces](editor-performance/wrapped-replay-beginning-linux.jsonl) and
+[end traces](editor-performance/wrapped-replay-end-linux.jsonl) retain every sample
+without truncation.
+
+| Input position | Mode/sample | Load ms | Input ms | Scroll ms | Overall max frame ms | Input probes | Peak Chrome PSS KiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| beginning | local 1 | 2855.6 | 1943.7 | 47.9 | 183.3 | 70 | 730008 |
+| beginning | local 2 | 3856.1 | 1568.3 | 72.2 | 183.3 | 70 | 696786 |
+| beginning | remote 1 | 3292.9 | 1340 | 49.1 | 183.3 | 70 | 731560 |
+| beginning | remote 2 | 2788.9 | 1292.7 | 45 | 183.3 | 70 | 731057 |
+| end | local 1 | 2760.0 | 123.1 | 39.4 | 216.8 | 2 | 727682 |
+| end | local 2 | 2629.3 | 120.8 | 67.3 | 149.9 | 2 | 746818 |
+| end | remote 1 | 2758.3 | 147 | 42.2 | 166.7 | 2 | 725203 |
+| end | remote 2 | 2842.5 | 119.7 | 44.8 | 183.3 | 2 | 727670 |
+
+End edits now require two fresh input probes and 119.7–147.0 ms, compared with
+1,216.1–1,249.1 ms in the preceding end samples. The near-limit beginning insertion
+still requires 70 fresh probes and 1,292.7–1,943.7 ms; the smaller browser regression's
+reconnecting suffix does not establish near-limit reconnection. The production
+trace therefore proves a substantial end-edit improvement, not a general wrapped
+editing or startup improvement. Startup remains 2.6–3.9 seconds, and peak Chrome
+PSS remains around 0.7 million KiB. Nonreconnecting layout, synchronous prefix
+replay and remaining source/run-table work remain responsiveness targets; full
+memory and physical-device gates stay open.
+
+Verification: 575 parser-enabled and 432 minimal core tests pass, including
+source/style/overlap rejection, changed-origin line-break proof, overflow rejection
+and the requirement for a fresh terminal extent. Strict native core and optimized
+WASM component-test Clippy, release Trunk build, formatting and whitespace checks
+pass. Six optimized Chrome filters cover wrapped edit replay, the five-family
+matrix, unwrapped suffix replay with stale scopes, painted caret movement,
+chunk cancellation and bounded near-limit native startup in both modes.
+Exact-head CI is checked separately; all five jobs and Project site passed for
+the preceding `39c1ba2` checkpoint.

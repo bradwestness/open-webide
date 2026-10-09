@@ -80,10 +80,13 @@ tracks the remaining work rather than every optimization already shipped.
   fallbacks, touch native input shaping and DOM-node enumeration still run
   synchronously. Establish exact browser geometry against the complete renderer;
   retained DOM, canvas widths and approximate Rust advances are insufficient.
-- [ ] **Incremental paragraph updates:** extend shifted suffix reuse to changed
-  long-token and plain-run boundaries; avoid repeated prefix segmentation for
-  over-limit styled run tables. Bound initial run-table construction and the
-  uncapped/unsupported-boundary fallbacks that still segment complete rows.
+- [ ] **Incremental paragraph updates:** wrapped prefixes and reconnecting
+  source/style-proved suffixes now reuse completed probes, with fresh terminal
+  dimensions. Finish nonreconnecting wrapped updates and extend shifted suffix
+  reuse to changed long-token and plain-run boundaries; avoid repeated prefix
+  segmentation for over-limit styled run tables. Bound initial run-table
+  construction and the uncapped/unsupported-boundary fallbacks that still segment
+  complete rows.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   parser context/selection-list extraction and final paint publication. Finish
@@ -363,30 +366,16 @@ Extend agent and editor capabilities through versioned plugin packages that user
 and the agent can manage, without requiring changes to the app for each new
 capability.
 
-- Start with tools and skills: a manifest declares identity, version, harness
-  compatibility, dependencies, configuration and required capabilities, alongside
-  tool schemas/handlers and skill instructions/resources. Build on the MCP client
-  and [database-backed project skills](agent-skills.md); keep discovery and context
-  loading bounded through the deferred-tool-loading work above. Add context/run hooks later when
-  needed; declarative UI contributions are a later stage of this same system.
-  The baseline supports skills and optional platform tool groups: package/catalog schemas, offline authoring
-  validation and CI, and a commit-pinned PR Review reference release. The status-bar
-  Plugins interface shows Installed and Available lists with individual marketplace
-  source labels, browses the official/custom Git catalogs and installs validated
-  immutable snapshots on either host (including server-host installation without an
-  open project), enables installed plugins across existing/new projects with saved
-  per-project opt-outs, applies version changes/rollback and removes plugins.
-  Web, Project Memory, Scheduling and Skill Authoring are first-party plugins;
-  core workspace tools remain built in. Execution hosts bundle a pinned baseline
-  of those four plugins and install it once per account, preserving removals,
-  chosen versions and project opt-outs; PR Review remains optional.
-  Notify is the default update policy,
-  with a status-bar count, individual updates and Update all beside the Installed heading; Automatic supports
-  compatible updates during idle app checks, and Off suppresses updates. Settings configures marketplace sources;
-  the official source is always available. Sources, caches and installation records
-  are user-scoped database data, and runs pin their package skill content. Remaining
-  work includes checks while all clients are closed, arbitrary tool runtimes/MCP contributions, dependencies/configuration,
-  file-based suggestions and agent-facing plugin management.
+- Extend the existing skills and optional platform tool-group contributions with
+  arbitrary host tool handlers and MCP servers. Add versioned tool schemas,
+  runtime contracts, capability grants and dependency/configuration validation.
+  Build on the MCP client and [database-backed project skills](agent-skills.md);
+  keep discovery and context loading bounded through deferred tool loading.
+  Add context/run hooks when needed. Core workspace tools remain built in.
+- Add host-side update checks while all clients are closed, extending the existing
+  Notify, Automatic compatible and Off policies. Persist check state and update
+  availability, bound polling/retries, and surface results in the existing Plugins
+  indicator and update controls when a client reconnects.
 - Use one package format with typed contributions rather than mutually exclusive
   plugin types. A package can combine skills, MCP servers/tools and language
   support, declarative panels/editor annotations and eventual editor hooks; validate compatibility,
@@ -464,21 +453,14 @@ capability.
   and runtime contract before claiming full language extensibility.
 - Publish first-party reference packages through the official marketplace using
   the community package format and permission rules: a GitHub integration with
-  authentication, MCP tools and review/issue skills; a skills-only review package;
-  and browser testing with host dependencies and artifacts. Add Terraform after
+  authentication, MCP tools and review/issue skills, extending the existing
+  skills-only PR Review plugin; and browser testing with host dependencies
+  and artifacts. Add Terraform after
   language contributions are available to demonstrate file recognition, syntax,
   formatting and an existing LSP server. Keep upstream runtime/server versions
   pinned and distinguish OpenWebIDE-maintained packaging from upstream ownership.
   Include the bundled Git annotations package as the reference for editor hooks,
   declarative annotations and navigation through existing Git actions.
-- Maintain the official marketplace and first-party reference packages in
-  [openwebide/plugins](https://github.com/openwebide/plugins). Use a root
-  `marketplace.json` index pointing to package directories in that same repository
-  and versioned releases. Each release declares only its immutable commit and
-  package directory; the configured marketplace supplies the repository URL,
-  with no per-package override. Use pull requests for listings and automated
-  manifest validation. Ship it as the default source using the same format and capabilities
-  as custom catalogs.
 - Make language packages discoverable when an unsupported file opens. Publish
   searchable language metadata (file extensions, exact filenames and optional
   content signatures, plus the features supplied) in the official catalog in the
@@ -519,29 +501,25 @@ capability.
   and rebuild host caches from logical database records. Local projects still
   require a paired bridge with folder access; phones viewing remote projects
   consume the server host's services without installing client packages.
-- Provide user-controlled update policies (manual, notify, or automatic compatible
-  releases), with version/channel constraints and explicit opt-in to tracking a
-  development branch. Resolve every candidate to an immutable commit; validate
-  and prepare it before activation. Updates apply to later runs/language-service
-  sessions, leave the working version intact on failure, and require renewed
-  approval for expanded permissions or changed credential access. Catalog refresh
-  and package activation are separate operations; neither branch movement nor a
-  new catalog entry silently changes a pinned active version.
-- Pin each run to its plugin versions and configuration; updates apply to later
-  runs. Validate compatibility and dependencies before activation, report failures
-  clearly, and prevent plugins from granting themselves capabilities or changing
-  the approval policy.
+- Extend update policies with version/channel constraints and explicit opt-in to
+  tracking a development branch. Require renewed approval for expanded
+  permissions or changed credential access before activating an update. Extend
+  immutable version pinning to runtime dependencies and language-service
+  sessions, including safe service transitions and preservation of active jobs.
+  Keep catalog refresh separate from package activation.
+- Extend run pinning to plugin configuration and dependency versions as those
+  contributions arrive. Validate readiness before activation and prevent plugin
+  handlers from granting themselves capabilities or changing approval policy.
 - Extend the durable dispatcher used by [Monitors](monitors.md) for plugin
   callbacks and continuing skill jobs. Define trigger contracts, persist progress,
   results and pending approvals, and pin each job to its plugin version. Verify
   restart recovery, deduplicated delivery and plugin disable/remove/update while
   jobs are pending through the shared facade in both project modes.
-- Put discovery, package validation, lifecycle, permissions, dependency resolution
-  and context contribution behind one shared plugin facade. Keep Git/forge transport,
-  database access and runtime execution in thin adapters for local and remote
-  projects. Verify matching contracts for private repositories, failed installs
-  and updates, rollback, disabled plugins, catalog outages, concurrent changes and
-  stale results after account/project/session changes. Demonstrate an agent adding
+- Extend the existing shared plugin facade and thin local/remote adapters to
+  dependency resolution, new runtimes and context contributions. Add matching
+  contracts for private repositories and new contribution types, including failed
+  preparation, updates/rollback, disablement, outages, concurrent changes and stale
+  results after account/project/session changes. Demonstrate an agent adding
   a tool plugin, testing it in both modes, enabling it for a new run and rolling it
   back.
 

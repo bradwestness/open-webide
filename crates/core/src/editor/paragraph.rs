@@ -17,9 +17,10 @@ pub struct ParagraphProbe {
 /// Exact completed probes, retained with the facade's immutable source/style scope.
 #[derive(Clone, Debug)]
 pub struct ParagraphMeasurements {
-    runs: Arc<[usize]>,
-    index: VisualLineIndex,
-    records: Vec<ParagraphMeasurement>,
+    pub(super) runs: Arc<[usize]>,
+    pub(super) index: VisualLineIndex,
+    pub(super) records: Vec<ParagraphMeasurement>,
+    pub(super) wrapped: bool,
 }
 impl ParagraphMeasurements {
     /// Original paint-run start at or before a source byte. The caller retains
@@ -33,14 +34,54 @@ impl ParagraphMeasurements {
     }
 }
 #[derive(Clone, Debug)]
-struct ParagraphMeasurement {
-    bytes: Range<usize>,
-    width: f64,
-    height: f64,
-    scroll_width: Option<f64>,
-    rectangles: Arc<[GlyphRectangle]>,
+pub(super) struct ParagraphMeasurement {
+    pub(super) bytes: Range<usize>,
+    pub(super) origin: f64,
+    pub(super) width: f64,
+    pub(super) height: f64,
+    pub(super) scroll_width: Option<f64>,
+    pub(super) rectangles: Arc<[GlyphRectangle]>,
 }
-const MAX_RETAINED_RECTANGLES: usize = 128 * 1024;
+pub(super) const MAX_RETAINED_RECTANGLES: usize = 128 * 1024;
+
+/// Stable original paint-run anchors can survive source shifts. Over-budget
+/// runs retain the existing bounded coordinate checkpoints.
+pub(super) fn paragraph_anchor_glyphs(
+    body: &str,
+    index: &VisualLineIndex,
+    runs: &[usize],
+) -> Option<Vec<usize>> {
+    let mut glyphs = if runs.len() <= super::MAX_ROW_GEOMETRY_ANCHORS - 2 {
+        let mut glyphs = Vec::with_capacity(runs.len() + 2);
+        glyphs.push(0);
+        let end = runs.partition_point(|byte| *byte < body.len());
+        glyphs.extend(index.boundary_glyphs(body, &runs[..end])?);
+        glyphs.push(index.len().checked_sub(2)?);
+        glyphs
+    } else {
+        index.anchor_glyphs_in(0..index.len() - 1).collect()
+    };
+    glyphs.dedup();
+    Some(glyphs)
+}
+
+/// Shared facade contract for validated replay; layout-specific geometry remains
+/// in each core plan, above the browser's measurement primitives.
+pub trait ParagraphReplay {
+    fn reuse_prefix(
+        &mut self,
+        old_body: &str,
+        old: &ParagraphMeasurements,
+        style_end: usize,
+    ) -> usize;
+    fn reuse_suffix_batch(
+        &mut self,
+        old_body: &str,
+        old: &ParagraphMeasurements,
+        style_start: usize,
+        max_records: usize,
+    ) -> usize;
+}
 
 /// Adapters measure real styled text; this policy never estimates character
 /// widths. A failed overlap, unavailable paint boundary or stale source requires
@@ -100,17 +141,7 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         // Original paint boundaries survive shifted styled tokens. Sampling
         // them also avoids tying measured geometry to unrelated coordinate-index
         // checkpoints. Over-budget run tables retain the existing sparse policy.
-        let mut anchor_glyphs = if runs.len() <= super::MAX_ROW_GEOMETRY_ANCHORS - 2 {
-            let mut glyphs = Vec::with_capacity(runs.len() + 2);
-            glyphs.push(0);
-            let end = runs.partition_point(|byte| *byte < body.len());
-            glyphs.extend(index.boundary_glyphs(body, &runs[..end])?);
-            glyphs.push(index.len() - 2);
-            glyphs
-        } else {
-            index.anchor_glyphs_in(0..index.len() - 1).collect()
-        };
-        anchor_glyphs.dedup();
+        let anchor_glyphs = paragraph_anchor_glyphs(body, &index, &runs)?;
         let probe = Self::probe_at(body, &index, &runs, 0, 0.0)?;
         let continuation = Self::continuation(body, &index, &runs, &probe)?;
         let has_tabs = index.has_tabs();
@@ -142,6 +173,9 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         old: &ParagraphMeasurements,
         style_end: usize,
     ) -> usize {
+        if old.wrapped {
+            return 0;
+        }
         let mut reused = 0;
         let mut validated_runs = 0;
         for record in &old.records {
@@ -197,7 +231,7 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         style_start: usize,
         max_records: usize,
     ) -> usize {
-        if self.expected.is_empty() {
+        if old.wrapped || self.expected.is_empty() {
             return 0;
         }
         let old_byte = |byte| {
@@ -596,6 +630,7 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         if self.retained_rectangles <= MAX_RETAINED_RECTANGLES {
             self.records.push(ParagraphMeasurement {
                 bytes: self.probe.bytes.clone(),
+                origin: self.probe.origin,
                 width,
                 height,
                 scroll_width: extent,
@@ -639,8 +674,24 @@ impl<'a> ParagraphMeasurementPlan<'a> {
                 runs: self.runs,
                 index: self.index,
                 records: self.records,
+                wrapped: false,
             },
         ))
+    }
+}
+
+impl ParagraphReplay for ParagraphMeasurementPlan<'_> {
+    fn reuse_prefix(&mut self, body: &str, old: &ParagraphMeasurements, end: usize) -> usize {
+        self.reuse_prefix(body, old, end)
+    }
+    fn reuse_suffix_batch(
+        &mut self,
+        body: &str,
+        old: &ParagraphMeasurements,
+        start: usize,
+        limit: usize,
+    ) -> usize {
+        self.reuse_suffix_batch(body, old, start, limit)
     }
 }
 

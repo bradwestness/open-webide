@@ -26,6 +26,7 @@ pub use wrapped_paragraph::WrappedParagraphPreparation;
 mod visual_index;
 pub use paragraph::{
     MAX_PARAGRAPH_PROBE_BYTES, ParagraphMeasurementPlan, ParagraphMeasurements, ParagraphProbe,
+    ParagraphReplay,
 };
 mod visual_motion;
 pub use visual_index::VisualLineIndex;

@@ -345,7 +345,7 @@ impl EditorActions {
         self,
         paint: &EditorRowPaint,
         row: usize,
-        plan: &mut openwebide_core::editor::ParagraphMeasurementPlan<'_>,
+        plan: &mut impl openwebide_core::editor::ParagraphReplay,
     ) -> usize {
         if !self.row_paint_current(paint) {
             return 0;
@@ -402,14 +402,14 @@ impl EditorActions {
     pub fn resume_paragraph_suffix(
         self,
         suffix: &EditorParagraphSuffix,
-        plan: &mut openwebide_core::editor::ParagraphMeasurementPlan<'_>,
+        plan: &mut impl openwebide_core::editor::ParagraphReplay,
     ) -> usize {
         self.resume_paragraph_suffix_limit(suffix, plan, usize::MAX)
     }
     pub fn resume_paragraph_suffix_batch(
         self,
         suffix: &EditorParagraphSuffix,
-        plan: &mut openwebide_core::editor::ParagraphMeasurementPlan<'_>,
+        plan: &mut impl openwebide_core::editor::ParagraphReplay,
     ) -> usize {
         self.resume_paragraph_suffix_limit(
             suffix,
@@ -420,7 +420,7 @@ impl EditorActions {
     fn resume_paragraph_suffix_limit(
         self,
         suffix: &EditorParagraphSuffix,
-        plan: &mut openwebide_core::editor::ParagraphMeasurementPlan<'_>,
+        plan: &mut impl openwebide_core::editor::ParagraphReplay,
         limit: usize,
     ) -> usize {
         if !self.row_paint_current(&suffix.scope) {
