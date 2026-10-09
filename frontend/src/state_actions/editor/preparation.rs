@@ -317,11 +317,11 @@ impl EditorActions {
             {
                 lexical = lexical.reuse(previous);
             }
-            // Resolve small files in one bounded batch without a transient pending
-            // frame. Larger jobs retain their context and yield before continuing.
-            lexical.advance(
+            // A small file's initial scan and copy fit in one bounded batch.
+            // Larger jobs retain their context and use the ordinary async budget.
+            lexical.advance_bounded(
                 openwebide_core::highlight::LEXICAL_BATCH_ROWS,
-                openwebide_core::highlight::LEXICAL_BATCH_BYTES,
+                openwebide_core::highlight::LEXICAL_BATCH_BYTES * 2,
             );
             if lexical.is_complete() {
                 let lexical =
@@ -356,7 +356,7 @@ impl EditorActions {
                     if !current() {
                         return;
                     }
-                    lexical.advance(
+                    lexical.advance_bounded(
                         openwebide_core::highlight::LEXICAL_BATCH_ROWS,
                         openwebide_core::highlight::LEXICAL_BATCH_BYTES,
                     );

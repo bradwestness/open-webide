@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Yield within long plain rows while scanning, validating retained rows and
+  copying fallback text, preserving complete publication and cancellation in
+  the syntax worker and browser fallback.
+
 - Resume grammar-free plain row preparation between worker tasks, preserving
   complete publication, raw-row reuse and cancellation for SQL documents.
 

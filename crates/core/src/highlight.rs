@@ -227,6 +227,7 @@ pub struct LexicalPreparation {
     unchanged: bool,
     source_change: Option<crate::editor::TextChange>,
     previous_row: usize,
+    pending_row: Option<preparation::LexicalRowPreparation>,
     #[cfg(test)]
     indexed_searches: std::cell::Cell<usize>,
     #[cfg(test)]
@@ -247,6 +248,7 @@ impl LexicalPreparation {
             unchanged: false,
             source_change: None,
             previous_row: 0,
+            pending_row: None,
             #[cfg(test)]
             indexed_searches: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -267,6 +269,7 @@ impl LexicalPreparation {
         if previous.language == self.language && previous.normalize_crlf == self.normalize_crlf {
             self.next = 0;
             self.previous_row = 0;
+            self.pending_row = None;
             self.rows.clear();
             self.contexts.clear();
             self.retokenized_rows = 0;
@@ -363,6 +366,17 @@ impl LexicalPreparation {
         if max_bytes == 0 {
             return 0;
         }
+        if max_rows > 0 && self.pending_row.is_some() {
+            let start = self.next;
+            let count = self.advance_bounded(1, usize::MAX);
+            let cost = self.next - start;
+            return count
+                + if count < max_rows && cost < max_bytes {
+                    self.advance(max_rows - count, max_bytes - cost)
+                } else {
+                    0
+                };
+        }
         while !self.complete && count < max_rows {
             let indexed = self.indexed_row();
             let (next, newline) = indexed.map_or_else(
@@ -453,6 +467,8 @@ impl LexicalPreparation {
         })
     }
 }
+
+mod preparation;
 
 #[cfg(test)]
 mod tests {

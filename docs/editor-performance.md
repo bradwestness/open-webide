@@ -2690,3 +2690,27 @@ move focus in both directions without changing text or selection. Commit/cancel,
 undo/redo and recovered source remain lossless. These disposable local drafts have
 no native directory handles. Physical input devices, installed PWAs, screen
 readers, touch, folder permissions and the remaining editor gates stay open.
+
+### Bounded plain-row scanning and copy (2026-10-09)
+
+The shared plain-row job now retains unfinished boundary scanning, raw-row reuse
+validation and UTF-8 text copying between byte-budgeted advances. Only complete
+rows enter its token table; cancelled jobs cannot publish a partial snapshot.
+Retained indexed rows keep their token allocations, and unchanged rows inside
+disjoint edits validate in bounded chunks before reusing their old tokens.
+The worker and browser fallback call this same job. The initial browser batch
+allows a small file's scan plus copy; subsequent batches use the ordinary budget.
+The synchronous whole-row API can still finish an already-started cooperative row.
+
+All 504 parser-enabled and 397 minimal core tests pass, including Unicode/CRLF,
+tiny budgets, disjoint-edit reuse, mixed drivers and cancellation inside a long
+SQL row. Strict core/WASM lint passes. Chromium contracts pass in both modes for
+long-row SQL worker publication and terminal/ordinary browser fallback, including
+stale scope rejection. Whole-row capacity allocation, source-change comparison,
+final context/token publication and serialization remain; these results do not
+establish the overall responsiveness, memory, tabbed/wrapped layout or device gates.
+
+The ordinary optimized browser run passes 19 unit tests, 460 component contracts
+and four adapter integrations. The two separate heavy font/paragraph-limit
+matrices were excluded from that ordinary run; this is not a claim that the full
+editor completion gates or all release/device verification are satisfied.
