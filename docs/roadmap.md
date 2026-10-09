@@ -124,6 +124,8 @@ tracks the remaining work rather than every optimization already shipped.
 - [ ] **Reliable CI and release/PWA checks:** pass the complete native/WASI/WASM,
   platform, browser and release-app checks reliably. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
+  Cold queued-input checks explicitly defer neighborhood paint while preserving
+  source and selection comparisons; verify the complete suite on CI as well.
   Current checkpoints and measured results are in [performance evidence](editor-performance.md).
 - [ ] **Physical Chrome/Edge PWA input:** verify real input-method commit/cancel,
   Unicode and LF/CRLF undo/redo, multiple-cursor clipboard behavior and touch input

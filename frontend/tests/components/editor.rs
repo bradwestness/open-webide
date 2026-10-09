@@ -12343,12 +12343,6 @@ async fn cold_neighborhoods_flush_arrows_before_native_edits_composition_and_cli
                             && actions.measured_rows().is_none()
                     })
                     .await;
-                    assert!(
-                        !mounted
-                            .element(".editor-code")
-                            .class_list()
-                            .contains("highlight-ready")
-                    );
                 } else {
                     wait_until("eager layout is painted", || {
                         actions.measured_rows().is_some()
@@ -12360,6 +12354,17 @@ async fn cold_neighborhoods_flush_arrows_before_native_edits_composition_and_cli
                     .await;
                 }
                 seed_wrapped_carets(&mounted, &source, second);
+                // Partial preparation can already paint a neighborhood. Hold
+                // subsequent frames and explicitly make that neighborhood cold,
+                // as in the ordered deferred-arrow contract, before queuing input.
+                let frames = cold.then(|| ResumeTasks(pause_initial_editor_frames()));
+                if cold {
+                    mounted
+                        .element(".editor-code")
+                        .class_list()
+                        .remove_1("highlight-ready")
+                        .unwrap();
+                }
                 let textarea: web_sys::HtmlTextAreaElement =
                     mounted.element(".editor-textarea").unchecked_into();
                 editor_key(&textarea, "ArrowDown", false, false);
@@ -12403,6 +12408,7 @@ async fn cold_neighborhoods_flush_arrows_before_native_edits_composition_and_cli
                         assert!(editorClipboardCut(&textarea).default_prevented());
                     }
                 }
+                drop(frames);
                 assert!(actions.queued_motion_ticket().is_none());
                 assert!(
                     mounted
