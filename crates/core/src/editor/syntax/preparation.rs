@@ -46,6 +46,16 @@ pub(super) struct SourceComparison {
     job: crate::editor::TextChangePreparation,
 }
 
+pub(super) struct RowPreparation {
+    base: Arc<String>,
+    source: Arc<String>,
+    change: crate::editor::TextChange,
+    edit: crate::editor::lines::LineEdit,
+    start: tree_sitter::Point,
+    old_end: tree_sitter::Point,
+    job: crate::editor::lines::LineReplacement,
+}
+
 impl SyntaxDocument {
     pub(super) fn begin_update(
         &mut self,
@@ -53,7 +63,9 @@ impl SyntaxDocument {
         mut should_continue: impl FnMut() -> bool,
         source: impl FnOnce() -> Arc<String>,
         resolved_change: Option<(&Arc<String>, &crate::editor::TextChange)>,
+        prepared_edit: Option<InputEdit>,
     ) -> Option<SyntaxStatus> {
+        self.row_preparation = None;
         self.admission = None;
         self.source_comparison = None;
         if text.len() > MAX_STRUCTURE_BYTES {
@@ -90,7 +102,9 @@ impl SyntaxDocument {
             self.ready = true;
             return Some(SyntaxStatus::Ready { incremental: false });
         }
-        let edit_result = if let Some(change) = resolved_change {
+        let edit_result = if let Some(edit) = prepared_edit {
+            Ok(edit)
+        } else if let Some(change) = resolved_change {
             input_edit_change(
                 &self.text,
                 text,
@@ -151,6 +165,18 @@ impl SyntaxDocument {
         should_yield: &mut impl FnMut() -> bool,
         change: Option<(&Arc<String>, &crate::editor::TextChange)>,
     ) -> Option<(SyntaxStatus, Option<Arc<SyntaxAnalysis>>)> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| !Arc::ptr_eq(&pending.source, &source))
+        {
+            self.clear();
+        }
+        if self.row_preparation.as_ref().is_some_and(|work| {
+            !Arc::ptr_eq(&work.source, &source) || !Arc::ptr_eq(&work.base, &self.text)
+        }) {
+            self.row_preparation = None;
+        }
         let admitted = self
             .pending
             .as_ref()
@@ -166,9 +192,15 @@ impl SyntaxDocument {
                 Err(status) => return Some((status, None)),
             }
         }
+        let retained_change = self
+            .row_preparation
+            .as_ref()
+            .map(|work| work.change.clone());
         let change = change.filter(|(base, _)| self.ready && Arc::ptr_eq(base, &self.text));
         let base = self.text.clone();
-        let compared = if change.is_none() && self.ready && !Arc::ptr_eq(&base, &source) {
+        let compared = if retained_change.is_some() {
+            retained_change
+        } else if change.is_none() && self.ready && !Arc::ptr_eq(&base, &source) {
             match self.compare_source_cooperative(&source, should_continue, should_yield)? {
                 Ok(change) => Some(change),
                 Err(status) => return Some((status, None)),
@@ -178,11 +210,105 @@ impl SyntaxDocument {
             None
         };
         let change = compared.as_ref().map(|change| (&base, change)).or(change);
+        let cold_change = crate::editor::TextChange {
+            range: 0..0,
+            new_end: source.len(),
+        };
+        let unchanged = self.ready
+            && change.map_or_else(
+                || Arc::ptr_eq(&base, &source),
+                |(_, change)| change.range.is_empty() && change.new_end == change.range.start,
+            );
+        let prepared_edit = if self.parser.is_some() && self.pending.is_none() && !unchanged {
+            let row_change = change.map_or(&cold_change, |(_, change)| change);
+            match self.prepare_rows_cooperative(
+                &source,
+                row_change,
+                should_continue,
+                should_yield,
+            )? {
+                Ok(edit) => Some(edit),
+                Err(status) => return Some((status, None)),
+            }
+        } else {
+            None
+        };
         let status = self
-            .begin_update(&source, &mut *should_continue, || source.clone(), change)
+            .begin_update(
+                &source,
+                &mut *should_continue,
+                || source.clone(),
+                change,
+                prepared_edit,
+            )
             .or_else(|| self.advance_update(should_continue, should_yield))?;
         let status = self.advance_lexical(status, should_continue, should_yield, change)?;
         Some(self.finish_preparation(status, tab_width, should_continue))
+    }
+
+    fn prepare_rows_cooperative(
+        &mut self,
+        source: &Arc<String>,
+        change: &crate::editor::TextChange,
+        should_continue: &mut impl FnMut() -> bool,
+        should_yield: &mut impl FnMut() -> bool,
+    ) -> Option<Result<InputEdit, SyntaxStatus>> {
+        use crate::editor::lines::{LineEdit, LineReplacementStatus};
+        if self.row_preparation.is_none() {
+            let edit = LineEdit::new(
+                &self.source_lines,
+                self.text.len(),
+                source.len(),
+                change.range.clone(),
+                change.new_end,
+            );
+            let retained = self.source_lines.len() - edit.rows.len();
+            let Some(limit) = crate::editor::MAX_EDITOR_LINES.checked_sub(retained) else {
+                self.clear();
+                return Some(Err(SyntaxStatus::TooLarge));
+            };
+            self.prepared = None;
+            self.row_preparation = Some(RowPreparation {
+                base: self.text.clone(),
+                source: source.clone(),
+                change: change.clone(),
+                start: indexed_point(&self.source_lines, change.range.start),
+                old_end: indexed_point(&self.source_lines, change.range.end),
+                job: edit.prepare_replacement(source.clone(), limit),
+                edit,
+            });
+        }
+        loop {
+            if !should_continue() {
+                self.clear();
+                return Some(Err(SyntaxStatus::Cancelled));
+            }
+            let work = self.row_preparation.as_mut().expect("retained row source");
+            match work.job.status() {
+                LineReplacementStatus::TooLarge => {
+                    self.clear();
+                    return Some(Err(SyntaxStatus::TooLarge));
+                }
+                LineReplacementStatus::Ready => {
+                    let work = self.row_preparation.take().unwrap();
+                    work.edit
+                        .apply(&mut self.source_lines, work.job.finish().unwrap());
+                    return Some(Ok(InputEdit {
+                        start_byte: work.change.range.start,
+                        old_end_byte: work.change.range.end,
+                        new_end_byte: work.change.new_end,
+                        start_position: work.start,
+                        old_end_position: work.old_end,
+                        new_end_position: indexed_point(&self.source_lines, work.change.new_end),
+                    }));
+                }
+                LineReplacementStatus::Pending => {}
+            }
+            if should_yield() {
+                return None;
+            }
+            work.job.advance(crate::highlight::LEXICAL_BATCH_BYTES);
+        }
     }
 
     fn admit_source_cooperative(
@@ -614,6 +740,176 @@ mod tests {
         document.admission = Some(admission);
     }
 
+    fn rows_for_parser_phase(document: &mut SyntaxDocument, source: &Arc<String>) {
+        let change = crate::editor::text_change(&document.text, source).unwrap_or(
+            crate::editor::TextChange {
+                range: 0..0,
+                new_end: 0,
+            },
+        );
+        assert!(
+            document
+                .prepare_rows_cooperative(source, &change, &mut || true, &mut || true)
+                .is_none()
+        );
+        let work = document.row_preparation.as_mut().unwrap();
+        while work.job.status() == crate::editor::lines::LineReplacementStatus::Pending {
+            work.job.advance(usize::MAX);
+        }
+        assert_eq!(
+            work.job.status(),
+            crate::editor::lines::LineReplacementStatus::Ready
+        );
+    }
+
+    #[test]
+    fn cooperative_row_replacement_retains_change_and_matches_complete_indexes() {
+        for ending in ["\n", "\r\n"] {
+            for prefix in [
+                format!("/*{}*/{ending}", "文😀 ".repeat(100_000)),
+                format!("// row 文😀{ending}").repeat(40_000),
+            ] {
+                let base = Arc::new(format!("fn original() {{}}{ending}"));
+                let source = Arc::new(format!("{prefix}{base}"));
+                let change = crate::editor::text_change(&base, &source).unwrap();
+                let mut document = SyntaxDocument::new(Language::Rust).unwrap();
+                document.prepare_shared(base.clone(), 4, || true).1.unwrap();
+                let original_rows = document.source_lines.clone();
+                admit_for_phase(&mut document, &source);
+                let mut checks = 0;
+                assert!(
+                    document
+                        .prepare_resolved_cooperative(
+                            source.clone(),
+                            4,
+                            &mut || true,
+                            &mut || {
+                                checks += 1;
+                                checks >= 2
+                            },
+                            Some((&base, &change))
+                        )
+                        .is_none()
+                );
+                assert!(document.row_preparation.is_some());
+                assert!(document.pending.is_none());
+                assert!(document.source_comparison.is_none());
+                assert!(document.prepared.is_none());
+                assert!(document.structure().is_none());
+                assert!(document.folds().is_empty());
+                assert_eq!(document.source_lines, original_rows);
+                let mut turns = 0;
+                let mut complete_index_seen = false;
+                let (status, analysis) = loop {
+                    turns += 1;
+                    assert!(turns < 10_000);
+                    let mut checks = 0;
+                    let result = document.prepare_cooperative(
+                        source.clone(),
+                        4,
+                        || true,
+                        || {
+                            checks += 1;
+                            checks >= 8
+                        },
+                    );
+                    assert!(
+                        document.source_comparison.is_none(),
+                        "completed replacement comparison must not restart"
+                    );
+                    if let Some((status, analysis)) = result {
+                        break (status, analysis);
+                    }
+                    if document.pending.is_some() {
+                        assert_eq!(document.source_lines, crate::editor::lines::lines(&source));
+                        complete_index_seen = true;
+                    }
+                    if document.row_preparation.is_some() {
+                        assert_eq!(document.source_lines, original_rows);
+                    }
+                };
+                assert!(document.row_preparation.is_none());
+                assert!(complete_index_seen || matches!(status, SyntaxStatus::Ready { .. }));
+                if matches!(status, SyntaxStatus::Ready { .. }) {
+                    assert_eq!(document.source_lines, crate::editor::lines::lines(&source));
+                }
+                let (expected_status, expected) = SyntaxDocument::new(Language::Rust)
+                    .unwrap()
+                    .prepare_shared(source.clone(), 4, || true);
+                if matches!(expected_status, SyntaxStatus::Ready { .. }) {
+                    assert_eq!(status, SyntaxStatus::Ready { incremental: true });
+                } else {
+                    assert_eq!(status, expected_status);
+                }
+                assert_eq!(
+                    serde_json::to_value(
+                        analysis.as_ref().map(|analysis| analysis.transfer_data())
+                    )
+                    .unwrap(),
+                    serde_json::to_value(
+                        expected.as_ref().map(|analysis| analysis.transfer_data())
+                    )
+                    .unwrap()
+                );
+                if let Some(analysis) = analysis {
+                    assert!(Arc::ptr_eq(analysis.source_snapshot(), &source));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn row_replacement_cancellation_supersession_and_sync_takeover_release_progress() {
+        for operation in ["cancel", "replace", "sync"] {
+            let source = Arc::new(format!(
+                "/*{}*/\r\nfn original() {{}}",
+                "文😀 ".repeat(100_000)
+            ));
+            let weak = Arc::downgrade(&source);
+            let mut document = SyntaxDocument::new(Language::Rust).unwrap();
+            admit_for_phase(&mut document, &source);
+            let mut checks = 0;
+            assert!(
+                document
+                    .prepare_cooperative(
+                        source.clone(),
+                        4,
+                        || true,
+                        || {
+                            checks += 1;
+                            checks >= 2
+                        }
+                    )
+                    .is_none()
+            );
+            assert!(document.row_preparation.is_some());
+            assert!(document.pending.is_none());
+            drop(source);
+            let next = Arc::new("fn replacement() {}\n".to_owned());
+            if operation == "cancel" {
+                let retained = document.row_preparation.as_ref().unwrap().source.clone();
+                let (status, analysis) = document
+                    .prepare_cooperative(retained, 4, || false, || false)
+                    .unwrap();
+                assert_eq!(status, SyntaxStatus::Cancelled);
+                assert!(analysis.is_none());
+            } else {
+                let (status, analysis) = if operation == "sync" {
+                    document.prepare_shared(next.clone(), 4, || true)
+                } else {
+                    document
+                        .prepare_cooperative(next.clone(), 4, || true, || false)
+                        .unwrap()
+                };
+                assert_eq!(status, SyntaxStatus::Ready { incremental: false });
+                assert!(Arc::ptr_eq(analysis.unwrap().source_snapshot(), &next));
+                assert_eq!(document.source_lines, crate::editor::lines::lines(&next));
+            }
+            assert!(document.row_preparation.is_none());
+            assert!(weak.upgrade().is_none());
+        }
+    }
+
     #[test]
     fn source_admission_yields_before_parsing_and_releases_cancelled_or_replaced_sources() {
         for language in [
@@ -899,7 +1195,8 @@ mod tests {
                     .is_none()
             );
             assert_eq!(document.source_comparison.is_some(), !trusted);
-            assert_eq!(document.pending.is_some(), trusted);
+            assert_eq!(document.row_preparation.is_some(), trusted);
+            assert!(document.pending.is_none());
             let (status, analysis) = document
                 .prepare_resolved_cooperative(
                     changed.clone(),
@@ -1203,6 +1500,7 @@ mod tests {
             assert!(source.len() > 1_000_000 && source.len() < 1_048_576);
             let mut document = SyntaxDocument::new(language).unwrap();
             admit_for_phase(&mut document, &source);
+            rows_for_parser_phase(&mut document, &source);
             let mut scan_batches = 0;
             let mut previous_position = 0;
             let mut total_batches = 0;
@@ -1258,6 +1556,7 @@ mod tests {
             let cancel_source = Arc::new(source.as_str().to_owned());
             let weak = Arc::downgrade(&cancel_source);
             admit_for_phase(&mut cancelled, &cancel_source);
+            rows_for_parser_phase(&mut cancelled, &cancel_source);
             loop {
                 let mut checks = 0;
                 assert!(
@@ -1484,6 +1783,8 @@ mod tests {
                     .collect::<String>(),
             );
             let mut document = SyntaxDocument::new(Language::Markdown).unwrap();
+            admit_for_phase(&mut document, &source);
+            rows_for_parser_phase(&mut document, &source);
             let mut previous_count = 0;
             let mut batches = 0;
             let result = loop {
@@ -1562,6 +1863,7 @@ mod tests {
         let source = Arc::new("fn main() { call(); }\n".repeat(1_000));
         let mut document = SyntaxDocument::new(Language::Rust).unwrap();
         admit_for_phase(&mut document, &source);
+        rows_for_parser_phase(&mut document, &source);
         assert!(
             document
                 .prepare_cooperative(source.clone(), 4, || true, || true)

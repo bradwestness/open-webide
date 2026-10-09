@@ -111,18 +111,21 @@ impl LineEdit {
     }
 
     #[cfg(feature = "editor-parser")]
+    pub fn prepare_replacement(
+        &self,
+        source: std::sync::Arc<String>,
+        limit: usize,
+    ) -> LineReplacement {
+        LineReplacement::new(source, self.bytes.clone(), self.has_suffix, limit)
+    }
+
+    #[cfg(feature = "editor-parser")]
     pub fn replacement(&self, source: &str, limit: usize) -> Option<Vec<Line>> {
-        let mut replacement = Vec::new();
-        for row in line_iter(&source[self.bytes.clone()]) {
-            if self.trim_suffix_row(Some(&row)) {
-                continue;
-            }
-            if replacement.len() == limit {
-                return None;
-            }
-            replacement.push(row);
+        let mut scan = LineReplacementScan::new(self.bytes.clone(), self.has_suffix, limit);
+        while scan.status == LineReplacementStatus::Pending {
+            scan.advance(source, usize::MAX);
         }
-        Some(replacement)
+        (scan.status == LineReplacementStatus::Ready).then_some(scan.rows)
     }
 
     pub fn apply(&self, rows: &mut Vec<Line>, mut replacement: Vec<Line>) {
@@ -137,6 +140,116 @@ impl LineEdit {
             row.end += self.bytes.start;
         }
         rows.splice(self.rows.clone(), replacement);
+    }
+}
+
+#[cfg(feature = "editor-parser")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LineReplacementStatus {
+    Pending,
+    Ready,
+    TooLarge,
+}
+
+#[cfg(feature = "editor-parser")]
+struct LineReplacementScan {
+    bytes: Range<usize>,
+    has_suffix: bool,
+    limit: usize,
+    next: usize,
+    row_start: usize,
+    rows: Vec<Line>,
+    status: LineReplacementStatus,
+}
+#[cfg(feature = "editor-parser")]
+impl LineReplacementScan {
+    fn new(bytes: Range<usize>, has_suffix: bool, limit: usize) -> Self {
+        Self {
+            bytes,
+            has_suffix,
+            limit,
+            next: 0,
+            row_start: 0,
+            rows: Vec::new(),
+            status: LineReplacementStatus::Pending,
+        }
+    }
+    fn push(&mut self, body_end: usize, end: usize) -> bool {
+        if self.rows.len() == self.limit {
+            self.status = LineReplacementStatus::TooLarge;
+            return false;
+        }
+        self.rows.push(Line {
+            start: self.row_start,
+            body_end,
+            end,
+        });
+        self.row_start = end;
+        true
+    }
+    fn advance(&mut self, source: &str, budget: usize) {
+        if self.status != LineReplacementStatus::Pending || budget == 0 {
+            return;
+        }
+        let bytes = &source.as_bytes()[self.bytes.clone()];
+        let end = bytes.len().min(self.next.saturating_add(budget));
+        let first_rows = self.rows.len();
+        while self.next < end {
+            let byte = bytes[self.next];
+            self.next += 1;
+            if byte == b'\n' {
+                let body_end = self.next
+                    - if self.next >= 2 && bytes[self.next - 2] == b'\r' {
+                        2
+                    } else {
+                        1
+                    };
+                if !self.push(body_end, self.next) {
+                    return;
+                }
+                if self.rows.len() - first_rows == 256 {
+                    return;
+                }
+            }
+        }
+        if self.next == bytes.len() {
+            if (self.row_start < bytes.len() || !self.has_suffix)
+                && !self.push(bytes.len(), bytes.len())
+            {
+                return;
+            }
+            self.status = LineReplacementStatus::Ready;
+        }
+    }
+}
+
+#[cfg(feature = "editor-parser")]
+pub(super) struct LineReplacement {
+    source: std::sync::Arc<String>,
+    scan: LineReplacementScan,
+}
+#[cfg(feature = "editor-parser")]
+impl LineReplacement {
+    fn new(
+        source: std::sync::Arc<String>,
+        bytes: Range<usize>,
+        has_suffix: bool,
+        limit: usize,
+    ) -> Self {
+        Self {
+            source,
+            scan: LineReplacementScan::new(bytes, has_suffix, limit),
+        }
+    }
+    pub fn status(&self) -> LineReplacementStatus {
+        self.scan.status
+    }
+    pub fn advance(&mut self, budget: usize) -> LineReplacementStatus {
+        self.scan.advance(&self.source, budget);
+        self.status()
+    }
+    pub fn finish(self) -> Option<Vec<Line>> {
+        (self.scan.status == LineReplacementStatus::Ready).then_some(self.scan.rows)
     }
 }
 
@@ -469,5 +582,71 @@ mod tests {
         assert_eq!(doc.selections(), &[Selection { anchor: 9, head: 5 }]);
         doc.undo();
         assert_eq!(doc.text(), "a😀z");
+    }
+}
+
+#[cfg(all(test, feature = "editor-parser"))]
+mod replacement_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn bounded_replacements_match_complete_rows_and_limits_without_copying_sources() {
+        for body in [
+            String::new(),
+            "文😀".repeat(100_000),
+            "\r".into(),
+            "\n".into(),
+            "文😀\r\n\nlast\r".into(),
+            "x\r\n".repeat(1_000),
+        ] {
+            for suffix in [false, true] {
+                let source = Arc::new(format!("prefix\n{body}suffix"));
+                let bytes = 7..7 + body.len();
+                let edit = LineEdit {
+                    rows: 0..0,
+                    bytes: bytes.clone(),
+                    has_suffix: suffix,
+                    old_end: 0,
+                };
+                let expected = line_iter(&body)
+                    .filter(|row| !edit.trim_suffix_row(Some(row)))
+                    .collect::<Vec<_>>();
+                for limit in [
+                    0,
+                    expected.len().saturating_sub(1),
+                    expected.len(),
+                    expected.len() + 1,
+                ] {
+                    let expected = (expected.len() <= limit).then(|| expected.clone());
+                    assert_eq!(edit.replacement(&source, limit), expected);
+                    for budget in [1, 7, 64 * 1024] {
+                        let mut job = edit.prepare_replacement(source.clone(), limit);
+                        assert!(Arc::ptr_eq(&job.source, &source));
+                        assert_eq!(job.advance(0), LineReplacementStatus::Pending);
+                        while job.status() == LineReplacementStatus::Pending {
+                            let next = job.scan.next;
+                            let rows = job.scan.rows.len();
+                            job.advance(budget);
+                            assert!(job.scan.next - next <= budget);
+                            assert!(job.scan.rows.len() - rows <= 256);
+                        }
+                        assert_eq!(job.finish(), expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn abandoned_replacement_releases_its_source_without_publishing_rows() {
+        let source = Arc::new("文😀\r\n".repeat(1_000));
+        let weak = Arc::downgrade(&source);
+        let mut job = LineReplacement::new(source.clone(), 0..source.len(), false, 2_000);
+        assert_eq!(job.advance(7), LineReplacementStatus::Pending);
+        drop(source);
+        assert!(weak.upgrade().is_some());
+        assert!(job.finish().is_none());
+        assert!(weak.upgrade().is_none());
     }
 }

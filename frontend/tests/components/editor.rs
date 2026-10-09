@@ -8903,6 +8903,95 @@ async fn cooperative_worker_admission_rejects_limits_without_transport_in_both_m
 }
 
 #[wasm_bindgen_test]
+async fn cooperative_worker_row_index_preserves_dense_rows_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::SyntaxWorker};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for ending in ["\n", "\r\n"] {
+            let source = format!("{}fn original() {{}}{ending}", ending.repeat(49_000));
+            let initial = source.clone();
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("rows.rs".into()));
+                state.workspace.content.set(initial.into());
+                let actions = EditorActions::new(state.workspace);
+                actions.install_syntax_transport(installed);
+                view! { <span>{move || actions.syntax_is_pending().to_string()}</span> }
+            });
+            wait_until("dense row worker request", || {
+                !transport.pending.borrow().is_empty()
+            })
+            .await;
+            let DeferredSyntaxReply { message, sender } =
+                transport.pending.borrow_mut().pop_front().unwrap();
+            let mut worker = SyntaxWorker::default();
+            assert!(worker.enqueue(&message).is_none());
+            let actions = EditorActions::new(mounted.state.workspace);
+            let mut batches = 0;
+            let reply = loop {
+                batches += 1;
+                assert!(batches < 2_000);
+                let mut checks = 0;
+                if let Some(reply) = worker.advance(
+                    || true,
+                    || {
+                        checks += 1;
+                        checks >= 4
+                    },
+                ) {
+                    break reply;
+                }
+                assert!(actions.syntax_is_pending());
+                assert!(
+                    mounted
+                        .state
+                        .workspace
+                        .editor_preparation
+                        .get_untracked()
+                        .is_none()
+                );
+                if batches % 4 == 0 {
+                    openwebide_frontend::util::yield_task().await;
+                }
+            };
+            assert!(batches > 10, "{mode:?}: dense index preparation must yield");
+            sender.send(Ok(reply)).unwrap();
+            wait_until("dense row syntax published", || {
+                !actions.syntax_is_pending()
+            })
+            .await;
+            let prepared = mounted
+                .state
+                .workspace
+                .editor_preparation
+                .get_untracked()
+                .unwrap();
+            let analysis = prepared.analysis.unwrap();
+            assert_eq!(analysis.source(), source);
+            assert_eq!(
+                analysis.highlights().unwrap().len(),
+                source.split('\n').count()
+            );
+            let (_, expected) = openwebide_core::editor::SyntaxDocument::new(
+                openwebide_core::highlight::Language::Rust,
+            )
+            .unwrap()
+            .prepare_shared(std::sync::Arc::new(source.clone()), 4, || true);
+            assert_eq!(
+                serde_json::to_value(analysis.transfer_data()).unwrap(),
+                serde_json::to_value(expected.unwrap().transfer_data()).unwrap()
+            );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn cooperative_worker_plain_rows_publish_complete_sql_in_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::SyntaxWorker, highlight::TokenKind};
     use openwebide_frontend::state_actions::editor::EditorActions;

@@ -94,7 +94,9 @@ tracks the remaining work rather than every optimization already shipped.
   reconstruction/validation. Cooperative source-change comparison now
   shares the resumable UTF-8 comparison used by plain-row preparation. Syntax
   admission now counts newlines across bounded worker/browser tasks before
-  parsing or serialization; changed row/index assembly still needs bounded work.
+  parsing or serialization. Changed-row scanning now retains a source-owned
+  replacement job across byte/row budgets; suffix shifts, splice/allocation and
+  final index publication still need bounded work.
   Resolved worker parser
   replacements reuse their validated spans only
   for the exact retained base allocation. Intersecting plain fallback rows retain

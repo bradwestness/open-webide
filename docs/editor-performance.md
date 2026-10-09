@@ -2849,3 +2849,40 @@ five Linux/platform CI jobs successfully: runs `37892302443` and `37893661498`.
 Their partitioned UI jobs retain every contract and the existing readiness
 deadlines. This proves two complete checkpoint runs; near-limit performance,
 release/PWA repeats and physical device gates remain separate requirements.
+
+### Cooperative parser row replacement (2026-10-09)
+
+Changed row replacement now has one borrowed synchronous scanner and a source-owned
+cooperative driver. Each advance reads its supplied raw-byte budget and emits at
+most 256 rows. Unicode and CRLF may straddle advances; relative row bodies and
+trailing empty/suffix rows match the complete line iterator. The parser facade
+retains its exact base, source and validated replacement while scanning yields,
+rather than repeating prefix/suffix comparison on each continuation. Completed
+rows supply the existing parser InputEdit exactly once. Canceled/replaced work or
+a synchronous update releases pending rows without publishing partial structure.
+Pending parse resumption remains tied to its exact immutable source allocation.
+
+Scanner oracle tests cover zero budgets, empty/interior/suffix rows, long Unicode
+rows, CRLF and row-limit boundaries, plus owned-source release. Shared parser
+regressions check cold/warm long boundary rows and a 40,000-row comment source,
+full index equality before parsing/publication, exact-base deltas, source changes,
+cancellation and synchronous takeover. Later parser-specific fixtures explicitly
+complete row preparation first while retaining their existing parser assertions.
+
+The wide 40,000-comment source exposes a separate final-highlighting stall:
+sampling finds repeated Tree-sitter parent lookup across siblings in built-in
+classification and retained-part construction. Its eventual analysis also exceeds
+the existing record budget. That fixture must match fresh rejection, while proving
+row index construction itself; it does not prove responsive or complete styling
+of that dense source. Keep this measured workload and the broader final-paint
+performance/record-budget gate open. Suffix shifting, Vec allocation/splicing,
+final index/context/paint publication and physical geometry/device gates remain.
+
+All 518 parser-enabled and 399 minimal core tests pass, with strict core lint.
+The complete parser run takes 215.98 seconds because the preserved dense-comment
+fixture exercises that final-highlighting bottleneck and matches fresh TooLarge
+rejection. This duration does not satisfy the responsiveness gate. Optimized
+browser contracts all pass in 6.00 seconds in both modes, including a 49,000-row
+LF/CRLF source through actual worker messages and complete fresh-analysis equality.
+Strict release WASM frontend lint also passes. The preceding admission checkpoint
+completed all five CI jobs successfully in run `37897135708`.

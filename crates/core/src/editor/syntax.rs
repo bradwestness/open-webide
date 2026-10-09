@@ -111,6 +111,7 @@ pub struct SyntaxDocument {
     pending: Option<preparation::SyntaxWork>,
     source_comparison: Option<preparation::SourceComparison>,
     admission: Option<SyntaxAdmission>,
+    row_preparation: Option<preparation::RowPreparation>,
     outer_fallback: Option<Arc<FallbackContexts>>,
     #[cfg(test)]
     embedded_parses: usize,
@@ -147,6 +148,7 @@ impl SyntaxDocument {
             pending: None,
             source_comparison: None,
             admission: None,
+            row_preparation: None,
             outer_fallback: None,
             #[cfg(test)]
             embedded_parses: 0,
@@ -174,7 +176,8 @@ impl SyntaxDocument {
         source: impl FnOnce() -> Arc<String>,
         resolved_change: Option<(&Arc<String>, &super::TextChange)>,
     ) -> SyntaxStatus {
-        if let Some(status) = self.begin_update(text, &mut should_continue, source, resolved_change)
+        if let Some(status) =
+            self.begin_update(text, &mut should_continue, source, resolved_change, None)
         {
             return status;
         }
@@ -283,6 +286,7 @@ impl SyntaxDocument {
     pub fn language_at(&self, position: usize) -> Language {
         if self.ready
             && self.admission.is_none()
+            && self.row_preparation.is_none()
             && self.source_comparison.is_none()
             && self.text.is_char_boundary(position)
         {
@@ -299,6 +303,7 @@ impl SyntaxDocument {
     pub fn structure(&self) -> Option<Structure> {
         if !self.ready
             || self.admission.is_some()
+            || self.row_preparation.is_some()
             || self.source_comparison.is_some()
             || self.provider.is_none()
         {
@@ -446,6 +451,7 @@ impl SyntaxDocument {
         self.pending = None;
         self.source_comparison = None;
         self.admission = None;
+        self.row_preparation = None;
         self.outer_fallback = None;
         self.ready = false;
         self.tree = None;
@@ -468,7 +474,11 @@ impl SyntaxDocument {
         self.folds_with_tab_width(4)
     }
     pub fn folds_with_tab_width(&self, tab_width: usize) -> Vec<FoldRange> {
-        if !self.ready || self.admission.is_some() || self.source_comparison.is_some() {
+        if !self.ready
+            || self.admission.is_some()
+            || self.row_preparation.is_some()
+            || self.source_comparison.is_some()
+        {
             return Vec::new();
         }
         let parsed = self.tree.as_ref().map(|_| self.parser_folds());

@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Resume syntax row-index replacement scanning across bounded byte/row batches,
+  retain the validated source change until parsing starts, and discard canceled
+  or superseded row work without exposing partial indexes or stale structure.
+
 - Yield while checking syntax source limits before worker serialization and
   parsing, preserving exact byte/newline limits and rejecting canceled or
   superseded sources without publishing stale analysis.
