@@ -382,6 +382,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn short_worker_slices_make_progress_through_parser_injections_and_final_structure() {
+        for ending in ["\n", "\r\n"] {
+            let source = format!(
+                "<script>{ending}{}{}</script>",
+                " ".repeat(100_000),
+                format!("call(1);{ending}").repeat(4000)
+            );
+            let request =
+                SyntaxRequest::new(1, "short-slices".into(), Language::Html, &source, 4, None);
+            let message = serde_json::to_string(&request).unwrap();
+            let mut worker = SyntaxWorker::default();
+            assert!(worker.enqueue(&message).is_none());
+            let mut turns = 0;
+            let reply = loop {
+                turns += 1;
+                assert!(turns < 10_000);
+                let mut checks = 0;
+                if let Some(reply) = worker.advance(
+                    || true,
+                    || {
+                        checks += 1;
+                        checks >= 2
+                    },
+                ) {
+                    break reply;
+                }
+                assert!(worker.has_work());
+            };
+            assert!(turns > 100);
+            let (status, analysis) = SyntaxReply::receive(&reply, 1, &source).unwrap();
+            assert_eq!(status, SyntaxStatus::Ready { incremental: false });
+            assert_eq!(
+                analysis
+                    .as_ref()
+                    .unwrap()
+                    .structure()
+                    .unwrap()
+                    .brackets
+                    .len(),
+                8000
+            );
+            let expected = SyntaxPreparations::default()
+                .handle_message(&message, || true)
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&reply).unwrap(),
+                serde_json::from_str::<serde_json::Value>(&expected).unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn warm_worker_source_reconstruction_yields_before_parser_and_releases_cancelled_work() {
         for ending in ["\n", "\r\n"] {
             for cancel in [false, true] {

@@ -2997,5 +2997,53 @@ checks every phase against exact splicing. All 532 parser-enabled core contracts
 and strict core lint pass. All six optimized cooperative Chromium contracts
 pass in 6.97 seconds across both workspace modes, including explicitly
 asserted warm replacement requests. Strict release WASM component-test lint
-also passes. The preceding index-publication checkpoint CI is still running
-in `37904746814`; full CI and the wider physical/performance gates remain open.
+also passes. Index-publication CI `37904746814` and source-reconstruction CI
+`37906056594` subsequently completed all five jobs successfully. The wider
+physical/performance and full-goal CI gates remain open.
+
+
+### Cooperative final bracket publication (2026-10-09)
+
+Final grammar contexts now feed an owned bracket-linking continuation before
+analysis publication. It retains the immutable source, bracket stack, source
+position and ordered scope/region cursors, with at most 256 charged operations
+between cancellation/yield checks. Scalar visits, skipped regions/languages and
+metadata cursor advances each charge work, so repeated empty boundaries cannot
+hide an unbounded inner loop. Opaque bodies still skip directly to their next
+body boundary, and bracket ancestry resets between embedded languages. The
+existing 65,536-bracket cap and malformed-range fallback remain unchanged.
+
+Synchronous structure queries and message preparation drain the same scanner.
+Pending worker structures and folds remain unavailable until complete;
+embedded-language queries retain the root-language fallback. Continuations
+retain the original cold/incremental status across resumes. Cancellation, source replacement and synchronous takeover discard or
+complete the owned work without publishing partial contexts.
+
+Metadata extraction, context-list construction, sorting/validation, semantic paint
+assembly and transport serialization still run outside this continuation. This
+checkpoint does not establish complete responsiveness or memory behavior.
+
+All 536 parser-enabled and 405 minimal core contracts pass, with strict core
+lint after the scheduler correction below. Captured
+lexical bracket oracles also run through one/seven/256-operation batches across
+languages. Additional tests cover dense empty scope/region cursor budgets, exact
+bracket limits, owned-source release, embedded HTML/JavaScript completion,
+cancellation, source supersession and synchronous takeover with LF/CRLF.
+All seven optimized cooperative Chromium contracts pass in 7.63 seconds
+in both workspace modes, with strict release WASM component-test lint. The
+index-publication
+checkpoint completed all five CI jobs successfully in run `37904746814`,
+including the corrected bridge fixtures. Source-reconstruction CI run
+`37906056594` also completed all five CI jobs successfully.
+
+The added embedded-language browser fixture exposed starvation with short
+slices: nested entry checks could repeatedly yield before delegated parse or
+selection work, and parsed-body fallback had another duplicated pre-work check.
+Delegated phases now own their entry check; already parsed fallback bodies use
+the outer boundary, while newly completed parses retain a post-parse check.
+A native worker regression runs the unchanged 100,000-space/4,000-call HTML/JS
+source through two-check slices with LF/CRLF and matches the complete synchronous
+reply, including all 8,000 linked brackets. Parser/record caps and runtime/test
+deadlines remain unchanged. The unchanged browser fixture now passes through
+cold and warm worker requests in each workspace mode with LF/CRLF, retaining
+exact fresh-analysis comparison and all 8,000 paired-bracket assertions.

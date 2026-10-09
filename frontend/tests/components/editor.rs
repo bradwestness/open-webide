@@ -8999,6 +8999,137 @@ async fn cooperative_worker_row_index_preserves_dense_rows_in_both_modes() {
 }
 
 #[wasm_bindgen_test]
+async fn cooperative_worker_brackets_publish_complete_embedded_scopes_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{SyntaxDocument, SyntaxStatus, SyntaxWorker},
+        highlight::Language,
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for ending in ["\n", "\r\n"] {
+            let source = format!(
+                "<script>{ending}{}{}</script>",
+                " ".repeat(100_000),
+                format!("call(1);{ending}").repeat(4000)
+            );
+            let revised = source.replacen("call(1)", "call(2)", 1);
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let initial = source.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("brackets.html".into()));
+                state.workspace.content.set(initial.into());
+                let actions = EditorActions::new(state.workspace);
+                actions.install_syntax_transport(installed);
+                view! { <span>{move || actions.syntax_is_pending().to_string()}</span> }
+            });
+            let actions = EditorActions::new(mounted.state.workspace);
+            let mut worker = SyntaxWorker::default();
+            for (index, expected) in [&source, &revised].into_iter().enumerate() {
+                if index > 0 {
+                    mounted.state.workspace.content.set(expected.clone().into());
+                }
+                wait_until("embedded bracket request", || {
+                    !transport.pending.borrow().is_empty()
+                })
+                .await;
+                let DeferredSyntaxReply { message, sender } =
+                    transport.pending.borrow_mut().pop_front().unwrap();
+                assert!(worker.enqueue(&message).is_none());
+                let mut batches = 0;
+                let reply = loop {
+                    batches += 1;
+                    assert!(batches < 10_000);
+                    let mut checks = 0;
+                    if let Some(reply) = worker.advance(
+                        || true,
+                        || {
+                            checks += 1;
+                            checks >= 2
+                        },
+                    ) {
+                        break reply;
+                    }
+                    assert!(actions.syntax_is_pending());
+                    if index == 0 {
+                        assert!(
+                            mounted
+                                .state
+                                .workspace
+                                .editor_preparation
+                                .get_untracked()
+                                .is_none()
+                        );
+                    } else {
+                        assert_eq!(
+                            mounted
+                                .state
+                                .workspace
+                                .editor_preparation
+                                .get_untracked()
+                                .unwrap()
+                                .analysis
+                                .unwrap()
+                                .source(),
+                            source
+                        );
+                    }
+                    if batches % 16 == 0 {
+                        openwebide_frontend::util::yield_task().await;
+                    }
+                };
+                assert!(
+                    batches > 100,
+                    "{mode:?}: final bracket preparation must yield"
+                );
+                sender.send(Ok(reply)).unwrap();
+                wait_until("complete embedded brackets", || {
+                    !actions.syntax_is_pending()
+                })
+                .await;
+                let prepared = mounted
+                    .state
+                    .workspace
+                    .editor_preparation
+                    .get_untracked()
+                    .unwrap();
+                assert!(matches!(prepared.status, SyntaxStatus::Ready { .. }));
+                let analysis = prepared.analysis.unwrap();
+                assert_eq!(analysis.source(), expected);
+                assert!(std::sync::Arc::ptr_eq(
+                    &prepared.scope.source,
+                    analysis.source_snapshot()
+                ));
+                let brackets = &analysis.structure().unwrap().brackets;
+                assert_eq!(brackets.len(), 8000);
+                let (pairs, remainder) = brackets.as_chunks::<2>();
+                assert!(remainder.is_empty());
+                for pair in pairs {
+                    assert_eq!(pair[0].1, '(');
+                    assert_eq!(pair[0].2, Some(pair[1].0));
+                    assert_eq!(pair[1].2, Some(pair[0].0));
+                }
+                let (_, fresh) = SyntaxDocument::new(Language::Html).unwrap().prepare_shared(
+                    std::sync::Arc::new(expected.clone()),
+                    4,
+                    || true,
+                );
+                assert_eq!(
+                    serde_json::to_value(analysis.transfer_data()).unwrap(),
+                    serde_json::to_value(fresh.unwrap().transfer_data()).unwrap()
+                );
+            }
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn cooperative_worker_plain_rows_publish_complete_sql_in_both_modes() {
     use openwebide_core::{WorkspaceMode, editor::SyntaxWorker, highlight::TokenKind};
     use openwebide_frontend::state_actions::editor::EditorActions;
