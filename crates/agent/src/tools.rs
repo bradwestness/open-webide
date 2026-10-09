@@ -110,6 +110,10 @@ pub enum Tool {
     HostInfo,
     TodoWrite(openwebide_core::TodoPlan),
     Memory(openwebide_core::MemoryCommand),
+    Skill(openwebide_core::SkillCommand),
+    SkillCreator(crate::skills::CreatorArgs),
+    SkillList(crate::skills::ListArgs),
+    SkillRead(crate::skills::ReadArgs),
     Scheduled(openwebide_core::scheduled::TaskCommand),
     GitDiff(GitDiffArgs),
     GitCommit(GitCommitArgs),
@@ -149,6 +153,28 @@ impl Tool {
                 openwebide_core::scheduled::TaskCommand::SetEnabled { .. } => {
                     "toggle scheduled task".into()
                 }
+            },
+            Tool::SkillList(args) => format!("list skills matching '{}'", args.query),
+            Tool::SkillRead(args) => format!("read skill {}", args.id),
+            Tool::SkillCreator(_) => "create or improve a project skill".into(),
+            Tool::Skill(command) => match command {
+                openwebide_core::SkillCommand::List { query } => {
+                    format!("list skills matching '{query}'")
+                }
+                openwebide_core::SkillCommand::Read { id, resource } => format!(
+                    "read skill {id}{}",
+                    resource
+                        .as_ref()
+                        .map_or_else(String::new, |name| format!(": {name}"))
+                ),
+                openwebide_core::SkillCommand::Create { draft } => {
+                    format!("create skill {}", draft.name)
+                }
+                openwebide_core::SkillCommand::Update { id, draft, .. } => {
+                    format!("update skill {id}: {}", draft.name)
+                }
+                openwebide_core::SkillCommand::Delete { id, .. } => format!("delete skill {id}"),
+                openwebide_core::SkillCommand::SetEnabled { .. } => "toggle project skills".into(),
             },
             Tool::Memory(command) => match command {
                 openwebide_core::MemoryCommand::Create { title, .. } => format!("remember {title}"),
@@ -204,6 +230,12 @@ pub enum ToolName {
     MemoryRead,
     MemoryUpdate,
     MemoryDelete,
+    SkillList,
+    SkillRead,
+    SkillCreate,
+    SkillUpdate,
+    SkillDelete,
+    SkillCreator,
 
     GitDiff,
     GitCommit,
@@ -245,6 +277,12 @@ impl ToolName {
         ToolName::MemoryRead,
         ToolName::MemoryUpdate,
         ToolName::MemoryDelete,
+        ToolName::SkillList,
+        ToolName::SkillRead,
+        ToolName::SkillCreate,
+        ToolName::SkillUpdate,
+        ToolName::SkillDelete,
+        ToolName::SkillCreator,
         ToolName::GitDiff,
         ToolName::GitCommit,
         ToolName::GitBranch,
@@ -273,6 +311,12 @@ impl ToolName {
             ToolName::MemoryRead => "memory_read",
             ToolName::MemoryUpdate => "memory_update",
             ToolName::MemoryDelete => "memory_delete",
+            ToolName::SkillList => "skill_list",
+            ToolName::SkillRead => "skill_read",
+            ToolName::SkillCreate => "skill_create",
+            ToolName::SkillUpdate => "skill_update",
+            ToolName::SkillDelete => "skill_delete",
+            ToolName::SkillCreator => "skill_creator",
 
             ToolName::GitDiff => "git_diff",
             ToolName::GitCommit => "git_commit",
@@ -283,6 +327,7 @@ impl ToolName {
     /// The tool's JSON-schema definition, as advertised to the model.
     pub fn definition(self) -> ToolDefinition {
         match self {
+            ToolName::SkillList | ToolName::SkillRead | ToolName::SkillCreate | ToolName::SkillUpdate | ToolName::SkillDelete | ToolName::SkillCreator => crate::skills::definition(self.as_str()),
             ToolName::ScheduleList | ToolName::ScheduleCreate | ToolName::ScheduleUpdate | ToolName::ScheduleDelete => crate::scheduled::definition(self.as_str()),
             ToolName::MemoryCreate => ToolDefinition { name: self.as_str().into(), description: "Store a durable project fact or convention. Omit title for an automatic name unless the user supplied a specific name. Avoid credentials, secrets and transient task state.".into(), parameters: json!({"type":"object","properties":{"auto_title":{"type":"boolean","description":"Generate and refresh the title from content"},"title":{"type":"string","maxLength":120},"content":{"type":"string","maxLength":4000}},"required":["content"],"additionalProperties":false}) },
             ToolName::MemorySearch => ToolDefinition { name: self.as_str().into(), description: "Search project memories by text; empty query lists recent entries. Returns bounded excerpts.".into(), parameters: json!({"type":"object","properties":{"query":{"type":"string","maxLength":256}},"required":["query"],"additionalProperties":false}) },
@@ -463,6 +508,9 @@ impl ToolName {
                 | ToolName::HostInfo
                 | ToolName::TodoWrite
                 | ToolName::ScheduleList
+                | ToolName::SkillList
+                | ToolName::SkillRead
+                | ToolName::SkillCreator
                 | ToolName::MemoryRead
                 | ToolName::MemorySearch
                 | ToolName::GitStatus
@@ -519,6 +567,12 @@ impl FromStr for ToolName {
             "memory_read" => Ok(ToolName::MemoryRead),
             "memory_update" => Ok(ToolName::MemoryUpdate),
             "memory_delete" => Ok(ToolName::MemoryDelete),
+            "skill_list" => Ok(ToolName::SkillList),
+            "skill_read" => Ok(ToolName::SkillRead),
+            "skill_create" => Ok(ToolName::SkillCreate),
+            "skill_update" => Ok(ToolName::SkillUpdate),
+            "skill_delete" => Ok(ToolName::SkillDelete),
+            "skill_creator" => Ok(ToolName::SkillCreator),
 
             "git_diff" => Ok(ToolName::GitDiff),
             "git_commit" => Ok(ToolName::GitCommit),
@@ -648,6 +702,31 @@ pub fn parse(call: &ToolCall) -> Result<Tool, ToolArgError> {
                     error: error.to_string(),
                 })
         }
+        ToolName::SkillList => parse_as!(SkillList, crate::skills::ListArgs),
+        ToolName::SkillRead => parse_as!(SkillRead, crate::skills::ReadArgs),
+        ToolName::SkillCreator => parse_as!(SkillCreator, crate::skills::CreatorArgs),
+        ToolName::SkillCreate | ToolName::SkillUpdate | ToolName::SkillDelete => {
+            let parsed = (|| {
+                let mut value: serde_json::Value = serde_json::from_str(raw)?;
+                let object = value
+                    .as_object_mut()
+                    .ok_or_else(|| serde::de::Error::custom("Expected an object"))?;
+                if object.contains_key("action") {
+                    return Err(serde::de::Error::custom("Unexpected action field"));
+                }
+                object.insert(
+                    "action".into(),
+                    serde_json::Value::String(name.as_str().trim_start_matches("skill_").into()),
+                );
+                serde_json::from_value::<openwebide_core::SkillCommand>(value)
+            })();
+            parsed.map(Tool::Skill).map_err(|error: serde_json::Error| {
+                ToolArgError::InvalidArguments {
+                    tool: name.as_str(),
+                    error: error.to_string(),
+                }
+            })
+        }
         ToolName::TodoWrite => parse_as!(TodoWrite, openwebide_core::TodoPlan),
         ToolName::ReadFile => parse_as!(ReadFile, ReadFileArgs),
         ToolName::WriteFile => parse_as!(WriteFile, WriteFileArgs),
@@ -765,6 +844,17 @@ mod tests {
                 openwebide_core::scheduled::TaskCommand::Update { .. } => ToolName::ScheduleUpdate,
                 openwebide_core::scheduled::TaskCommand::Delete { .. } => ToolName::ScheduleDelete,
                 openwebide_core::scheduled::TaskCommand::SetEnabled { .. } => unreachable!(),
+            },
+            Tool::SkillList(_) => ToolName::SkillList,
+            Tool::SkillRead(_) => ToolName::SkillRead,
+            Tool::SkillCreator(_) => ToolName::SkillCreator,
+            Tool::Skill(command) => match command {
+                openwebide_core::SkillCommand::List { .. } => ToolName::SkillList,
+                openwebide_core::SkillCommand::Read { .. } => ToolName::SkillRead,
+                openwebide_core::SkillCommand::Create { .. } => ToolName::SkillCreate,
+                openwebide_core::SkillCommand::Update { .. } => ToolName::SkillUpdate,
+                openwebide_core::SkillCommand::Delete { .. } => ToolName::SkillDelete,
+                openwebide_core::SkillCommand::SetEnabled { .. } => unreachable!(),
             },
             Tool::Memory(command) => match command {
                 openwebide_core::MemoryCommand::Create { .. } => ToolName::MemoryCreate,
@@ -884,6 +974,9 @@ mod tests {
             ToolName::GitStatus,
             ToolName::HostInfo,
             ToolName::TodoWrite,
+            ToolName::SkillList,
+            ToolName::SkillRead,
+            ToolName::SkillCreator,
             ToolName::MemorySearch,
             ToolName::MemoryRead,
             ToolName::GitDiff,

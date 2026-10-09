@@ -1036,6 +1036,32 @@ impl BackendApi {
         )
         .await
     }
+    pub async fn skills(
+        &self,
+        id: i64,
+        session: bool,
+    ) -> Result<openwebide_core::ProjectSkills, String> {
+        self.get(&format!(
+            "/{}/{id}/skills",
+            if session { "sessions" } else { "projects" }
+        ))
+        .await
+    }
+    pub async fn skill_command(
+        &self,
+        id: i64,
+        command: &openwebide_core::SkillCommand,
+        session: bool,
+    ) -> Result<openwebide_core::ProjectSkills, String> {
+        self.post(
+            &format!(
+                "/{}/{id}/skills",
+                if session { "sessions" } else { "projects" }
+            ),
+            command,
+        )
+        .await
+    }
     pub async fn get_todo_plan(
         &self,
         session: i64,

@@ -324,6 +324,12 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
                         .unwrap()
                         .definition()
                 }));
+                openwebide_agent::skills::configure(
+                    &mut tools,
+                    &mut None,
+                    &openwebide_core::ProjectSkills::default(),
+                    None,
+                );
                 openwebide_agent::scheduled::configure(&mut tools);
                 tools.push(openwebide_agent::tasks::executor::definition());
                 assert_eq!(plan.request.tools, tools);
@@ -1837,5 +1843,200 @@ fn scheduled_model_overrides_are_run_scoped_in_every_workspace() {
                     .is_err()
             );
         }
+    });
+}
+
+#[test]
+fn project_skill_run_planning_includes_enabled_context_and_tools_and_omits_projectless_data() {
+    futures::executor::block_on(async {
+        let store = openwebide_storage::Store::new(crate::state::AppDb::open_in_memory().unwrap());
+        store.migrate().await.unwrap();
+        let user = store
+            .insert_user("owner", "hash", openwebide_core::UserRole::Admin, 0)
+            .await
+            .unwrap();
+        let connection = store
+            .insert_connection(&NewConnection {
+                name: "server".into(),
+                kind: openwebide_core::ProviderKind::LlamaCpp,
+                base_url: "http://server".into(),
+                model: None,
+                context_limit: Some(32768),
+            })
+            .await
+            .unwrap();
+        let project = store
+            .create_project(
+                &NewProject {
+                    name: "project".into(),
+                    mode: WorkspaceMode::Remote,
+                    path: Some("test".into()),
+                },
+                user.id,
+                0,
+            )
+            .await
+            .unwrap()
+            .id;
+        let session = store
+            .create_session(
+                "session",
+                Some(connection.id),
+                None,
+                Some(project),
+                user.id,
+                0,
+            )
+            .await
+            .unwrap()
+            .id;
+        store
+            .skill_command(
+                user.id,
+                project,
+                &openwebide_core::SkillCommand::Create {
+                    draft: openwebide_core::SkillDraft {
+                        name: "build-check".into(),
+                        description: "Check builds when reviewing changes".into(),
+                        instructions: "PRIVATE INSTRUCTIONS".into(),
+                        enabled: true,
+                        resources: Vec::new(),
+                        metadata: Default::default(),
+                    },
+                },
+                false,
+                1,
+            )
+            .await
+            .unwrap();
+        let state = AppState { store };
+        let body = || SendMessageBody {
+            content: "go".into(),
+            model: None,
+            editor_context: None,
+            browser_preferences: None,
+            queued_prompt: None,
+        };
+        let plan = build_run_plan(&state, user.id, session, body())
+            .await
+            .unwrap();
+        assert!(
+            plan.request
+                .tools
+                .iter()
+                .any(|tool| tool.name == "skill_list")
+        );
+        assert!(
+            plan.request
+                .system_prompt
+                .unwrap()
+                .contains("Check builds when reviewing changes")
+        );
+        let mut selected = state.store.get_connection(connection.id).await.unwrap();
+        selected.tool_selection =
+            openwebide_core::ToolSelection::Selected(vec!["skill_read".into()]);
+        state.store.update_connection(&selected).await.unwrap();
+        let plan = build_run_plan(&state, user.id, session, body())
+            .await
+            .unwrap();
+        assert_eq!(
+            plan.request
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["skill_read"]
+        );
+        assert!(matches!(plan.kind, RunKind::Agent { .. }));
+        selected.tool_selection = openwebide_core::ToolSelection::All;
+        state.store.update_connection(&selected).await.unwrap();
+        state
+            .store
+            .skill_command(
+                user.id,
+                project,
+                &openwebide_core::SkillCommand::SetEnabled { enabled: false },
+                false,
+                2,
+            )
+            .await
+            .unwrap();
+        let plan = build_run_plan(&state, user.id, session, body())
+            .await
+            .unwrap();
+        assert!(
+            !plan
+                .request
+                .tools
+                .iter()
+                .any(|tool| tool.name.starts_with("skill_"))
+        );
+        assert!(
+            !plan
+                .request
+                .system_prompt
+                .unwrap()
+                .contains("Check builds when reviewing changes")
+        );
+        let no_root = state
+            .store
+            .create_project(
+                &NewProject {
+                    name: "Named project".into(),
+                    mode: WorkspaceMode::Remote,
+                    path: None,
+                },
+                user.id,
+                0,
+            )
+            .await
+            .unwrap()
+            .id;
+        let named = state
+            .store
+            .create_session(
+                "named",
+                Some(connection.id),
+                None,
+                Some(no_root),
+                user.id,
+                0,
+            )
+            .await
+            .unwrap()
+            .id;
+        let plan = build_run_plan(&state, user.id, named, body())
+            .await
+            .unwrap();
+        assert_eq!(plan.kind, RunKind::WebChat);
+        assert!(
+            plan.request
+                .tools
+                .iter()
+                .any(|tool| tool.name == "skill_create")
+        );
+        let empty = state
+            .store
+            .create_session("projectless", Some(connection.id), None, None, user.id, 0)
+            .await
+            .unwrap()
+            .id;
+        let plan = build_run_plan(&state, user.id, empty, body())
+            .await
+            .unwrap();
+        assert!(
+            !plan
+                .request
+                .tools
+                .iter()
+                .any(|tool| tool.name.starts_with("skill_"))
+        );
+        assert!(
+            !plan
+                .request
+                .system_prompt
+                .unwrap()
+                .contains("Check builds when reviewing changes")
+        );
     });
 }

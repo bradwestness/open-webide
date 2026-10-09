@@ -4,6 +4,8 @@ pub mod assistance;
 pub use assistance::{AssistanceKind, AssistanceRequest, BackgroundCompletion};
 pub mod goal;
 pub mod memory;
+pub mod skills;
+pub use skills::{ProjectSkill, ProjectSkills, SkillCommand, SkillDraft, SkillResource};
 pub mod scheduled;
 pub use goal::{Goal, GoalCommand, GoalStatus};
 pub use memory::{MemoryCommand, ProjectMemories, ProjectMemory};

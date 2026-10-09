@@ -863,6 +863,16 @@ pub async fn run_local_agent(
         &memories,
         runtime.settings.context_limit,
     );
+    let skills = api
+        .with_value(Clone::clone)
+        .session_skills(session_id)
+        .await?;
+    openwebide_agent::skills::configure(
+        &mut input.tools,
+        &mut input.system_prompt,
+        &skills,
+        runtime.settings.context_limit,
+    );
     openwebide_agent::scheduled::configure(&mut input.tools);
     let plan = openwebide_agent::session::plan(&runtime, input);
     if !current() {
@@ -1198,8 +1208,28 @@ type BrowserMemoryExecutor = openwebide_agent::memory::MemoryTools<
     >,
     BrowserMemoryPersistence,
 >;
-type BrowserTaskExecutor =
+type BrowserScheduledExecutor =
     openwebide_agent::scheduled::ScheduledTools<BrowserMemoryExecutor, BrowserScheduledPersistence>;
+struct BrowserSkillPersistence {
+    api: SendWrapper<Api>,
+    session: i64,
+}
+impl openwebide_agent::skills::SkillStore for BrowserSkillPersistence {
+    async fn execute(
+        &self,
+        command: &openwebide_core::SkillCommand,
+    ) -> Result<openwebide_core::ProjectSkills, String> {
+        SendWrapper::new(async move {
+            self.api
+                .with_value(Clone::clone)
+                .skill_command(self.session, command, true)
+                .await
+        })
+        .await
+    }
+}
+type BrowserTaskExecutor =
+    openwebide_agent::skills::SkillTools<BrowserScheduledExecutor, BrowserSkillPersistence>;
 type BrowserTaskGate = openwebide_agent::policy::PolicyGate<LocalPermissionGate, ApprovalAdapter>;
 #[derive(Clone)]
 struct BrowserTaskFactory {
@@ -1214,27 +1244,33 @@ struct BrowserTaskFactory {
 }
 impl BrowserTaskFactory {
     fn executor(&self) -> BrowserTaskExecutor {
-        openwebide_agent::scheduled::ScheduledTools::new(
-            openwebide_agent::memory::MemoryTools::new(
-                openwebide_agent::todo::TodoTools::new(
-                    VfsToolExecutor::with_web_and_bridge(
-                        self.vfs.clone(),
-                        BrowserWebClient::new(*self.api),
-                        self.bridge.clone(),
-                    )
-                    .with_context(self.environment.clone()),
-                    TodoPersistence {
+        openwebide_agent::skills::SkillTools::new(
+            openwebide_agent::scheduled::ScheduledTools::new(
+                openwebide_agent::memory::MemoryTools::new(
+                    openwebide_agent::todo::TodoTools::new(
+                        VfsToolExecutor::with_web_and_bridge(
+                            self.vfs.clone(),
+                            BrowserWebClient::new(*self.api),
+                            self.bridge.clone(),
+                        )
+                        .with_context(self.environment.clone()),
+                        TodoPersistence {
+                            api: self.api.clone(),
+                            session: self.session,
+                            anchor: self.anchor,
+                        },
+                    ),
+                    BrowserMemoryPersistence {
                         api: self.api.clone(),
                         session: self.session,
-                        anchor: self.anchor,
                     },
                 ),
-                BrowserMemoryPersistence {
+                BrowserScheduledPersistence {
                     api: self.api.clone(),
                     session: self.session,
                 },
             ),
-            BrowserScheduledPersistence {
+            BrowserSkillPersistence {
                 api: self.api.clone(),
                 session: self.session,
             },

@@ -797,10 +797,27 @@ type BridgeMemoryExecutor<B> = openwebide_agent::memory::MemoryTools<
     >,
     BridgeMemoryPersistence<B>,
 >;
-type BridgeTaskExecutor<B> = openwebide_agent::scheduled::ScheduledTools<
+type BridgeScheduledExecutor<B> = openwebide_agent::scheduled::ScheduledTools<
     BridgeMemoryExecutor<B>,
     BridgeScheduledPersistence<B>,
 >;
+struct BridgeSkillPersistence<B> {
+    backend: Arc<B>,
+    user: i64,
+    session: i64,
+}
+impl<B: RunBackend> openwebide_agent::skills::SkillStore for BridgeSkillPersistence<B> {
+    async fn execute(
+        &self,
+        command: &openwebide_core::SkillCommand,
+    ) -> Result<openwebide_core::ProjectSkills, String> {
+        self.backend
+            .skill_command(self.user, self.session, command)
+            .await
+    }
+}
+type BridgeTaskExecutor<B> =
+    openwebide_agent::skills::SkillTools<BridgeScheduledExecutor<B>, BridgeSkillPersistence<B>>;
 type BridgeTaskGate<B> =
     openwebide_agent::policy::PolicyGate<BridgeGate, super::backend_client::ApprovalAdapter<B>>;
 struct BridgeTaskFactory<B> {
@@ -853,24 +870,31 @@ impl<B: RunBackend> BridgeTaskFactory<B> {
         .with_host(crate::runs::agent_host::HostInfoClient(
             self.execution.clone(),
         ));
-        openwebide_agent::scheduled::ScheduledTools::new(
-            openwebide_agent::memory::MemoryTools::new(
-                openwebide_agent::todo::TodoTools::new(
-                    executor,
-                    TodoPersistence {
+        openwebide_agent::skills::SkillTools::new(
+            openwebide_agent::scheduled::ScheduledTools::new(
+                openwebide_agent::memory::MemoryTools::new(
+                    openwebide_agent::todo::TodoTools::new(
+                        executor,
+                        TodoPersistence {
+                            backend: self.backend.clone(),
+                            user: self.run.owner,
+                            session: self.run.session_id,
+                            anchor: self.anchor,
+                        },
+                    ),
+                    BridgeMemoryPersistence {
                         backend: self.backend.clone(),
                         user: self.run.owner,
                         session: self.run.session_id,
-                        anchor: self.anchor,
                     },
                 ),
-                BridgeMemoryPersistence {
+                BridgeScheduledPersistence {
                     backend: self.backend.clone(),
                     user: self.run.owner,
                     session: self.run.session_id,
                 },
             ),
-            BridgeScheduledPersistence {
+            BridgeSkillPersistence {
                 backend: self.backend.clone(),
                 user: self.run.owner,
                 session: self.run.session_id,

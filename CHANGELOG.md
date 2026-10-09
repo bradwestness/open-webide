@@ -9,6 +9,14 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add database-backed project skills to Sessions in both local and remote projects,
+  with per-skill and project enable controls, revision-safe agent list/read/CRUD
+  tools, on-demand instructions/resources and guided skill creation based on
+  Anthropic's skill-creator workflow.
+- Import skill Markdown files, folders, ZIP/.skill, tar and tar.gz/tgz archives for
+  review before saving; export portable ZIPs preserving frontmatter and supporting
+  text/binary resources. Decode in the app without requiring a bridge.
+
 - Yield during parser-free warm-source entry comparison and pass its validated
   replacement into plain-row reuse, preserving exact-base checks and avoiding
   a second comparison of the same source.
