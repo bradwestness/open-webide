@@ -181,7 +181,7 @@ impl SyntaxDocument {
             let mut lexical =
                 crate::highlight::LexicalPreparation::new(self.text.clone(), self.language);
             if let Some(previous) = &self.lexical {
-                lexical = lexical.reuse(previous.clone());
+                lexical = lexical.reuse_cooperative(previous.clone());
             }
             (status, lexical)
         });
@@ -554,6 +554,47 @@ mod tests {
             assert!(result.1.is_none());
             assert!(document.lexical_pending.is_none());
             let replacement = Arc::new("SELECT replacement;".to_owned());
+            let (_, analysis, _) = finish_plain_rows(&mut document, replacement.clone());
+            assert!(Arc::ptr_eq(analysis.source_snapshot(), &replacement));
+        }
+    }
+
+    #[test]
+    fn warm_plain_source_comparison_cancellation_keeps_replacement_owned() {
+        for ending in ["\n", "\r\n"] {
+            let source = Arc::new(format!(
+                "header{ending}{}{ending}tail",
+                "SELECT 文😀 ".repeat(40_000)
+            ));
+            let mut document = SyntaxDocument::new(Language::Sql).unwrap();
+            let (_, original, _) = finish_plain_rows(&mut document, source.clone());
+            let changed = Arc::new(source.replacen("header", "changed", 1));
+            for turn in 0..200 {
+                let mut checks = 0;
+                let result = document.prepare_cooperative(
+                    changed.clone(),
+                    4,
+                    || true,
+                    || {
+                        checks += 1;
+                        checks >= 2
+                    },
+                );
+                assert!(result.is_none());
+                if document.lexical_pending.is_some() {
+                    break;
+                }
+                assert!(turn < 199);
+            }
+            assert!(document.lexical_pending.is_some());
+            assert!(Arc::ptr_eq(original.source_snapshot(), &source));
+            let result = document
+                .prepare_cooperative(changed, 4, || false, || false)
+                .unwrap();
+            assert_eq!(result.0, SyntaxStatus::Cancelled);
+            assert!(result.1.is_none());
+            assert!(document.lexical_pending.is_none());
+            let replacement = Arc::new("SELECT fresh;".to_owned());
             let (_, analysis, _) = finish_plain_rows(&mut document, replacement.clone());
             assert!(Arc::ptr_eq(analysis.source_snapshot(), &replacement));
         }

@@ -315,7 +315,7 @@ impl EditorActions {
                         .and_then(|paint| paint.lexical.clone())
                 })
             {
-                lexical = lexical.reuse(previous);
+                lexical = lexical.reuse_cooperative(previous);
             }
             // A small file's initial scan and copy fit in one bounded batch.
             // Larger jobs retain their context and use the ordinary async budget.

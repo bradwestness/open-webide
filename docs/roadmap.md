@@ -91,7 +91,7 @@ tracks the remaining work rather than every optimization already shipped.
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   final context assembly and bounded metadata publication,
   larger fenced-code workloads and changed-source plain row-table
-  reconstruction/validation. Source-change comparison still traverses retained
+  reconstruction/validation. Parser source-change comparison still traverses retained
   text; resolved worker parser replacements now reuse their validated spans only
   for the exact retained base allocation. Intersecting plain fallback rows retain
   raw-byte boundary validation. Fallback range/opaque-point checks now use ordered
@@ -100,8 +100,10 @@ tracks the remaining work rather than every optimization already shipped.
   and comment bodies, YAML headers/scalars and speculative row replay. Final
   context/selection-list assembly remains. Grammar-free SQL plain-row preparation
   now yields within long rows while scanning, validating retained text and copying
-  plain tokens; the browser fallback uses the same bounded job. Whole-row capacity
-  allocation, changed-source comparison and final publication still need bounded
+  plain tokens; the browser fallback uses the same bounded job. Comparing retained
+  plain sources now also resumes within that job's byte budget, preserving exact
+  UTF-8 replacement boundaries and unchanged table reuse. Whole-row capacity
+  allocation and final publication still need bounded
   work. The final bracket pass
   skips opaque
   regions and languages without brackets while preserving scope boundaries.

@@ -2714,3 +2714,30 @@ The ordinary optimized browser run passes 19 unit tests, 460 component contracts
 and four adapter integrations. The two separate heavy font/paragraph-limit
 matrices were excluded from that ordinary run; this is not a claim that the full
 editor completion gates or all release/device verification are satisfied.
+
+### Cooperative retained plain-source comparison (2026-10-09)
+
+Warm plain-source reuse no longer performs a synchronous whole-document text
+comparison before entering the bounded row job. Both syntax-worker and browser
+fallback callers retain a prefix/suffix comparison in that shared job, charge
+compared bytes to its advance budget and round only completed replacement
+boundaries to UTF-8 scalar positions. Identical source allocations still finish
+immediately; equal text in a different allocation validates cooperatively and
+shares the complete retained row/token tables. Indexed row reuse begins only
+after the exact replacement is known. The synchronous API drains the same state.
+
+All 507 parser-enabled and 399 minimal core tests pass. Regressions compare the
+result with the existing synchronous text-change algorithm across empty,
+insertion/deletion, Unicode, combining and CRLF cases at tiny budgets. Long-source
+checks prove unfinished comparison publishes no rows, shares converged tokens,
+resets on replacement and cancels in the worker without publishing stale analysis.
+Strict core and WASM frontend lint passes. Both optimized Chromium cooperative
+contracts pass: cold/warm SQL worker publication with LF/CRLF, and ordinary or
+terminal browser fallback reuse with stale source/read/account/project rejection
+in both workspace modes. The full browser suite and performance/device gates
+are not established by these two contracts.
+
+Parser source-change comparisons outside this plain-row job, whole-row capacity
+allocation, final metadata assembly/publication and transport serialization remain.
+This change does not establish the full responsiveness, memory, geometry or device
+completion gates.
