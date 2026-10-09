@@ -277,7 +277,7 @@ fn FileTimeline(actions: crate::state_actions::git_history::GitHistoryActions) -
             {move ||axis.get().clusters.into_iter().map(|cluster| {
                 let hashes=cluster.hashes;
                 let description=hashes.iter().filter_map(|hash|actions.commits.with(|commits|commits.iter().find(|commit|&commit.hash==hash).map(|commit|format!("{} · {} · {}",commit.committed_at,commit.subject,commit.hash)))).collect::<Vec<_>>().join("; ");
-                view! {<details class="git-timeline-cluster" style=format!("left:{}%",cluster.position*100.0)><summary title=description.clone() aria-label=description><span class="git-timeline-dot"></span>{(hashes.len()>1).then(||hashes.len().to_string())}</summary>
+                view! {<details class="git-timeline-cluster" data-align=if cluster.position <= 0.5 {"start"} else {"end"} style=format!("left:{}%",cluster.position*100.0)><summary title=description.clone() aria-label=description><span class="git-timeline-dot"></span>{(hashes.len()>1).then(||hashes.len().to_string())}</summary>
                     <div class="ui-feedback-overlay">{hashes.into_iter().filter_map(|hash|actions.commits.with(|commits|commits.iter().find(|commit|commit.hash==hash).cloned())).map(|commit|{
                         let chosen=commit.clone();let hash=commit.hash.clone();view!{<button class="btn recent-item" aria-pressed=move ||actions.selected.with(|selected|selected.as_ref().is_some_and(|selected|selected.hash==hash)) on:click=move |_|actions.select.run((chosen.clone(),None,None))>{format!("{} · {} · {}",commit.committed_at,commit.subject,commit.hash)}</button>}
                     }).collect_view()}</div>

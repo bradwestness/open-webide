@@ -17,9 +17,9 @@ use serde_json::json;
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReadFileArgs {
     pub path: String,
-    /// 1-based line to start reading from (default: 1).
+    /// First line (1-based; default 1).
     pub offset: Option<u64>,
-    /// Maximum number of lines to return (default: 2000).
+    /// Line count (default 2000).
     pub limit: Option<u64>,
 }
 
@@ -41,7 +41,7 @@ pub struct ListDirArgs {
 pub struct SearchArgs {
     pub query: String,
     pub path: Option<String>,
-    /// Also search .git, target, node_modules, dist (default: false).
+    /// Include .git, target, node_modules, dist; default false.
     pub include_ignored: Option<bool>,
 }
 
@@ -50,7 +50,7 @@ pub struct SearchArgs {
 pub struct GrepSearchArgs {
     pub query: String,
     pub path: Option<String>,
-    /// Also search .git, target, node_modules, dist (default: false).
+    /// Include .git, target, node_modules, dist; default false.
     pub include_ignored: Option<bool>,
 }
 
@@ -370,9 +370,9 @@ impl ToolName {
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Workspace-relative file path" },
-                        "offset": { "type": "integer", "description": "1-based line to start reading from (default: 1)" },
-                        "limit": { "type": "integer", "description": "Maximum number of lines to return (default: 2000)" }
+                        "path": { "type": "string", "description": "Project-relative path" },
+                        "offset": { "type": "integer", "description": "First line (1-based; default 1)" },
+                        "limit": { "type": "integer", "description": "Line count (default 2000)" }
                     },
                     "required": ["path"]
                 }),
@@ -383,8 +383,8 @@ impl ToolName {
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Workspace-relative file path" },
-                        "content": { "type": "string", "description": "Full new contents of the file" }
+                        "path": { "type": "string", "description": "Project-relative path" },
+                        "content": { "type": "string" }
                     },
                     "required": ["path", "content"]
                 }),
@@ -395,7 +395,7 @@ impl ToolName {
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Workspace-relative directory path (empty for root)" }
+                        "path": { "type": "string", "description": "Directory; empty for root" }
                     }
                 }),
             },
@@ -405,9 +405,9 @@ impl ToolName {
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "Substring to match against file paths" },
-                        "path": { "type": "string", "description": "Workspace-relative directory to search in (empty for root)" },
-                        "include_ignored": { "type": "boolean", "description": "Also search .git, target, node_modules, dist (default: false)" }
+                        "query": { "type": "string" },
+                        "path": { "type": "string", "description": "Directory; empty for root" },
+                        "include_ignored": { "type": "boolean", "description": "Include .git, target, node_modules, dist; default false" }
                     },
                     "required": ["query"]
                 }),
@@ -418,9 +418,9 @@ impl ToolName {
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "Search string to match across file lines" },
-                        "path": { "type": "string", "description": "Workspace-relative directory to restrict search (empty for root)" },
-                        "include_ignored": { "type": "boolean", "description": "Also search .git, target, node_modules, dist (default: false)" }
+                        "query": { "type": "string" },
+                        "path": { "type": "string", "description": "Directory; empty for root" },
+                        "include_ignored": { "type": "boolean", "description": "Include .git, target, node_modules, dist; default false" }
                     },
                     "required": ["query"]
                 }),
@@ -431,8 +431,8 @@ impl ToolName {
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "Search query" },
-                        "limit": { "type": "integer", "description": "Number of results to return (default: 5, max: 10)" }
+                        "query": { "type": "string" },
+                        "limit": { "type": "integer", "description": "Result count; default 5, max 10" }
                     },
                     "required": ["query"]
                 }),
@@ -443,7 +443,7 @@ impl ToolName {
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "url": { "type": "string", "description": "Full HTTP or HTTPS URL to read" }
+                        "url": { "type": "string" }
                     },
                     "required": ["url"]
                 }),
@@ -456,11 +456,11 @@ impl ToolName {
                     "properties": {
                         "command": {
                             "type": "string",
-                            "description": "Shell command to execute (e.g. 'cargo test', 'git diff')"
+                            "description": "Shell command"
                         },
                         "timeout_seconds": {
                             "type": "integer",
-                            "description": "Maximum execution time in seconds before terminating (default: 30, max: 300)"
+                            "description": "Timeout; default 30 seconds, max 300"
                         }
                     },
                     "required": ["command"]
@@ -496,8 +496,8 @@ impl ToolName {
                     "type": "object",
                     "required": ["message"],
                     "properties": {
-                        "message": { "type": "string", "description": "Conventional commit message (e.g. 'feat(core): add diff parser')." },
-                        "paths": { "type": "array", "items": { "type": "string" }, "description": "Optional subset of files to commit." }
+                        "message": { "type": "string", "description": "Conventional commit message" },
+                        "paths": { "type": "array", "items": { "type": "string" }, "description": "Files; omit for all tracked changes" }
                     }
                 }),
             },

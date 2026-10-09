@@ -9,6 +9,11 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Settle Git sync and file-open requests safely after scope changes or closed dialogs,
+  preserve editor reads across chat-session changes, and retain pending history
+  selections while loading more commits. Keep timeline popovers inside their panel
+  in both workspace modes.
+
 - Prepare final bracket links across bounded worker batches, preserving embedded
   language boundaries and hiding partial editing contexts until completion in
   both workspace modes.
@@ -16,6 +21,8 @@ for what's still ahead.
   slices before parsing or embedded-body fallback can make progress.
 
 - Keep combined skill, question and scheduling tool discovery within an 8K context budget in both execution modes, with full skill content read on demand.
+- Avoid repeating tool definitions in startup context and keep workspace parameter
+  descriptions compact, leaving room for replies and compaction at 8K ceilings.
 - Reconstruct warm syntax-worker sources in bounded UTF-8 batches, retaining the
   validated base until completion and discarding cancelled partial sources in
   both workspace modes.

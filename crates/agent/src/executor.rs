@@ -1237,10 +1237,25 @@ mod tests {
         assert!(openwebide_core::context::tool_schema_tokens(&existing_tools) < baseline_tokens);
         let mut actual = serde_json::to_value(existing_tools).unwrap();
         let mut snapshot = snapshot;
-        for value in [&mut actual, &mut snapshot] {
-            for tool in value.as_array_mut().unwrap() {
-                tool.as_object_mut().unwrap().remove("description");
+        // Wording can shrink without changing argument types, defaults or required fields.
+        fn remove_descriptions(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    fields.remove("description");
+                    for value in fields.values_mut() {
+                        remove_descriptions(value);
+                    }
+                }
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        remove_descriptions(value);
+                    }
+                }
+                _ => {}
             }
+        }
+        for value in [&mut actual, &mut snapshot] {
+            remove_descriptions(value);
         }
         assert_eq!(actual, snapshot);
     }

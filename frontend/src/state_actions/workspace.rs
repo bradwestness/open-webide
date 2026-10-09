@@ -465,13 +465,13 @@ impl WorkspaceActions {
             move |(path, completion): (String, Option<Callback<Result<(), String>>>)| {
                 let Some(project_id) = active_project.get_untracked() else {
                     if let Some(done) = completion {
-                        done.run(Err("Open a project first.".into()));
+                        let _ = done.try_run(Err("Open a project first.".into()));
                     }
                     return;
                 };
                 let Some(project) = projects.project(project_id) else {
                     if let Some(done) = completion {
-                        done.run(Err("Project unavailable.".into()));
+                        let _ = done.try_run(Err("Project unavailable.".into()));
                     }
                     return;
                 };
@@ -490,7 +490,7 @@ impl WorkspaceActions {
                         }))
                 {
                     if let Some(done) = completion {
-                        done.run(Err(
+                        let _ = done.try_run(Err(
                             "Restore the original project folder before opening this file.".into(),
                         ));
                     }
@@ -533,7 +533,6 @@ impl WorkspaceActions {
                     .with_untracked(|buffers| buffers.get(&(project_id, path.clone())).cloned());
                 let revision = workspace.begin_editor_read();
                 let generation = auth.generation.get_untracked();
-                let session = workspace.active_session.get_untracked();
                 let epoch = directory_epoch.get_untracked();
                 let kind = FileKind::from_path(&path);
                 let retained = cached
@@ -569,8 +568,7 @@ impl WorkspaceActions {
                 ui.toast.set(None);
                 spawn_local(async move {
                     let current = || {
-                        workspace.active_session.try_get_untracked() == Some(session)
-                            && auth.generation.try_get_untracked() == Some(generation)
+                        auth.generation.try_get_untracked() == Some(generation)
                             && directory_epoch.try_get_untracked() == Some(epoch)
                             && workspace.editor_read_current(revision, project_id, &path)
                     };
@@ -580,7 +578,7 @@ impl WorkspaceActions {
                     let Some(ws) = workspace_for.run(project_id) else {
                         workspace.editor_loading.set(false);
                         if let Some(done) = completion {
-                            done.run(Err("Reconnect the project folder first.".into()));
+                            let _ = done.try_run(Err("Reconnect the project folder first.".into()));
                         }
                         return;
                     };
@@ -597,7 +595,7 @@ impl WorkspaceActions {
                                 if current()
                                     && let Some(done) = completion
                                 {
-                                    done.run(Err(error.to_string()));
+                                    let _ = done.try_run(Err(error.to_string()));
                                     return;
                                 }
                             }
@@ -611,7 +609,7 @@ impl WorkspaceActions {
                                 .map(|_| ())
                                 .map_err(|error| error.to_string());
                             if current() {
-                                done.run(result);
+                                let _ = done.try_run(result);
                             }
                         }
                         return;
@@ -645,7 +643,7 @@ impl WorkspaceActions {
                         workspace.retain_editor_buffer(read_only.get_untracked());
                     }
                     if let Some(done) = completion {
-                        done.run(completion_result);
+                        let _ = done.try_run(completion_result);
                     }
                 });
             },
@@ -657,6 +655,8 @@ impl WorkspaceActions {
                 let generation = auth.generation.get_untracked();
                 let epoch = directory_epoch.get_untracked();
                 let session = workspace.active_session.get_untracked();
+                let selection = workspace.editor_read_revision.get_untracked();
+                let selected_file = workspace.open_file.get_untracked();
                 spawn_local(async move {
                     let result = async {
                         let ws = workspace_for
@@ -675,7 +675,9 @@ impl WorkspaceActions {
                         Ok(())
                     }
                     .await;
-                    if workspace.active_session.try_get_untracked() != Some(session)
+                    if workspace.editor_read_revision.try_get_untracked() != Some(selection)
+                        || workspace.open_file.try_get_untracked() != Some(selected_file)
+                        || workspace.active_session.try_get_untracked() != Some(session)
                         || active_project.try_get_untracked() != Some(project)
                         || auth.generation.try_get_untracked() != Some(generation)
                         || directory_epoch.try_get_untracked() != Some(epoch)
@@ -684,7 +686,9 @@ impl WorkspaceActions {
                     }
                     match result {
                         Ok(()) => open_request.run((path, Some(done))),
-                        Err(error) => done.run(Err(error)),
+                        Err(error) => {
+                            let _ = done.try_run(Err(error));
+                        }
                     }
                 });
             },

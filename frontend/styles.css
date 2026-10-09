@@ -3681,12 +3681,14 @@ button.browser-item {
     .git-commit-files { width: 100%; min-width: 0; max-width: none; }
     .git-commit-inspector > .panel-resizer { display: none; }
 }
-.git-file-timeline { display: flex; flex-direction: column; overflow: visible; padding: var(--space-3); }
+.git-file-timeline { display: flex; flex-direction: column; overflow: visible; padding: var(--space-3); container-type: inline-size; }
 .git-timeline-axis { height: calc(2 * var(--control-height)); position: relative; margin-inline: var(--space-4); border-top: 1px solid var(--border); }
 .git-timeline-tick { position: absolute; top: var(--control-height); transform: translateX(-50%); color: var(--text-muted); font-size: var(--font-caption); white-space: nowrap; }
 .git-timeline-cluster { position: absolute; top: 0; transform: translateX(-50%); }
 .git-timeline-cluster > summary { min-height: var(--control-height); min-width: var(--control-height); display: flex; gap: var(--space-1); align-items: center; justify-content: center; cursor: pointer; }
-.git-timeline-cluster .ui-feedback-overlay { position: absolute; top: var(--control-height); min-width: 18rem; max-width: 30rem; }
+.git-timeline-cluster .ui-feedback-overlay { position: absolute; top: var(--control-height); min-width: min(18rem, calc(50cqw - var(--space-4))); max-width: min(30rem, calc(50cqw - var(--space-4))); inset-inline-end: 0; }
+.git-timeline-cluster[data-align=start] .ui-feedback-overlay { inset-inline-start: 0; inset-inline-end: auto; }
+.git-timeline-cluster .ui-feedback-overlay .btn { width: 100%; white-space: normal; text-align: start; }
 .git-timeline-cluster .btn::before { display: none; }
 .git-readonly-diff, .git-history-list { position: relative; }
 .git-history-applied-filter { flex: none; color: var(--text-muted); font-size: var(--font-caption); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

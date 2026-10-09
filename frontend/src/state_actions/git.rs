@@ -12,6 +12,21 @@ use crate::state::{
 
 use crate::{project_git::ProjectGit, state::auth::AuthState, workspace::Workspace};
 
+// Completion owns a request token, so an older operation cannot clear a newer one.
+struct SyncCompletion {
+    busy: RwSignal<Option<String>>,
+    serial: std::rc::Rc<std::cell::Cell<u64>>,
+    token: u64,
+}
+
+impl Drop for SyncCompletion {
+    fn drop(&mut self) {
+        if self.serial.get() == self.token {
+            self.busy.try_set(None);
+        }
+    }
+}
+
 pub struct GitActionContext {
     pub project_git: ProjectGit,
     pub projects: ProjectsState,
@@ -353,6 +368,7 @@ impl GitActions {
             });
         });
 
+        let sync_serial = StoredValue::new_local(std::rc::Rc::new(std::cell::Cell::new(0_u64)));
         let on_sync = Callback::new(move |action: String| {
             let Some(project_id) = active_project.get_untracked() else {
                 return;
@@ -367,10 +383,19 @@ impl GitActions {
             let generation = auth.generation.get_untracked();
             let host_revision = project_git.revision();
             let revision = git.branch_revision.get_untracked();
+            let serial = sync_serial.get_value();
+            let token = serial.get().wrapping_add(1);
+            serial.set(token);
+            let completion = SyncCompletion {
+                busy: git.sync_busy,
+                serial,
+                token,
+            };
             git.sync_busy.set(Some(action.clone()));
             git.sync_error.set(None);
             git.sync_notice.set(None);
             spawn_local(async move {
+                let completion = completion;
                 let request = GitSyncRequest {
                     action: action.clone(),
                     remote: None,
@@ -395,7 +420,7 @@ impl GitActions {
                 {
                     return;
                 }
-                git.sync_busy.set(None);
+                drop(completion);
                 refresh.run(());
                 git.changes_revision.update(|revision| *revision += 1);
                 on_load_branches.run(());

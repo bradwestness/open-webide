@@ -152,6 +152,8 @@ impl GitHistoryActions {
                         if append {
                             commits.update(|commits| commits.extend(page.commits));
                         } else {
+                            selection_version.update(|version| *version += 1);
+                            diff_loading.set(false);
                             displayed.set(request.clone());
                             applied.set_value(request);
                             if commits.get_untracked() != page.commits {
@@ -160,7 +162,6 @@ impl GitHistoryActions {
                             if let Some((commit, comparison, selected_path, changed_files, value)) =
                                 detail
                             {
-                                selection_version.update(|version| *version += 1);
                                 if selected.get_untracked().as_ref() != Some(&commit) {
                                     selected.set(Some(commit));
                                 }

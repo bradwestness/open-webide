@@ -20,7 +20,7 @@ pub struct RunContext {
     limited: bool,
 }
 
-/// Summarize the environment and the exact tool schemas offered to this run.
+/// Summarize the environment; tool definitions travel separately in the request.
 pub fn environment_context(environment: &RunEnvironment, tools: &[ToolDefinition]) -> String {
     let mut text = format!(
         "Environment\nCurrent date: {}\n",
@@ -49,18 +49,15 @@ pub fn environment_context(environment: &RunEnvironment, tools: &[ToolDefinition
     if environment.project_root.is_some() && !tools.is_empty() {
         text.push_str("Filesystem tool paths are relative to the project root; commands run from that root.\n");
     }
-    text.push_str("\nAvailable tools (use only these tools):\n");
     if tools.is_empty() {
-        text.push_str("None; this is a chat-only run.\n");
-    }
-    for tool in tools {
-        let description = tool.description.lines().next().unwrap_or("");
-        let description = description.chars().take(240).collect::<String>();
-        let _ = writeln!(text, "- {}: {description}", tool.name);
+        text.push_str("\nNo tools; this is a chat-only run.\n");
+    } else {
+        // Repeating definitions here can exhaust small contexts before the first turn.
+        text.push_str("\nUse only the tools supplied with this request.\n");
     }
     if text.len() > 4096 {
         text.truncate(boundary(&text, 4096));
-        text.push_str("\n[Environment and tool summary truncated.]\n");
+        text.push_str("\n[Environment summary truncated.]\n");
     }
     text
 }

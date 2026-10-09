@@ -39,7 +39,8 @@ pub fn configure(
                 fixed
                     .saturating_add(limit / 4)
                     .saturating_add(limit / 8)
-                    .saturating_add(512),
+                    // Startup environment, task definition and current prompt.
+                    .saturating_add(1024),
             )
             .saturating_mul(3),
     );
@@ -462,7 +463,7 @@ mod tests {
         crate::scheduled::configure(&mut tools);
         configure(&mut tools, &mut prompt, &fixture().store.0, Some(8192));
         tools.push(crate::tasks::executor::definition());
-        let request = openwebide_core::ChatRequest {
+        let mut request = openwebide_core::ChatRequest {
             connection_id: 1,
             model: None,
             system_prompt: prompt,
@@ -479,7 +480,45 @@ mod tests {
             tools,
             model_settings: Default::default(),
         };
-        assert!(openwebide_core::context::conservative_tokens(&request) < 8192 - 2048 - 1024);
+        for mode in [
+            openwebide_core::WorkspaceMode::Local,
+            openwebide_core::WorkspaceMode::Remote,
+        ] {
+            let environment = openwebide_core::RunEnvironment {
+                mode: Some(mode),
+                project_name: Some("budget-test".into()),
+                project_root: Some("sample".into()),
+                browser_preferences: Some(openwebide_core::BrowserPreferences {
+                    timezone: Some("America/Chicago".into()),
+                    locale: Some("en-US".into()),
+                    hour_cycle: Some("h12".into()),
+                    utc_offset_minutes: Some(-360),
+                }),
+                ..Default::default()
+            };
+            let startup =
+                futures::executor::block_on(crate::context::RunContext::new(environment).startup(
+                    &openwebide_core::MemoryVfs::new(),
+                    &crate::NoopBridgeClient,
+                    &request.tools,
+                ));
+            request.messages.push(openwebide_core::ChatMessage {
+                id: 2,
+                session_id: 1,
+                role: openwebide_core::Role::System,
+                content: format!("[Open WebIDE run context]\n{startup}"),
+                tool_calls: None,
+                tool_call_id: None,
+                created_at: 0,
+                usage: None,
+            });
+            let tokens = openwebide_core::context::conservative_tokens(&request);
+            assert!(
+                tokens < 8192 - 2048 - 1024,
+                "{mode:?}: {tokens} tokens leave insufficient compaction room"
+            );
+            request.messages.pop();
+        }
         for name in [
             "ask_user_question",
             "monitor",
