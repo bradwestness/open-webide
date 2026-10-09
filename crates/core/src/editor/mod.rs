@@ -2,6 +2,8 @@
 //! Offsets are UTF-8 byte boundaries; browser adapters convert UTF-16 at the edge.
 
 use std::ops::Range;
+mod change;
+pub(crate) use change::TextChangePreparation;
 
 mod fold_providers;
 pub use fold_providers::fold_ranges;

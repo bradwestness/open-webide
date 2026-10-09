@@ -2741,3 +2741,52 @@ Parser source-change comparisons outside this plain-row job, whole-row capacity
 allocation, final metadata assembly/publication and transport serialization remain.
 This change does not establish the full responsiveness, memory, geometry or device
 completion gates.
+
+### Cooperative comparison before parser updates (2026-10-09)
+
+Parser-backed cooperative preparation now uses the same resumable exact UTF-8
+comparison as retained plain-row preparation. Unresolved warm sources retain the
+old tree and immutable base while prefix/suffix validation yields between bounded
+advances. Completed replacement boundaries enter the existing shared parser update
+path; resolver-provided deltas bypass comparison only for the exact ready base
+allocation. Unfinished comparison exposes no new analysis, contexts or folds.
+Supersession, cancellation and synchronous updates release its retained progress.
+
+All 510 parser-enabled and 399 minimal core tests pass, as does strict core/WASM
+lint. Rust, TypeScript and admitted Markdown fixtures match fresh complete analysis
+after resumed LF/CRLF updates. Exact-base delta admission and source release have
+regressions. A large repeated-word Markdown paragraph hit the existing parser
+cancellation limit before source comparison; it remains outside this improvement's
+evidence and the broader Markdown/preparation gate stays open.
+All three optimized cooperative Chromium contracts pass in both workspace modes:
+cold/warm parser preparation on an approximately 820-KiB LF/CRLF source, SQL
+worker preparation and ordinary/terminal plain fallback reuse with stale scopes.
+
+Admission scans, changed row/index assembly, synchronous source-change callers,
+final metadata publication and transport materialization remain. These contracts
+do not establish the full performance, memory, wrapped/tabbed layout or device
+completion gates.
+
+CI run `37889078284` for the preceding checkpoint passed native/backend, frontend
+lint/build, Windows bridge and Docker, but its ordinary browser component run
+exhausted the 300-second harness deadline while contracts were still running.
+The workflow now partitions ordinary tests with complementary `editor::` filters
+across every target and retains the two separate expensive matrices. No test or
+readiness deadline is removed or relaxed; YAML and extracted shell syntax validate.
+Linux CI must verify this partition before reliability is established.
+The first complete local optimized run passed 462 component contracts, including
+both expensive editor matrices, but its keyboard-tooltip fixture lost its popup
+when focus scrolled the growing harness page. The focus-only fixture now stays
+in the viewport and prevents native focus scrolling; both tooltip fixtures now
+settle stylesheet/layout changes in a shared setup before dispatching events.
+Pointer/scroll dismissal assertions and readiness limits remain unchanged.
+The non-editor partition passes all 327 component contracts, six unit tests and
+four adapter integrations after that fixture correction.
+The original run passed all 19 unit tests
+but stopped before adapter integrations on that fixture failure.
+The complementary editor partition passes 134 component contracts and 13 unit
+tests in 92.64 seconds; the non-editor component partition completes in 117.82
+seconds. Combined ordinary coverage is 461 component contracts, all 19 unit
+tests and four adapter integrations. Both expensive matrices passed in the first
+complete run with the same production parser code. These are local results;
+the partitioned Linux workflow still needs its own successful run.

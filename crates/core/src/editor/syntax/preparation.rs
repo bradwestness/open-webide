@@ -40,6 +40,12 @@ struct EmbeddedBody {
     checks_at_start: usize,
 }
 
+pub(super) struct SourceComparison {
+    base: Arc<String>,
+    source: Arc<String>,
+    job: crate::editor::TextChangePreparation,
+}
+
 impl SyntaxDocument {
     pub(super) fn begin_update(
         &mut self,
@@ -48,6 +54,7 @@ impl SyntaxDocument {
         source: impl FnOnce() -> Arc<String>,
         resolved_change: Option<(&Arc<String>, &crate::editor::TextChange)>,
     ) -> Option<SyntaxStatus> {
+        self.source_comparison = None;
         if text.len() > MAX_STRUCTURE_BYTES {
             self.clear();
             return Some(SyntaxStatus::TooLarge);
@@ -147,16 +154,84 @@ impl SyntaxDocument {
             .pending
             .as_ref()
             .is_some_and(|pending| Arc::ptr_eq(&pending.source, &source))
+            || self
+                .source_comparison
+                .as_ref()
+                .is_some_and(|pending| Arc::ptr_eq(&pending.source, &source))
             || (self.ready && Arc::ptr_eq(&self.text, &source));
         if !admitted && preparation_exceeds_limits(&source) {
             self.clear();
             return Some((SyntaxStatus::TooLarge, None));
         }
+        let change = change.filter(|(base, _)| self.ready && Arc::ptr_eq(base, &self.text));
+        let base = self.text.clone();
+        let compared = if change.is_none()
+            && self.ready
+            && self.parser.is_some()
+            && !Arc::ptr_eq(&base, &source)
+        {
+            match self.compare_source_cooperative(&source, should_continue, should_yield)? {
+                Ok(change) => Some(change),
+                Err(status) => return Some((status, None)),
+            }
+        } else {
+            self.source_comparison = None;
+            None
+        };
+        let change = compared.as_ref().map(|change| (&base, change)).or(change);
         let status = self
             .begin_update(&source, &mut *should_continue, || source.clone(), change)
             .or_else(|| self.advance_update(should_continue, should_yield))?;
         let status = self.advance_lexical(status, should_continue, should_yield)?;
         Some(self.finish_preparation(status, tab_width, should_continue))
+    }
+
+    fn compare_source_cooperative(
+        &mut self,
+        source: &Arc<String>,
+        should_continue: &mut impl FnMut() -> bool,
+        should_yield: &mut impl FnMut() -> bool,
+    ) -> Option<Result<crate::editor::TextChange, SyntaxStatus>> {
+        if !self.source_comparison.as_ref().is_some_and(|pending| {
+            Arc::ptr_eq(&pending.source, source) && Arc::ptr_eq(&pending.base, &self.text)
+        }) {
+            self.prepared = None;
+            self.source_comparison = Some(SourceComparison {
+                base: self.text.clone(),
+                source: source.clone(),
+                job: crate::editor::TextChangePreparation::default(),
+            });
+        }
+        loop {
+            if !should_continue() {
+                self.clear();
+                return Some(Err(SyntaxStatus::Cancelled));
+            }
+            let pending = self
+                .source_comparison
+                .as_mut()
+                .expect("retained source comparison");
+            if pending.job.is_complete() {
+                let result = pending
+                    .job
+                    .change()
+                    .cloned()
+                    .unwrap_or(crate::editor::TextChange {
+                        range: 0..0,
+                        new_end: 0,
+                    });
+                self.source_comparison = None;
+                return Some(Ok(result));
+            }
+            if should_yield() {
+                return None;
+            }
+            pending.job.advance(
+                &pending.base,
+                &pending.source,
+                crate::highlight::LEXICAL_BATCH_BYTES,
+            );
+        }
     }
 
     /// Both drivers retain the same row scanner. Yielding never publishes a
@@ -490,6 +565,185 @@ fn parse_step(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parser_source_comparison_yields_and_matches_fresh_analysis() {
+        for (language, prefix, suffix) in [
+            (Language::Rust, "/*", "*/\nfn main() { let value = 1; }"),
+            (
+                Language::TypeScript,
+                "/*",
+                "*/\nfunction main() { const value = 1; }",
+            ),
+            (
+                Language::Markdown,
+                "Paragraph ",
+                "\n\n# Heading\n\n**done**",
+            ),
+        ] {
+            for ending in ["\n", "\r\n"] {
+                let body = if language == Language::Markdown {
+                    format!("words 文😀{}", "x".repeat(300_000))
+                } else {
+                    "words 文😀 ".repeat(20_000)
+                };
+                let source = Arc::new(format!("{prefix}{body}{suffix}").replace('\n', ending));
+                let mut document = SyntaxDocument::new(language).unwrap();
+                let (status, original) = document.prepare_shared(source.clone(), 4, || true);
+                let original = original.unwrap_or_else(|| {
+                    panic!("{language:?} {ending:?}: initial status {status:?}")
+                });
+                let changed = Arc::new(source.replacen("words", "revised", 1));
+                let mut checks = 0;
+                assert!(
+                    document
+                        .prepare_cooperative(
+                            changed.clone(),
+                            4,
+                            || true,
+                            || {
+                                checks += 1;
+                                checks >= 2
+                            }
+                        )
+                        .is_none()
+                );
+                assert!(document.source_comparison.is_some());
+                assert!(document.pending.is_none());
+                assert!(document.prepared.is_none());
+                assert!(document.structure().is_none());
+                assert!(document.folds().is_empty());
+                assert!(Arc::ptr_eq(&document.text, &source));
+                assert!(Arc::ptr_eq(original.source_snapshot(), &source));
+                let mut turns = 0;
+                let analysis = loop {
+                    turns += 1;
+                    assert!(turns < 10_000);
+                    let mut checks = 0;
+                    if let Some((status, analysis)) = document.prepare_cooperative(
+                        changed.clone(),
+                        4,
+                        || true,
+                        || {
+                            checks += 1;
+                            checks >= 8
+                        },
+                    ) {
+                        assert_eq!(status, SyntaxStatus::Ready { incremental: true });
+                        break analysis.unwrap();
+                    }
+                    assert!(document.prepared.is_none());
+                };
+                assert!(Arc::ptr_eq(analysis.source_snapshot(), &changed));
+                let (_, expected) = SyntaxDocument::new(language).unwrap().prepare_shared(
+                    changed.clone(),
+                    4,
+                    || true,
+                );
+                assert_eq!(
+                    serde_json::to_value(analysis.transfer_data()).unwrap(),
+                    serde_json::to_value(expected.unwrap().transfer_data()).unwrap()
+                );
+                assert!(document.source_comparison.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn resolved_parser_delta_skips_comparison_only_for_its_exact_ready_base() {
+        let source = Arc::new(format!(
+            "/*{}*/\nfn main() {{}}",
+            "words 文😀 ".repeat(20_000)
+        ));
+        let changed = Arc::new(source.replacen("words", "changed", 1));
+        let change = crate::editor::text_change(&source, &changed).unwrap();
+        for trusted in [false, true] {
+            let mut document = SyntaxDocument::new(Language::Rust).unwrap();
+            document
+                .prepare_shared(source.clone(), 4, || true)
+                .1
+                .unwrap();
+            let base = if trusted {
+                source.clone()
+            } else {
+                Arc::new(source.as_ref().clone())
+            };
+            assert!(
+                document
+                    .prepare_resolved_cooperative(
+                        changed.clone(),
+                        4,
+                        &mut || true,
+                        &mut || true,
+                        Some((&base, &change))
+                    )
+                    .is_none()
+            );
+            assert_eq!(document.source_comparison.is_some(), !trusted);
+            assert_eq!(document.pending.is_some(), trusted);
+            let (status, analysis) = document
+                .prepare_resolved_cooperative(
+                    changed.clone(),
+                    4,
+                    &mut || true,
+                    &mut || false,
+                    Some((&base, &change)),
+                )
+                .unwrap();
+            assert_eq!(status, SyntaxStatus::Ready { incremental: true });
+            assert!(Arc::ptr_eq(analysis.unwrap().source_snapshot(), &changed));
+            assert!(document.source_comparison.is_none());
+        }
+    }
+
+    #[test]
+    fn parser_source_comparison_releases_superseded_and_cancelled_sources() {
+        let source = Arc::new(format!(
+            "/*{}*/\nfn main() {{}}",
+            "words 文😀 ".repeat(20_000)
+        ));
+        let mut document = SyntaxDocument::new(Language::Rust).unwrap();
+        document
+            .prepare_shared(source.clone(), 4, || true)
+            .1
+            .unwrap();
+        let changed = Arc::new(source.replacen("words", "changed", 1));
+        let weak = Arc::downgrade(&changed);
+        assert!(
+            document
+                .prepare_cooperative(changed.clone(), 4, || true, || true)
+                .is_none()
+        );
+        drop(changed);
+        let next = Arc::new(source.replacen("words", "replacement", 1));
+        assert!(
+            document
+                .prepare_cooperative(next.clone(), 4, || true, || true)
+                .is_none()
+        );
+        assert!(weak.upgrade().is_none());
+        let weak = Arc::downgrade(&next);
+        assert_eq!(
+            document
+                .prepare_cooperative(next.clone(), 4, || false, || false)
+                .unwrap()
+                .0,
+            SyntaxStatus::Cancelled
+        );
+        drop(next);
+        assert!(weak.upgrade().is_none());
+        assert!(document.source_comparison.is_none());
+        assert!(document.tree.is_none());
+        let replacement = Arc::new("fn replacement() {}".to_owned());
+        let (status, analysis) = document
+            .prepare_cooperative(replacement.clone(), 4, || true, || false)
+            .unwrap();
+        assert_eq!(status, SyntaxStatus::Ready { incremental: false });
+        assert!(Arc::ptr_eq(
+            analysis.unwrap().source_snapshot(),
+            &replacement
+        ));
+    }
 
     fn finish_plain_rows(
         document: &mut SyntaxDocument,

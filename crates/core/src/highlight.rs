@@ -229,7 +229,7 @@ pub struct LexicalPreparation {
     source_change: Option<crate::editor::TextChange>,
     previous_row: usize,
     pending_row: Option<preparation::LexicalRowPreparation>,
-    pending_change: Option<preparation::LexicalSourceComparison>,
+    pending_change: Option<crate::editor::TextChangePreparation>,
     #[cfg(test)]
     indexed_searches: std::cell::Cell<usize>,
     #[cfg(test)]
@@ -294,7 +294,7 @@ impl LexicalPreparation {
                 self.unchanged = true;
                 self.complete = true;
             } else {
-                self.pending_change = Some(preparation::LexicalSourceComparison::default());
+                self.pending_change = Some(crate::editor::TextChangePreparation::default());
             }
             self.previous = Some(previous);
         }
