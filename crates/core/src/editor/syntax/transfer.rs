@@ -33,6 +33,78 @@ pub enum SyntaxSource {
     },
 }
 
+/// Own every source participating in reconstruction across worker yields.
+pub(super) enum SourceResolution {
+    Full(Arc<String>),
+    Replace {
+        previous: Arc<String>,
+        edit: SourceReplacement,
+    },
+}
+impl SourceResolution {
+    pub fn is_ready(&self) -> bool {
+        match self {
+            Self::Full(_) => true,
+            Self::Replace { edit, .. } => edit.phase == 3,
+        }
+    }
+    pub fn advance(&mut self, budget: usize) -> bool {
+        match self {
+            Self::Full(_) => true,
+            Self::Replace { previous, edit } => edit.advance(previous, budget),
+        }
+    }
+    pub fn finish(self) -> Option<Arc<String>> {
+        match self {
+            Self::Full(source) => Some(source),
+            Self::Replace { edit, .. } => (edit.phase == 3).then(|| Arc::new(edit.output)),
+        }
+    }
+}
+
+pub(super) struct SourceReplacement {
+    start: usize,
+    end: usize,
+    text: String,
+    output: String,
+    phase: usize,
+    offset: usize,
+}
+impl SourceReplacement {
+    fn new(start: usize, end: usize, text: String, length: usize) -> Self {
+        Self {
+            start,
+            end,
+            text,
+            output: String::with_capacity(length),
+            phase: 0,
+            offset: 0,
+        }
+    }
+    /// UTF-8 scalars are indivisible: callers need at least four bytes of budget
+    /// to guarantee progress. A smaller budget may stop before the next scalar.
+    fn advance(&mut self, previous: &str, mut budget: usize) -> bool {
+        while self.phase < 3 && budget > 0 {
+            let part = match self.phase {
+                0 => &previous[..self.start],
+                1 => &self.text,
+                _ => &previous[self.end..],
+            };
+            let end = part.floor_char_boundary(part.len().min(self.offset.saturating_add(budget)));
+            self.output.push_str(&part[self.offset..end]);
+            budget -= end - self.offset;
+            self.offset = end;
+            if end == part.len() {
+                self.phase += 1;
+                self.offset = 0;
+            } else {
+                break;
+            }
+        }
+        self.phase == 3
+    }
+}
+
 impl SyntaxSource {
     pub fn publication(source: &str, previous: Option<&str>) -> Self {
         if let Some(previous) = previous {
@@ -81,14 +153,28 @@ impl SyntaxSource {
         match self {
             Self::Full(source) => Some(source),
             Self::Replace { start, end, text } => {
-                let old = previous?;
-                let mut source = String::with_capacity(length);
-                source.push_str(old.get(..start)?);
-                source.push_str(&text);
-                source.push_str(old.get(end..)?);
-                Some(source)
+                let mut edit = SourceReplacement::new(start, end, text, length);
+                while !edit.advance(previous?, usize::MAX) {}
+                Some(edit.output)
             }
         }
+    }
+
+    pub(super) fn prepare_resolution(
+        self,
+        previous: Option<Arc<String>>,
+    ) -> Option<SourceResolution> {
+        let length = self.result_length(previous.as_deref().map(String::as_str))?;
+        if length > MAX_STRUCTURE_BYTES {
+            return None;
+        }
+        Some(match self {
+            Self::Full(source) => SourceResolution::Full(Arc::new(source)),
+            Self::Replace { start, end, text } => SourceResolution::Replace {
+                previous: previous?,
+                edit: SourceReplacement::new(start, end, text, length),
+            },
+        })
     }
 
     fn validate(
@@ -393,6 +479,137 @@ impl SyntaxAnalysisData {
 mod tests {
     use super::*;
     use crate::highlight::language_from_path;
+    #[test]
+    fn bounded_source_resolution_matches_splices_without_splitting_unicode() {
+        for old in ["", "文😀", "a\r\n文😀\nlast", "last\r"] {
+            let base = Arc::new(old.to_owned());
+            let positions = old
+                .char_indices()
+                .map(|(index, _)| index)
+                .chain(std::iter::once(old.len()))
+                .collect::<Vec<_>>();
+            for &start in &positions {
+                for &end in positions.iter().filter(|&&end| end >= start) {
+                    for text in ["", "new", "😀文\r\n"] {
+                        let wire = SyntaxSource::Replace {
+                            start,
+                            end,
+                            text: text.into(),
+                        };
+                        let expected = format!("{}{text}{}", &old[..start], &old[end..]);
+                        assert_eq!(wire.clone().resolve(Some(old)).unwrap(), expected);
+                        for budget in [4, 7, 8192] {
+                            let mut job =
+                                wire.clone().prepare_resolution(Some(base.clone())).unwrap();
+                            let SourceResolution::Replace { previous, edit } = &job else {
+                                panic!("replacement job");
+                            };
+                            assert!(Arc::ptr_eq(previous, &base));
+                            assert!(edit.output.is_empty());
+                            assert!(!job.advance(0));
+                            for _ in 0..100 {
+                                let before = match &job {
+                                    SourceResolution::Replace { edit, .. } => edit.output.len(),
+                                    SourceResolution::Full(_) => unreachable!(),
+                                };
+                                let done = job.advance(budget);
+                                let SourceResolution::Replace { edit, .. } = &job else {
+                                    unreachable!()
+                                };
+                                assert!(edit.output.len() - before <= budget);
+                                assert!(expected.starts_with(&edit.output));
+                                if done {
+                                    break;
+                                }
+                            }
+                            assert!(job.is_ready());
+                            assert_eq!(job.finish().unwrap().as_str(), expected);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reconstruction_bounds_large_prefix_insert_and_suffix_batches() {
+        let base = Arc::new("a文😀\r\n".repeat(100_000));
+        let start = base.len() / 2;
+        let end = start + 10;
+        let inserted = "文😀\n".repeat(10_000);
+        let expected = format!("{}{inserted}{}", &base[..start], &base[end..]);
+        let mut job = SyntaxSource::Replace {
+            start,
+            end,
+            text: inserted,
+        }
+        .prepare_resolution(Some(base))
+        .unwrap();
+        let mut phases = [false; 3];
+        let mut batches = 0;
+        while !job.is_ready() {
+            let SourceResolution::Replace { edit, .. } = &job else {
+                unreachable!()
+            };
+            phases[edit.phase] = true;
+            let before = edit.output.len();
+            job.advance(8192);
+            let SourceResolution::Replace { edit, .. } = &job else {
+                unreachable!()
+            };
+            assert!(edit.output.len() - before <= 8192);
+            batches += 1;
+            assert!(batches < 1000);
+        }
+        assert!(phases.into_iter().all(|seen| seen));
+        assert!(batches > 100);
+        assert_eq!(job.finish().unwrap().as_str(), expected);
+    }
+
+    #[test]
+    fn source_resolution_keeps_owned_bases_and_full_sources_without_extra_copies() {
+        let full = "文😀\r\n".repeat(10_000);
+        let pointer = full.as_ptr();
+        let job = SyntaxSource::Full(full).prepare_resolution(None).unwrap();
+        assert!(job.is_ready());
+        assert_eq!(job.finish().unwrap().as_ptr(), pointer);
+        let base = Arc::new("文😀\r\n".repeat(10_000));
+        let weak = Arc::downgrade(&base);
+        let mut job = SyntaxSource::Replace {
+            start: 0,
+            end: 0,
+            text: "new\n".into(),
+        }
+        .prepare_resolution(Some(base.clone()))
+        .unwrap();
+        assert!(!job.advance(8192));
+        drop(base);
+        assert!(weak.upgrade().is_some());
+        assert!(job.finish().is_none());
+        assert!(weak.upgrade().is_none());
+        let base = Arc::new("文😀".to_owned());
+        for (start, end) in [(1, 3), (0, 4), (7, 0), (0, 8)] {
+            assert!(
+                SyntaxSource::Replace {
+                    start,
+                    end,
+                    text: String::new()
+                }
+                .prepare_resolution(Some(base.clone()))
+                .is_none()
+            );
+        }
+        assert!(
+            SyntaxSource::Replace {
+                start: 0,
+                end: 0,
+                text: String::new()
+            }
+            .prepare_resolution(None)
+            .is_none()
+        );
+    }
+
     #[test]
     fn structural_patches_reconstruct_edits_and_reject_invalid_bases_ranges_and_budgets() {
         let source: String = (0..100)

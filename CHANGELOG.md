@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reconstruct warm syntax-worker sources in bounded UTF-8 batches, retaining the
+  validated base until completion and discarding cancelled partial sources in
+  both workspace modes.
+
 - Yield while publishing parser line indexes after large-file edits, preserving
   the previous coordinates until the complete replacement is ready. Cancelled
   or superseded work cannot publish partial indexes in either workspace mode.

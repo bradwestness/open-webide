@@ -2964,3 +2964,38 @@ explicit no-error assertion. All 24 local-bridge Chromium contracts pass in
 19.03 seconds, retaining discovery fallback/timeout and compaction persistence
 assertions. No production model limits or test deadlines changed. Full CI on
 the new checkpoint remains to be verified.
+
+
+### Cooperative worker source reconstruction (2026-10-09)
+
+Validated worker replacement requests now retain an owned reconstruction job
+before parsing. Prefix, inserted text and suffix append in at most 64-KiB batches
+without splitting UTF-8 scalars. The exact published base allocation stays owned
+until completion; no partial String reaches admission, parsing or publication.
+Cancellation drops the partial source and the normal worker control reply remains
+unchanged. Full snapshots move their existing String allocation without another
+copy. The synchronous message driver drains the same job; borrowed SyntaxSource
+resolution uses the same reconstruction policy without copying its base.
+
+Total resolved bytes remain charged against the existing worker queue cap before
+reconstruction starts, including when only a small insertion was transmitted.
+Ranges and UTF-8 boundaries validate against the exact ticketed publication before
+allocation. Request/reply schemas and protocol version stay unchanged.
+
+This bounds source copying between worker tasks. Initial String capacity allocation,
+JSON decoding/encoding, frontend source-delta validation, paint snapshots and
+final metadata publication remain open gates. Budgets smaller than four bytes
+can stop before an indivisible UTF-8 scalar; production batches are 64 KiB.
+
+Independent splice-oracle tests cover every Unicode edit boundary, LF/CRLF,
+empty replacements, zero and small budgets, owned-base release, invalid ranges
+and full-source allocation identity. Shared worker regressions stop during a
+large delta before parser entry, verify byte accounting, cancel or complete to
+exact fresh analysis, then recover on a full snapshot. A separate large
+prefix/insertion/suffix fixture requires over 100 bounded copy batches and
+checks every phase against exact splicing. All 532 parser-enabled core contracts
+and strict core lint pass. All six optimized cooperative Chromium contracts
+pass in 6.97 seconds across both workspace modes, including explicitly
+asserted warm replacement requests. Strict release WASM component-test lint
+also passes. The preceding index-publication checkpoint CI is still running
+in `37904746814`; full CI and the wider physical/performance gates remain open.
