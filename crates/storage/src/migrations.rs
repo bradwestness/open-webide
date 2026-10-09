@@ -22,7 +22,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 38;
+pub const SCHEMA_VERSION: i64 = 39;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -433,6 +433,10 @@ async fn apply_step<D: Db>(
             ] {
                 db.execute(sql, &[]).await?;
             }
+            Ok(())
+        }
+        39 => {
+            db.execute("CREATE TABLE IF NOT EXISTS monitors (task_id INTEGER PRIMARY KEY REFERENCES scheduled_tasks(id) ON DELETE CASCADE, session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, interval_seconds INTEGER NOT NULL, remaining INTEGER NOT NULL, expires_at INTEGER NOT NULL)", &[]).await?;
             Ok(())
         }
         other => Err(StorageError::Db(format!("unknown migration step {other}"))),

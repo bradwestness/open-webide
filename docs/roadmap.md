@@ -315,6 +315,15 @@ terminal pane are done and in the changelog, but:
 
 ## Later
 
+### Plugin background jobs
+
+Ephemeral agent follow-up monitors now use the durable host dispatcher; see
+[Monitors](monitors.md). General plugin callbacks and continuing skill jobs still
+need trigger contracts and integration with the planned plugin lifecycle: pin job
+versions, handle plugin disable/remove/update while work is pending, and verify
+restart recovery and deduplicated callback delivery through the shared facade in
+both project modes.
+
 ### Multi-user
 
 Only needed once more than one account can exist (today registration closes

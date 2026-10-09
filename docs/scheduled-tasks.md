@@ -38,6 +38,9 @@ show **Approve** and **Deny**; an active response also has **Stop**. Pausing or
 removing a task cancels undelivered prompts; it does not erase a delivered chat or
 stop an already-running response.
 
+For temporary agent follow-up checks, use [Monitors](monitors.md). They share
+the host dispatcher but stay out of this saved-task list.
+
 ## Execution hosts
 
 The bridge daemon supplies the clock and native execution primitives. Keep Spin

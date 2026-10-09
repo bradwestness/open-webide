@@ -136,6 +136,17 @@ impl Tool {
             Tool::GitStatus => "inspect git status".to_string(),
             Tool::HostInfo => "inspect bridge host hardware".into(),
             Tool::Scheduled(command) => match command {
+                openwebide_core::scheduled::TaskCommand::Monitor { command, .. } => match command {
+                    openwebide_core::scheduled::MonitorCommand::Start { delay_seconds, .. } => {
+                        format!("Start a host monitor in {delay_seconds} seconds")
+                    }
+                    openwebide_core::scheduled::MonitorCommand::List {} => {
+                        "List conversation monitors".into()
+                    }
+                    openwebide_core::scheduled::MonitorCommand::Cancel { id, .. } => {
+                        format!("Cancel future checks for monitor #{id}")
+                    }
+                },
                 openwebide_core::scheduled::TaskCommand::List => "list scheduled tasks".into(),
                 openwebide_core::scheduled::TaskCommand::Create { draft } => {
                     format!("schedule {}", draft.title)
@@ -195,6 +206,7 @@ pub enum ToolName {
     GitStatus,
     HostInfo,
     TodoWrite,
+    Monitor,
     ScheduleList,
     ScheduleCreate,
     ScheduleUpdate,
@@ -236,6 +248,7 @@ impl ToolName {
         ToolName::GitStatus,
         ToolName::HostInfo,
         ToolName::TodoWrite,
+        ToolName::Monitor,
         ToolName::ScheduleList,
         ToolName::ScheduleCreate,
         ToolName::ScheduleUpdate,
@@ -264,6 +277,7 @@ impl ToolName {
             ToolName::GitStatus => "git_status",
             ToolName::HostInfo => "host_info",
             ToolName::TodoWrite => "todo_write",
+            ToolName::Monitor => "monitor",
             ToolName::ScheduleList => "schedule_list",
             ToolName::ScheduleCreate => "schedule_create",
             ToolName::ScheduleUpdate => "schedule_update",
@@ -283,7 +297,7 @@ impl ToolName {
     /// The tool's JSON-schema definition, as advertised to the model.
     pub fn definition(self) -> ToolDefinition {
         match self {
-            ToolName::ScheduleList | ToolName::ScheduleCreate | ToolName::ScheduleUpdate | ToolName::ScheduleDelete => crate::scheduled::definition(self.as_str()),
+            ToolName::Monitor | ToolName::ScheduleList | ToolName::ScheduleCreate | ToolName::ScheduleUpdate | ToolName::ScheduleDelete => crate::scheduled::definition(self.as_str()),
             ToolName::MemoryCreate => ToolDefinition { name: self.as_str().into(), description: "Store a durable project fact or convention. Omit title for an automatic name unless the user supplied a specific name. Avoid credentials, secrets and transient task state.".into(), parameters: json!({"type":"object","properties":{"auto_title":{"type":"boolean","description":"Generate and refresh the title from content"},"title":{"type":"string","maxLength":120},"content":{"type":"string","maxLength":4000}},"required":["content"],"additionalProperties":false}) },
             ToolName::MemorySearch => ToolDefinition { name: self.as_str().into(), description: "Search project memories by text; empty query lists recent entries. Returns bounded excerpts.".into(), parameters: json!({"type":"object","properties":{"query":{"type":"string","maxLength":256}},"required":["query"],"additionalProperties":false}) },
             ToolName::MemoryRead => ToolDefinition { name: self.as_str().into(), description: "Read a full project memory, including its current revision.".into(), parameters: json!({"type":"object","properties":{"id":{"type":"integer","minimum":1}},"required":["id"],"additionalProperties":false}) },
@@ -510,6 +524,7 @@ impl FromStr for ToolName {
             "git_status" => Ok(ToolName::GitStatus),
             "host_info" => Ok(ToolName::HostInfo),
             "todo_write" => Ok(ToolName::TodoWrite),
+            "monitor" => Ok(ToolName::Monitor),
             "schedule_list" => Ok(ToolName::ScheduleList),
             "schedule_create" => Ok(ToolName::ScheduleCreate),
             "schedule_update" => Ok(ToolName::ScheduleUpdate),
@@ -577,6 +592,19 @@ pub fn parse(call: &ToolCall) -> Result<Tool, ToolArgError> {
         };
     }
     match name {
+        ToolName::Monitor => {
+            serde_json::from_str::<openwebide_core::scheduled::MonitorCommand>(raw)
+                .map(|command| {
+                    Tool::Scheduled(openwebide_core::scheduled::TaskCommand::Monitor {
+                        session_id: 0,
+                        command,
+                    })
+                })
+                .map_err(|error| ToolArgError::InvalidArguments {
+                    tool: "monitor",
+                    error: error.to_string(),
+                })
+        }
         ToolName::ScheduleList
         | ToolName::ScheduleCreate
         | ToolName::ScheduleUpdate
@@ -760,6 +788,7 @@ mod tests {
             Tool::GitStatus => ToolName::GitStatus,
             Tool::HostInfo => ToolName::HostInfo,
             Tool::Scheduled(command) => match command {
+                openwebide_core::scheduled::TaskCommand::Monitor { .. } => ToolName::Monitor,
                 openwebide_core::scheduled::TaskCommand::List => ToolName::ScheduleList,
                 openwebide_core::scheduled::TaskCommand::Create { .. } => ToolName::ScheduleCreate,
                 openwebide_core::scheduled::TaskCommand::Update { .. } => ToolName::ScheduleUpdate,
@@ -913,6 +942,31 @@ mod tests {
                 ),
                 "needs_bridge drifted for {name:?}"
             );
+        }
+    }
+
+    #[test]
+    fn monitor_arguments_are_typed_and_cannot_redirect_the_session() {
+        for arguments in [
+            r#"{"action":"start","prompt":"Check the build","delay_seconds":600}"#,
+            r#"{"action":"list"}"#,
+            r#"{"action":"cancel","id":1,"revision":1}"#,
+        ] {
+            assert!(matches!(
+                parse(&call("monitor", arguments)).unwrap(),
+                Tool::Scheduled(openwebide_core::scheduled::TaskCommand::Monitor {
+                    session_id: 0,
+                    ..
+                })
+            ));
+        }
+        for arguments in [
+            r#"{"action":"list","session_id":2}"#,
+            r#"{"action":"start","prompt":"check"}"#,
+            r#"{"action":"cancel","id":1}"#,
+            r#"{"action":"unknown"}"#,
+        ] {
+            assert!(parse(&call("monitor", arguments)).is_err());
         }
     }
 

@@ -107,3 +107,7 @@ pub use configuration::Configuration;
 pub mod editor_chrome;
 
 pub mod memories;
+
+mod monitors;
+
+pub use monitors::ConversationMonitors;

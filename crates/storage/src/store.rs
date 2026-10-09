@@ -12,6 +12,8 @@ mod reviews;
 mod rewind;
 mod rows;
 pub use push::PushDelivery;
+#[cfg(test)]
+mod monitor_tests;
 mod scheduled;
 mod sessions;
 mod tasks;

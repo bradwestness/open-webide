@@ -952,7 +952,13 @@ mod scheduled_tests {
                         .scheduled_command(
                             42,
                             7,
-                            &openwebide_core::scheduled::TaskCommand::Delete { id: 9, revision: 2 },
+                            &openwebide_core::scheduled::TaskCommand::Monitor {
+                                session_id: 0,
+                                command: openwebide_core::scheduled::MonitorCommand::Cancel {
+                                    id: 9,
+                                    revision: 2,
+                                },
+                            },
                         )
                         .await
                         .map(|_| ())
@@ -968,6 +974,8 @@ mod scheduled_tests {
                     assert!(request.starts_with("post /api/sessions/7/scheduled-tasks http/1.1"));
                     assert!(request.contains("x-openwebide-user: 42\r\n"));
                     assert!(request.contains(r#""revision":2"#));
+                    assert!(request.contains(r#""action":"monitor""#));
+                    assert!(request.contains(r#""session_id":0"#));
                 }
             }
         }

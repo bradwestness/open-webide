@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add the `monitor` agent tool for ephemeral host-owned follow-up checks, including bounded repeats, conversation status/cancellation and local-host authorization. Keep monitors out of saved tasks, survive browser closure, recover undelivered claims without replaying injected checks, and retain failure/expiry results in chat.
+
 - Yield while checking syntax source limits before worker serialization and
   parsing, preserving exact byte/newline limits and rejecting canceled or
   superseded sources without publishing stale analysis.

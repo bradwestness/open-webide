@@ -20,3 +20,6 @@ pub mod editor_recovery;
 pub mod editor_motion;
 
 pub mod memories;
+
+#[cfg(target_arch = "wasm32")]
+pub mod monitors;

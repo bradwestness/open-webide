@@ -91,7 +91,7 @@ pub async fn serve(config: ServerConfig) {
                                     &DispatchResult {
                                         run_id: delivery.run_id,
                                         status: status.into(),
-                                        detail,
+                                        detail: DispatchResult::bounded_detail(&detail),
                                         permission_id: None,
                                     },
                                 )
@@ -126,7 +126,7 @@ pub async fn serve(config: ServerConfig) {
                                     &DispatchResult {
                                         run_id: delivery.run_id,
                                         status: status.into(),
-                                        detail: detail.chars().take(1024).collect(),
+                                        detail: DispatchResult::bounded_detail(&detail),
                                         permission_id: permission.map(|step| step.id),
                                     },
                                 )

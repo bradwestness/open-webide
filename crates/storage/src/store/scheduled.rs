@@ -1,8 +1,8 @@
 //! Durable claims, saved prompts, and ownership policy above the database adapter.
 use super::*;
 use openwebide_core::scheduled::{
-    DispatchResult, ExecutionHost, HostBinding, ScheduledTask, SessionTarget, TaskCommand,
-    TaskDelivery, TaskDraft, TaskRun,
+    DispatchResult, ExecutionHost, HostBinding, MonitorCommand, ScheduledTask, SessionTarget,
+    TaskCommand, TaskDelivery, TaskDraft, TaskRun,
 };
 fn encode<T: serde::Serialize>(value: &T) -> Result<String, StorageError> {
     serde_json::to_string(value).map_err(|e| StorageError::Db(e.to_string()))
@@ -18,10 +18,19 @@ impl<D: Db> Store<D> {
         project: Option<i64>,
         now: i64,
     ) -> Result<Vec<ScheduledTask>, StorageError> {
+        self.tasks_in_scope(user, project, None, now).await
+    }
+    async fn tasks_in_scope(
+        &self,
+        user: UserId,
+        project: Option<i64>,
+        monitor_session: Option<i64>,
+        now: i64,
+    ) -> Result<Vec<ScheduledTask>, StorageError> {
         if let Some(project) = project {
             self.get_project(project, user).await?;
         }
-        let rows = self.db.execute(&format!("SELECT {TASK_COLUMNS} FROM scheduled_tasks WHERE user_id = ? AND project_id IS ? ORDER BY id"), &[DbValue::Int(user.get()), project.map_or(DbValue::Null, DbValue::Int)]).await?;
+        let rows = self.db.execute(&format!("SELECT {TASK_COLUMNS} FROM scheduled_tasks WHERE user_id = ? AND project_id IS ? AND ((? IS NULL AND NOT EXISTS(SELECT 1 FROM monitors WHERE task_id=scheduled_tasks.id)) OR EXISTS(SELECT 1 FROM monitors WHERE task_id=scheduled_tasks.id AND session_id=?)) ORDER BY id"), &[DbValue::Int(user.get()), project.map_or(DbValue::Null, DbValue::Int), monitor_session.map_or(DbValue::Null, DbValue::Int), monitor_session.map_or(DbValue::Null, DbValue::Int)]).await?;
         let mut tasks = Vec::new();
         for row in rows.rows {
             let id = row.get_int(0)?;
@@ -64,9 +73,40 @@ impl<D: Db> Store<D> {
         Box::pin(async move {
             self.db.transaction(|tx| async move {
                 let store = Store::new(tx);
-                let tasks = store.scheduled_tasks(user, project, now).await?;
+                let monitor_session = if let TaskCommand::Monitor { session_id, .. } = command {
+                    let session = store.get_session(*session_id, user).await?;
+                    if session.project_id != project {
+                        return Err(StorageError::InvalidRequest("Monitor belongs to another project.".into()));
+                    }
+                    if let Some(binding) = binding {
+                        if agent || !matches!(command,TaskCommand::Monitor { command: MonitorCommand::List {}, .. }) {
+                            return Err(StorageError::InvalidRequest("Only the user can authorize an execution host.".into()));
+                        }
+                        if binding.host_id.is_empty() || binding.host_id.len()>256 || binding.path.is_empty() || binding.path.len()>4096 {
+                            return Err(StorageError::InvalidRequest("Invalid execution host.".into()));
+                        }
+                        store.set_user_setting(user,&format!("scheduled_host_{}",project.unwrap_or(0)),&encode(binding)?).await?;
+                    }
+                    Some(*session_id)
+                } else { None };
+                if matches!(command, TaskCommand::Monitor { command: MonitorCommand::Start { .. }, .. }) {
+                    let checking = store.db.execute("SELECT 1 FROM session_run_leases l JOIN scheduled_runs r ON l.token='scheduled-'||r.id JOIN monitors m ON m.task_id=r.task_id WHERE l.session_id=? AND l.expires_at>?", &[monitor_session.map_or(DbValue::Null,DbValue::Int),DbValue::Int(now)]).await?;
+                    if !checking.rows.is_empty() { return Err(StorageError::InvalidRequest("A monitor check cannot create another monitor to extend its deadline. Configure bounded repeats when starting it.".into())); }
+                }
+                let tasks = store.tasks_in_scope(user, project, monitor_session, now).await?;
+                let normalized;
+                let original = command;
+                let command = if let TaskCommand::Monitor { session_id, command } = original {
+                    normalized = match command {
+                        MonitorCommand::Start { .. } => TaskCommand::Create { draft: command.draft(*session_id, now).map_err(StorageError::InvalidRequest)?.expect("start has a draft") },
+                        MonitorCommand::List {} => TaskCommand::List,
+                        MonitorCommand::Cancel { id, revision } => TaskCommand::SetEnabled { id: *id, revision: *revision, enabled: false },
+                    };
+                    &normalized
+                } else { original };
                 let target = |id,revision| tasks.iter().find(|task|task.id==id && task.revision==revision).ok_or_else(||StorageError::Conflict("Task changed or was removed. Refresh before editing.".into()));
                 match command {
+                    TaskCommand::Monitor { .. } => unreachable!("monitor command normalized"),
                     TaskCommand::List => {},
                     TaskCommand::Create{draft} | TaskCommand::Update{draft,..} => {
                         draft.validate(now).map_err(StorageError::InvalidRequest)?;
@@ -96,8 +136,11 @@ impl<D: Db> Store<D> {
                             store.cancel_scheduled_pending(*id).await?;
                             store.db.execute("UPDATE scheduled_tasks SET draft = ?, enabled = ?, next_run = ?, session_id = ?, host_id = ?, path = ?, revision = revision + 1 WHERE id = ? AND revision = ?", &[DbValue::Text(encode(draft)?),DbValue::Int(i64::from(draft.enabled)),next,session_id,DbValue::Text(host.into()),path,DbValue::Int(*id),DbValue::Int(*revision)]).await?;
                         } else {
-                            if tasks.len()>=100 {return Err(StorageError::InvalidRequest("This scope already has 100 tasks.".into()));}
-                            store.db.execute("INSERT INTO scheduled_tasks(user_id,project_id,session_id,draft,enabled,next_run,host_id,path) VALUES (?,?,?,?,?,?,?,?)", &[DbValue::Int(user.get()),project.map_or(DbValue::Null,DbValue::Int),session_id,DbValue::Text(encode(draft)?),DbValue::Int(i64::from(draft.enabled)),next,DbValue::Text(host.into()),path]).await?;
+                            if tasks.len()>=if monitor_session.is_some(){20}else{100} {return Err(StorageError::InvalidRequest("This scope has reached its task limit (20 monitors or 100 saved tasks).".into()));}
+                            let inserted = store.db.execute("INSERT INTO scheduled_tasks(user_id,project_id,session_id,draft,enabled,next_run,host_id,path) VALUES (?,?,?,?,?,?,?,?)", &[DbValue::Int(user.get()),project.map_or(DbValue::Null,DbValue::Int),session_id,DbValue::Text(encode(draft)?),DbValue::Int(i64::from(draft.enabled)),next,DbValue::Text(host.into()),path]).await?;
+                            if let TaskCommand::Monitor { session_id, command: MonitorCommand::Start { interval_seconds, max_checks, .. } } = original {
+                                store.db.execute("INSERT INTO monitors(task_id,session_id,interval_seconds,remaining,expires_at) VALUES (?,?,?,?,?)", &[DbValue::Int(inserted.last_insert_rowid),DbValue::Int(*session_id),DbValue::Int(*interval_seconds),DbValue::Int(*max_checks),DbValue::Int(now.saturating_add(86400))]).await?;
+                            }
                         }
                     },
                     TaskCommand::SetEnabled{id,revision,enabled} => {
@@ -109,7 +152,11 @@ impl<D: Db> Store<D> {
                     },
                     TaskCommand::Delete{id,revision} => {target(*id,*revision)?;store.cancel_scheduled_pending(*id).await?;store.db.execute("DELETE FROM scheduled_tasks WHERE id = ?", &[DbValue::Int(*id)]).await?;},
                 }
-                store.scheduled_tasks(user,project,now).await
+                if let TaskCommand::Monitor { command: MonitorCommand::Cancel { id, .. }, .. } = original {
+                    store.db.execute("UPDATE monitors SET remaining=0 WHERE task_id=?", &[DbValue::Int(*id)]).await?;
+                }
+                store.cleanup_monitors(now).await?;
+                store.tasks_in_scope(user,project,monitor_session,now).await
             }).await
         })
     }
@@ -147,6 +194,14 @@ impl<D: Db> Store<D> {
     ) -> Result<Vec<ScheduledTask>, StorageError> {
         let project = self.get_session(session, user).await?.project_id;
         let mut command = command.clone();
+        if let TaskCommand::Monitor { session_id, .. } = &mut command {
+            if *session_id != 0 && *session_id != session {
+                return Err(StorageError::InvalidRequest(
+                    "Monitor must belong to this conversation.".into(),
+                ));
+            }
+            *session_id = session;
+        }
         if let TaskCommand::Create { draft } | TaskCommand::Update { draft, .. } = &mut command
             && draft.session_target == SessionTarget::Existing
             && draft.session_id == 0
@@ -222,6 +277,65 @@ impl<D: Db> Store<D> {
         self.db.execute("INSERT INTO execution_hosts(id,name,last_seen) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,last_seen=excluded.last_seen", &[DbValue::Text(host.id.clone()),DbValue::Text(host.name.clone()),DbValue::Int(now)]).await?;
         Ok(())
     }
+    async fn cleanup_monitors(&self, now: i64) -> Result<(), StorageError> {
+        // Pending checks can expire; already injected work is never replayed or silently stopped.
+        let expired = self
+            .db
+            .execute(
+                "SELECT task_id FROM monitors WHERE expires_at<=?",
+                &[DbValue::Int(now)],
+            )
+            .await?;
+        for row in expired.rows {
+            let id = row.get_int(0)?;
+            self.cancel_scheduled_pending(id).await?;
+            self.db
+                .execute(
+                    "UPDATE scheduled_tasks SET enabled=0,next_run=NULL WHERE id=?",
+                    &[DbValue::Int(id)],
+                )
+                .await?;
+        }
+        let terminal = self.db.execute("SELECT t.id,m.session_id,t.enabled,m.expires_at,r.status,r.detail FROM scheduled_tasks t JOIN monitors m ON m.task_id=t.id LEFT JOIN scheduled_runs r ON r.id=(SELECT max(id) FROM scheduled_runs WHERE task_id=t.id) WHERE (t.enabled=0 OR (t.next_run IS NULL AND r.id IS NOT NULL)) AND NOT EXISTS(SELECT 1 FROM scheduled_runs WHERE task_id=t.id AND status IN ('queued','claimed','running','blocked'))", &[]).await?;
+        for row in terminal.rows {
+            let id = row.get_int(0)?;
+            let status = if row.get_int(3)? <= now {
+                "expired"
+            } else if row.get_int(2)? == 0 {
+                "cancelled"
+            } else {
+                row.get_text_opt(4).unwrap_or("cancelled")
+            };
+            if status != "complete" {
+                let content = format!(
+                    "[Monitor #{id}: {status}] {}",
+                    row.get_text_opt(5).unwrap_or("Future checks stopped.")
+                );
+                let session = row.get_int(1)?;
+                match self.ensure_not_rewinding(session).await {
+                    Ok(()) => {}
+                    Err(StorageError::Conflict(_)) => continue,
+                    Err(error) => return Err(error),
+                }
+                self.insert_interim_message_unlocked(
+                    session,
+                    Role::Assistant,
+                    &content,
+                    now,
+                    None,
+                    None,
+                )
+                .await?;
+            }
+            self.db
+                .execute(
+                    "DELETE FROM scheduled_tasks WHERE id=?",
+                    &[DbValue::Int(id)],
+                )
+                .await?;
+        }
+        Ok(())
+    }
     pub async fn due_scheduled(
         &self,
         host: &ExecutionHost,
@@ -234,6 +348,7 @@ impl<D: Db> Store<D> {
             // Recover claims only before injection. A consumed prompt is never replayed.
             store.db.execute("UPDATE scheduled_runs SET status='queued',claimed_until=0 WHERE status='claimed' AND claimed_until < ? AND queued_id IS NOT NULL", &[DbValue::Int(now)]).await?;
             store.db.execute("UPDATE scheduled_runs SET status='interrupted',detail='Host stopped; prompt was delivered and will not be replayed' WHERE status IN ('running','blocked') AND claimed_until < ?", &[DbValue::Int(now)]).await?;
+            store.cleanup_monitors(now).await?;
             let rows=store.db.execute("SELECT id,user_id,project_id,draft,next_run FROM scheduled_tasks WHERE host_id=? AND enabled=1 AND next_run <= ? AND NOT EXISTS(SELECT 1 FROM scheduled_runs r WHERE r.task_id=scheduled_tasks.id AND r.status IN ('queued','claimed','running','blocked')) ORDER BY next_run LIMIT 20", &[DbValue::Text(host.id.clone()),DbValue::Int(now)]).await?;
             for row in rows.rows {
                 let task=row.get_int(0)?;let user=UserId::new(row.get_int(1)?);let project=row.get_int_opt(2);let draft:TaskDraft=decode(row.get_text(3)?)?;
@@ -243,11 +358,19 @@ impl<D: Db> Store<D> {
                         store.db.execute("UPDATE scheduled_tasks SET next_run=? WHERE id=?", &[next,DbValue::Int(task)]).await?;
                         continue;
                 };
+                let monitor = store.db.execute("SELECT remaining FROM monitors WHERE task_id=?", &[DbValue::Int(task)]).await?;
+                let content = if monitor.rows.is_empty() {
+                    format!("[Scheduled task: {} (#{task})]\n\n{}",draft.title,draft.prompt)
+                } else {
+                    format!("[Monitor #{task}: ephemeral follow-up check]\nInspect the current state and report the result. If the condition is met, use monitor list then cancel this monitor to stop future checks. Do not start another monitor or sleep to extend this monitor's deadline.\n\n{}", draft.prompt)
+                };
                 let queue=store.list_queued_prompts(user,session).await?;
-                if queue.len()>=openwebide_core::chat_queue::MAX_QUEUED_PROMPTS || queue.iter().map(|entry|entry.content.len()).sum::<usize>().saturating_add(draft.prompt.len()+draft.title.len()+64)>openwebide_core::chat_queue::MAX_QUEUE_BYTES {continue;}
-                let content=format!("[Scheduled task: {} (#{task})]\n\n{}",draft.title,draft.prompt);
+                if queue.len()>=openwebide_core::chat_queue::MAX_QUEUED_PROMPTS || queue.iter().map(|entry|entry.content.len()).sum::<usize>().saturating_add(content.len())>openwebide_core::chat_queue::MAX_QUEUE_BYTES {continue;}
                 let queued=store.db.execute("INSERT INTO queued_prompts(session_id,content,created_at,guidance) VALUES (?,?,?,0)", &[DbValue::Int(session),DbValue::Text(content),DbValue::Int(now)]).await?;
                 store.db.execute("INSERT INTO scheduled_runs(task_id,due_at,status,queued_id,session_id) VALUES (?,?,'queued',?,?)", &[DbValue::Int(task),DbValue::Int(row.get_int(4)?),DbValue::Int(queued.last_insert_rowid),DbValue::Int(session)]).await?;
+                if !monitor.rows.is_empty() {
+                    store.db.execute("UPDATE monitors SET remaining=remaining-1 WHERE task_id=?", &[DbValue::Int(task)]).await?;
+                }
                 let next=draft.schedule.next_after(now).map_err(StorageError::InvalidRequest)?;
                 store.db.execute("UPDATE scheduled_tasks SET next_run=? WHERE id=?", &[next.map_or(DbValue::Null,DbValue::Int),DbValue::Int(task)]).await?;
             }
@@ -316,12 +439,16 @@ impl<D: Db> Store<D> {
         }
         self.db.transaction(|tx| async move {
             let store = Store::new(tx);
-        store.db.execute("UPDATE scheduled_runs SET status=?, detail=?, claimed_until=?,permission_id=? WHERE id=? AND task_id IN (SELECT id FROM scheduled_tasks WHERE host_id=?) AND status IN ('claimed','running','blocked')", &[DbValue::Text(result.status.clone()),DbValue::Text(result.detail.clone()),DbValue::Int(now+120),result.permission_id.clone().map_or(DbValue::Null,DbValue::Text),DbValue::Int(result.run_id),DbValue::Text(host.into())]).await?;
+        let updated = store.db.execute("UPDATE scheduled_runs SET status=?, detail=?, claimed_until=?,permission_id=? WHERE id=? AND task_id IN (SELECT id FROM scheduled_tasks WHERE host_id=?) AND status IN ('claimed','running','blocked')", &[DbValue::Text(result.status.clone()),DbValue::Text(result.detail.clone()),DbValue::Int(now+120),result.permission_id.clone().map_or(DbValue::Null,DbValue::Text),DbValue::Int(result.run_id),DbValue::Text(host.into())]).await?;
             // A preflight failure must not leave an undeliverable prompt at the
             // head of the chat queue. Delivered prompts already have no queue row.
             if matches!(result.status.as_str(), "failed" | "cancelled" | "complete") {
                 store.db.execute("DELETE FROM queued_prompts WHERE id IN (SELECT r.queued_id FROM scheduled_runs r JOIN scheduled_tasks t ON t.id=r.task_id WHERE r.id=? AND t.host_id=? AND r.status=? AND r.queued_id IS NOT NULL)", &[DbValue::Int(result.run_id),DbValue::Text(host.into()),DbValue::Text(result.status.clone())]).await?;
             }
+            if result.status == "complete" && updated.changes == 1 {
+                store.db.execute("UPDATE scheduled_tasks SET next_run=?+(SELECT interval_seconds FROM monitors WHERE task_id=scheduled_tasks.id) WHERE enabled=1 AND host_id=? AND id IN (SELECT task_id FROM scheduled_runs WHERE id=? AND status='complete') AND EXISTS(SELECT 1 FROM monitors WHERE task_id=scheduled_tasks.id AND remaining>0 AND expires_at>?+interval_seconds)", &[DbValue::Int(now),DbValue::Text(host.into()),DbValue::Int(result.run_id),DbValue::Int(now)]).await?;
+            }
+            store.cleanup_monitors(now).await?;
             Ok(())
         }).await?;
         Ok(())

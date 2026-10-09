@@ -100,3 +100,6 @@ mod memories;
 
 #[path = "components/chat_details.rs"]
 mod chat_details;
+
+#[path = "components/monitors.rs"]
+mod monitors;
