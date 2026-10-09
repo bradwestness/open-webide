@@ -198,7 +198,13 @@ fn PluginSection(
     #[prop(into, optional)] header_actions: Option<ViewFn>,
     children: Children,
 ) -> impl IntoView {
-    view! {<DisclosurePanel initially_open=true class="plugin-section" header_actions=header_actions summary=move ||view!{<span class="plugin-section-title">{title}</span><span class="plugin-count">{move ||count.get()}</span>}>
+    let actions = ViewFn::from(move || {
+        view! {
+            {header_actions.as_ref().map(ViewFn::run)}
+            <span class="plugin-count">{move ||count.get()}</span>
+        }
+    });
+    view! {<DisclosurePanel initially_open=true class="plugin-section" header_actions=Some(actions) summary=move ||view!{<span class="plugin-section-title">{title}</span>}>
         {children()}
     </DisclosurePanel>}
 }
