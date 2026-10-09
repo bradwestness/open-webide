@@ -156,7 +156,11 @@ async fn plugins_marketplace_install_and_explicit_project_activation() {
         testing::{catalog, package},
     };
     let fake = Rc::new(FakeBackend::default());
-    let catalog = catalog();
+    let mut catalog = catalog();
+    let mut newer = catalog.catalog.plugins[0].releases[0].clone();
+    newer.version = "0.2.0".into();
+    newer.source.commit = "d".repeat(40);
+    catalog.catalog.plugins[0].releases.push(newer);
     *fake.marketplaces.borrow_mut() = openwebide_core::plugins::marketplace::MarketplaceSettings {
         revision: 1,
         sources: vec![catalog.source.clone()],
@@ -221,6 +225,24 @@ async fn plugins_marketplace_install_and_explicit_project_activation() {
         "https://git.example.org/plugins.git"
     );
     assert!(fake.plugin_commands.borrow().is_empty());
+    assert!(
+        mounted
+            .root
+            .query_selector("button[aria-label='Available plugin actions']")
+            .unwrap()
+            .is_none()
+    );
+    mounted.click("button[aria-label='Installed plugin actions']");
+    settle().await;
+    mounted.click_text("Choose release");
+    settle().await;
+    assert!(
+        mounted
+            .root
+            .query_selector("button[aria-label='Plugin release']")
+            .unwrap()
+            .is_some()
+    );
     let (send, receive) = futures::channel::oneshot::channel();
     send.send(Ok(package())).unwrap();
     fake.plugin_packages.borrow_mut().push_back(receive);
@@ -273,6 +295,13 @@ async fn plugins_marketplace_install_and_explicit_project_activation() {
     mounted.click_text("Confirm uninstall");
     settle().await;
     assert!(fake.plugins.borrow().is_empty());
+    assert!(
+        mounted
+            .root
+            .query_selector("button[aria-label='Available plugin actions']")
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[wasm_bindgen_test]

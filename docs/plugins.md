@@ -4,7 +4,8 @@ The **Plugins** button beside **Output** in the status bar opens discovery and
 plugin management. Browse the official marketplace and any custom public Git
 marketplaces configured for your account. Installed and available plugins appear
 in compact rows with publisher/version details and inline actions. Search filters
-both sections. Listings show their marketplace as a Source label, with the official
+both sections. Available excludes installed plugins; choose their releases from
+the Installed gear menu. Uninstalling returns a plugin to Available. Listings show their marketplace as a Source label, with the official
 source named Open WebIDE. Click a row’s name to inspect plugin details
 and use the gear menu to choose a release. Install it on the open project's
 execution host, or on the server host when no project is open. Plugins currently

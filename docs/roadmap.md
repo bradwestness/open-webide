@@ -377,7 +377,10 @@ capability.
   changes/rollback and removes plugins. Settings configures marketplace sources;
   the official source is always available. Sources, caches and installation records
   are user-scoped database data, and runs pin their package skill content. Remaining
-  work covers tool/runtime contributions, dependencies/configuration, automatic
+  work includes enabling installed plugins by default in every project, including
+  newly opened projects, with persisted per-project disable overrides and host
+  preparation through the shared facade. Current activation is explicit per project.
+  Also remaining: tool/runtime contributions, dependencies/configuration, automatic
   update policies, file-based suggestions and agent-facing plugin management.
 - Use one package format with typed contributions rather than mutually exclusive
   plugin types. A package can combine skills, MCP servers/tools and language

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Hide installed plugins from Available, restoring them after uninstall; choose installed plugin releases from their gear menu.
+
 - Show plugins in a single Available list with individual marketplace source labels; use Open WebIDE branding and consistent plugin terminology.
 
 - Install plugins on the server host without opening a project; project activation remains explicit. Use the standard overflow icon and download action, with plugin details on the title and release/management actions in the gear menu.

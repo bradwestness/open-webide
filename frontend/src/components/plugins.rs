@@ -149,7 +149,13 @@ fn filtered_catalog(state: PluginsState, catalog: &CachedMarketplace) -> Vec<Cat
         .plugins
         .iter()
         .filter(|plugin| {
-            format!(
+            !state.installations.with(|entries| {
+                entries.iter().any(|entry| {
+                    entry.prepared.source.repository == catalog.source.repository
+                        && entry.prepared.manifest.publisher == plugin.publisher
+                        && entry.prepared.manifest.name == plugin.name
+                })
+            }) && format!(
                 "{} {} {} {}",
                 plugin.publisher, plugin.name, plugin.display_name, plugin.description
             )
@@ -283,6 +289,29 @@ fn InstalledPackage(entry: PluginInstallation) -> impl IntoView {
     let entry = StoredValue::new(entry);
     let details = RwSignal::new(false);
     let confirming = RwSignal::new(false);
+    let versions = RwSignal::new(false);
+    let version = RwSignal::new(manifest.version.clone());
+    let release_catalog = Signal::derive(move || {
+        state.marketplaces.with(|marketplaces| {
+            entry.with_value(|entry| {
+                marketplaces.catalogs.iter().find_map(|catalog| {
+                    (catalog.source.repository == entry.prepared.source.repository)
+                        .then(|| {
+                            catalog
+                                .catalog
+                                .plugins
+                                .iter()
+                                .find(|plugin| {
+                                    plugin.publisher == entry.prepared.manifest.publisher
+                                        && plugin.name == entry.prepared.manifest.name
+                                })
+                                .map(|plugin| (catalog.source.clone(), plugin.clone()))
+                        })
+                        .flatten()
+                })
+            })
+        })
+    });
     let binding = Signal::derive(move || {
         state.project_plugins.with(|entries| {
             entry.with_value(|installed| {
@@ -312,11 +341,18 @@ fn InstalledPackage(entry: PluginInstallation) -> impl IntoView {
                 <Button size=ButtonSize::Sm disabled=state.busy.read_only() on_click=Callback::new(move |_|{if let Some(binding)=binding.get_untracked(){actions.disable.run(binding);}})>"Disable"</Button>
             </Show>
             <ActionMenu aria_label="Installed plugin actions" icon=IconName::Settings>
+                <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||release_catalog.get().is_none() on:click=move |_|versions.update(|open| *open = !*open)><Icon name=IconName::GitBranch/><span>"Choose release"</span></button>
                 <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||state.busy.get()||projects.active_project.get().is_none()||current.get() on:click=move |_|actions.enable.run(entry.get_value())><Icon name=IconName::Check/><span>{move ||if enabled.get(){"Apply installed version"}else{"Enable for project"}}</span></button>
                 <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||state.busy.get()||!enabled.get() on:click=move |_|{if let Some(binding)=binding.get_untracked(){actions.disable.run(binding);}}><Icon name=IconName::Pause/><span>"Disable for project"</span></button>
                 <button type="button" role="menuitem" class="ui-dropdown-item recent-item" disabled=move ||state.busy.get() on:click=move |_|confirming.set(true)><Icon name=IconName::Trash2/><span>"Uninstall"</span></button>
             </ActionMenu>
         </PluginRow>
+        <Show when=move ||versions.get()><div class="plugin-details ui-section-content">
+            <FormField label="Release"><DropdownSelect label="Plugin release" value=version.read_only() options=Signal::derive(move ||release_catalog.get().map_or_else(Vec::new,|(_,plugin)|plugin.releases.iter().map(|release|SelectOption::new(&release.version,&release.version)).collect())) on_change=Callback::new(move |value|version.set(value)) disabled=state.busy.read_only()/></FormField>
+            <InlineActions><Button size=ButtonSize::Sm disabled=Signal::derive(move ||state.busy.get()||release_catalog.get().is_none()||entry.with_value(|entry|entry.prepared.manifest.version==version.get())) on_click=Callback::new(move |_|{
+                if let Some((marketplace,plugin))=release_catalog.get_untracked(){actions.install_release.run(CatalogSelection{marketplace,publisher:plugin.publisher,name:plugin.name,version:version.get_untracked()});}
+            })><Icon name=IconName::Download/>"Install selected release"</Button></InlineActions>
+        </div></Show>
         <Show when=move ||details.get()><div class="plugin-details ui-section-content">
             <p class="form-hint">{entry.with_value(|e|format!("{} · {} · {} · {} host(s)",e.prepared.source.repository,e.prepared.source.path,e.prepared.source.commit,e.hosts.len()))}</p>
             <p class="form-hint">{entry.with_value(|e|format!("Skills: {}",e.prepared.manifest.contributions.skills.iter().map(|s|s.path.clone()).collect::<Vec<_>>().join(", ")))}</p>
