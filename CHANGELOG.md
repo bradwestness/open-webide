@@ -9,6 +9,12 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Prepare eligible long wrapped paragraphs in bounded styled probes, clipping
+  retained text runs and validating exact overlap glyphs before publishing complete
+  geometry in both workspace modes. Cancel stale chunks without publishing partial
+  tables; retain complete layout for unsupported seams and bidirectional text.
+  Initial native input shaping and full responsiveness remain in progress.
+
 - Yield between bounded batches of exact cold-row glyph measurements, including
   wrapped and tabbed source. Discard incomplete geometry after source, account,
   project, font or layout changes in both workspace modes. Full-row shaping and

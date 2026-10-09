@@ -267,6 +267,8 @@ pub struct EditorRowSourceSlice {
     /// The continuation plan or plain source index proved this endpoint is an
     /// original paint-run boundary; other viewport slices make no declaration.
     pub starts_paint_run: bool,
+    /// Immutable original text-run ends for exact clipping at arbitrary source seams.
+    pub paint_runs: Option<Arc<[usize]>>,
 }
 /// Immutable source/style proof for an eligible unchanged paragraph suffix.
 pub struct EditorParagraphSuffix {
@@ -277,6 +279,23 @@ pub struct EditorParagraphSuffix {
     style_start: usize,
 }
 impl EditorActions {
+    pub fn prepare_wrapped_paragraph<'a>(
+        self,
+        paint: &'a EditorRowPaint,
+        row: usize,
+    ) -> Option<openwebide_core::editor::WrappedParagraphPreparation<'a>> {
+        if !self.row_paint_current(paint) {
+            return None;
+        }
+        let body = paint.projection.line_body(row)?;
+        let index = paint.projection.visual_line_index(row)?;
+        let runs = if paint_row(paint, row)?.plain.is_some() {
+            index.text_run_boundaries().collect()
+        } else {
+            self.cached_styled_paint_runs(paint, row)?
+        };
+        openwebide_core::editor::WrappedParagraphPreparation::new(body, index, runs)
+    }
     pub fn paragraph_measurements(
         paint: &EditorRowPaint,
         row: usize,
@@ -882,6 +901,7 @@ impl EditorActions {
             native_start,
             reaches_end: end == body.len(),
             starts_paint_run,
+            paint_runs: None,
         })
     }
     fn cached_styled_paint_runs(self, paint: &EditorRowPaint, row: usize) -> Option<Arc<[usize]>> {

@@ -3284,3 +3284,70 @@ Chrome contract (0.82 s), cold superseded preparation (3.68 s), wrapped fragment
 scroll/Find and bidi fallback (1.52 s), and six paragraph geometry regressions
 (33.27 s). Browser contracts exercise both workspace modes. These fixture timings
 are regression observations, not production performance measurements.
+
+## Bounded wrapped paragraph preparation (2026-10-09)
+
+Eligible source-monotonic wrapped paragraphs now prepare across at most 16-KiB
+styled probes. Continuations begin after complete words at grapheme boundaries,
+clip retained original paint runs, and preserve the measured horizontal origin.
+Each dense overlap must match actual glyph rectangles within the existing 0.25-px
+geometry tolerance; vertical translation comes from the same overlap glyph.
+Only completed validated geometry publishes through the shared editor facade.
+Source/account/project/font/layout cancellation discards unfinished tables.
+Bidirectional source, oversized unbroken words and failed proofs retain complete
+layout. Existing source, node, anchor and paint-run caps remain unchanged.
+Initial run-table construction, native input shaping and other roadmap work remain.
+
+The first prototype rejected the unchanged styled fixture because original paint
+run ends supplied no useful space seams. Exact retained-run clipping resolved that
+restriction; the fixture, tolerance and admission limits were not relaxed.
+Browser comparisons cover loaded five-family Monaspace fonts, healing, ligatures,
+whitespace and both workspace modes (80 combinations, 27.96 s), every retained
+anchor and full extents. Actual source replacement during a wrapped probe publishes
+no old geometry and renders the replacement correctly (0.79 s, both modes).
+
+### Paired production Linux observations
+
+Baseline is detached `3ab579e`; candidate is this change built independently from
+that head plus the wrapped implementation. Both use the same frozen WASI backend
+and Spin manifest, reused image
+`sha256:e1a372cac8e6c496251a7ea371631a8beb560d1c5c6cddd1b70a270da19bda8c`,
+Linux ARM64 Chromium 154.0.8037.92, four CPUs, 10-GiB memory and 1-GiB shared memory.
+No builds ran during measurements. Two fresh samples per mode used
+`styled-long-line --wrap --input-position beginning --repeat 2 --trace --require-pss`.
+Actual source is 1,048,567 bytes with verified String styling, caret zero before
+input, complete source after input and the destination fragment after scrolling.
+Baseline module is `openwebide-frontend-5d701a5ce1b456e1.js`; candidate module is
+`openwebide-frontend-8bef8f071f0c7940.js`. The harness checkout-head field is identical
+because candidate edits were still uncommitted when measured; these module hashes
+and separate production build directories distinguish the bundles.
+
+| Bundle | Mode/sample | Load ms | Input ms | Scroll ms | Max frame ms | Peak Chrome PSS KiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| baseline | local 1 | 24764.9 | 4575.5 | 41.6 | 14016 | 4320642 |
+| baseline | local 2 | 23527.2 | 4485.7 | 44.6 | 13099.5 | 2831816 |
+| baseline | remote 1 | 23086.8 | 4624.1 | 35.4 | 12849.6 | 2920372 |
+| baseline | remote 2 | 23968.0 | 4697.5 | 37.6 | 13166.2 | 2860049 |
+| candidate | local 1 | 17542.8 | 1352.3 | 41.5 | 14749.4 | 2849647 |
+| candidate | local 2 | 17127.6 | 1544.8 | 45.5 | 13666.2 | 2812789 |
+| candidate | remote 1 | 15995.5 | 1427.3 | 50.6 | 13249.5 | 3031482 |
+| candidate | remote 2 | 16187.3 | 1312.3 | 50.3 | 13332.8 | 2855416 |
+
+Both bundles retain the same 547,721-px complete scroll height and 264-px width.
+All four candidate traces contain 146 paragraph render/layout/geometry batches,
+with a maximum 16,382 source bytes per probe and no trace truncation, rather
+than complete-row cold DOM shaping. Load and beginning edit wall time improve in
+these samples, but maximum frames remain about 13–15 seconds and PSS remains large.
+This does **not** satisfy responsiveness or memory completion gates. Initial full
+native source shaping is still a severe startup cost; small timing differences and
+PSS variation across four fresh runs are not evidence of a memory improvement.
+
+Final regression checks: all 572 parser-enabled and 429 minimal core tests pass;
+strict native core all-target Clippy passes. Optimized browser checks cover cold
+superseded preparation (3.68 s), wrapped fragment scroll/Find and bidi fallback
+(1.68 s), and six existing paragraph geometry/fallback contracts (31.85 s).
+The wrapped fragment contract now requires bounded cold probes instead of the
+previous complete-row implementation; its source, extent and caret assertions
+remain in place. Browser contracts exercise both workspace modes.
+The independent DOM-clone markup oracle and strict optimized WASM component-test
+Clippy also pass. These checks verify the checkpoint, not the remaining full goal.

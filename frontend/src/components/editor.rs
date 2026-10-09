@@ -830,6 +830,48 @@ pub fn take_paragraph_suffix_probes() -> usize {
     super::editor_rows::take_paragraph_suffix_probes()
 }
 
+#[cfg(feature = "test-support")]
+pub async fn bounded_wrapped_matches_complete(
+    input: &web_sys::HtmlTextAreaElement,
+    scope: &crate::state::workspace::EditorRowPaint,
+    actions: EditorActions,
+) -> bool {
+    let Some((scope, _)) = actions.prepare_row_measurements(
+        scope.metrics.clone(),
+        scope.projection.clone(),
+        (scope.prepared_source, scope.tokens.clone()),
+        scope.guides.clone(),
+        scope.indentation,
+        scope.whitespace,
+    ) else {
+        return false;
+    };
+    super::editor_rows::check_wrapped_paragraph_geometry(
+        input,
+        &scope,
+        0,
+        actions,
+        |rows, suffix, slices| {
+            highlight_html(
+                &scope.tokens,
+                scope.prepared_source,
+                &scope.guides,
+                PaintRows {
+                    indices: rows,
+                    projection: None,
+                    source: Some(&scope.projection),
+                    source_slices: slices,
+                },
+                scope.indentation,
+                scope.whitespace,
+                suffix,
+            )
+        },
+    )
+    .await
+    .unwrap_or(false)
+}
+
 /// Differential browser oracle: compare bounded preparation with the complete
 /// production renderer, including every retained glyph anchor. Test-only full
 /// layout must never run in ordinary preparation.
@@ -891,6 +933,7 @@ fn paint_text_range(
     range: std::ops::Range<usize>,
     show_whitespace: bool,
     starts_paint_run: bool,
+    paint_runs: Option<(&[usize], usize)>,
 ) -> String {
     let Some(selected) = text.get(range.clone()) else {
         return String::new();
@@ -901,6 +944,27 @@ fn paint_text_range(
     if !show_whitespace {
         if text.len() <= 512 {
             return escape_html(selected);
+        }
+        if let Some((ends, offset)) = paint_runs
+            && let Some(runs) = openwebide_core::editor::retained_paint_ranges(
+                ends,
+                offset..offset + text.len(),
+                offset + range.start..offset + range.end,
+            )
+            && let Some(parts) = runs
+                .into_iter()
+                .map(|run| text.get(run))
+                .collect::<Option<Vec<_>>>()
+        {
+            return parts
+                .into_iter()
+                .map(|part| {
+                    format!(
+                        "<span class=\"editor-text-run\">{}</span>",
+                        escape_html(part)
+                    )
+                })
+                .collect();
         }
         // A proven original run boundary lets segmentation resume at the
         // selected source, preserving the complete paint's span topology.
@@ -1037,6 +1101,9 @@ fn highlight_html(
                 range.clone(),
                 show_whitespace,
                 source_slice.is_some_and(|slice| slice.starts_paint_run),
+                source_slice
+                    .and_then(|slice| slice.paint_runs.as_deref())
+                    .map(|ends| (ends, 0)),
             ));
             #[cfg(feature = "test-support")]
             {
@@ -1071,6 +1138,9 @@ fn highlight_html(
                     range,
                     show_whitespace,
                     source_slice.is_some_and(|slice| slice.starts_paint_run),
+                    source_slice
+                        .and_then(|slice| slice.paint_runs.as_deref())
+                        .map(|ends| (ends, token_start)),
                 )),
                 kind => {
                     html.push_str("<span class=\"");
@@ -1081,6 +1151,9 @@ fn highlight_html(
                         range,
                         show_whitespace,
                         source_slice.is_some_and(|slice| slice.starts_paint_run),
+                        source_slice
+                            .and_then(|slice| slice.paint_runs.as_deref())
+                            .map(|ends| (ends, token_start)),
                     ));
                     html.push_str("</span>");
                 }
@@ -3721,7 +3794,13 @@ mod tests {
             "\u{301}".repeat(600)
         );
         let full = document().create_element("div").unwrap();
-        full.set_inner_html(&paint_text_range(&source, 0..source.len(), false, false));
+        full.set_inner_html(&paint_text_range(
+            &source,
+            0..source.len(),
+            false,
+            false,
+            None,
+        ));
         // Both endpoints fall inside runs, not at the 512-byte source boundary.
         // A DOM Range clones the original markup without re-segmenting its text.
         let mut selections = vec![
@@ -3780,9 +3859,21 @@ mod tests {
                 selected.clone(),
                 false,
                 starts_paint_run,
+                None,
             ));
             assert_eq!(cropped.inner_html(), expected.inner_html());
-            assert_eq!(cropped.text_content().unwrap(), source[selected]);
+            assert_eq!(cropped.text_content().unwrap(), source[selected.clone()]);
+            let ends = openwebide_core::editor::visual_text_run_ranges(&source)
+                .map(|run| run.end)
+                .collect::<Vec<_>>();
+            cropped.set_inner_html(&paint_text_range(
+                &source,
+                selected,
+                false,
+                false,
+                Some((&ends, 0)),
+            ));
+            assert_eq!(cropped.inner_html(), expected.inner_html());
         }
     }
 }

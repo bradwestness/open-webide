@@ -212,6 +212,112 @@ async fn measure_paragraph(
     Ok(Some((width, geometry)))
 }
 
+async fn measure_wrapped_paragraph(
+    actions: EditorActions,
+    paint: &web_sys::Element,
+    scope: &crate::state::workspace::EditorRowPaint,
+    logical: usize,
+    current: &impl Fn() -> bool,
+    render: &impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
+) -> Result<Option<(f64, openwebide_core::editor::WrappedGeometry)>, ()> {
+    let Some(mut plan) = actions.prepare_wrapped_paragraph(scope, logical) else {
+        return Ok(None);
+    };
+    let source_line = scope.projection.lines()[logical].source_line;
+    let body = scope.projection.line_body(logical).ok_or(())?;
+    let timing = ProbeTiming::installed();
+    let mut probes = 0;
+    while let Some(probe) = plan.probe().cloned() {
+        if !current() {
+            return Ok(None);
+        }
+        let Some(targets) = plan.targets() else {
+            return Ok(None);
+        };
+        let slice = crate::state_actions::editor::EditorRowSourceSlice {
+            source_line,
+            bytes: probe.bytes.clone(),
+            native_start: probe.native_start,
+            reaches_end: probe.bytes.end == body.len(),
+            starts_paint_run: false,
+            paint_runs: Some(plan.paint_runs()),
+        };
+        let started = timing.as_ref().map(|trace| trace.clock.now());
+        let html = render(&[source_line], false, &[slice]);
+        if let (Some(trace), Some(started)) = (&timing, started) {
+            trace.report(
+                paint,
+                "paragraph-render",
+                trace.clock.now() - started,
+                probe.bytes.len(),
+            );
+        }
+        let started = timing.as_ref().map(|trace| trace.clock.now());
+        paint.set_inner_html(&html);
+        drop(html);
+        let Some(row) = paint
+            .query_selector(".editor-source-line")
+            .map_err(|_| ())?
+        else {
+            return Ok(None);
+        };
+        if probe.origin > 0.0 {
+            let gap = document().create_element("span").map_err(|_| ())?;
+            gap.set_attribute(
+                "style",
+                &format!("display:inline-block;width:{}px", probe.origin),
+            )
+            .map_err(|_| ())?;
+            row.insert_before(&gap, row.first_child().as_ref())
+                .map_err(|_| ())?;
+        }
+        let bounds = row.get_bounding_client_rect();
+        if let (Some(trace), Some(started)) = (&timing, started) {
+            trace.report(
+                paint,
+                "paragraph-layout",
+                trace.clock.now() - started,
+                probe.bytes.len(),
+            );
+        }
+        let started = timing.as_ref().map(|trace| trace.clock.now());
+        let Some(rectangles) = super::editor_geometry::paragraph_rectangles(
+            &row,
+            &body[probe.bytes.clone()],
+            probe.glyph_start,
+            &targets,
+        ) else {
+            return Ok(None);
+        };
+        if !plan.record(
+            bounds.width(),
+            bounds.height(),
+            f64::from(row.scroll_width()),
+            &rectangles,
+        ) {
+            #[cfg(feature = "test-support")]
+            web_sys::console::error_1(&format!("wrapped record rejected probe={probe:?} dimensions={}/{}/{} expected={:?} actual={:?}", bounds.width(),bounds.height(),row.scroll_width(),plan.expected_overlap().first(),rectangles.first()).into());
+            return Ok(None);
+        }
+        if let (Some(trace), Some(started)) = (&timing, started) {
+            trace.report(
+                paint,
+                "paragraph-geometry",
+                trace.clock.now() - started,
+                targets.len(),
+            );
+        }
+        paint.set_inner_html("");
+        probes += 1;
+        if probes % openwebide_core::editor::MAX_MEASURE_BATCHES_PER_FRAME == 0 {
+            crate::util::yield_frame().await;
+        } else {
+            crate::util::yield_task().await;
+        }
+    }
+    Ok(current().then(|| plan.finish()).flatten())
+}
+
 struct ParagraphLayout {
     width: f64,
     height: f64,
@@ -241,6 +347,7 @@ fn measure_paragraph_probe(
         native_start: probe.native_start,
         reaches_end: probe.bytes.end == body.len(),
         starts_paint_run: true,
+        paint_runs: None,
     };
     let started = timing.as_ref().map(|trace| trace.clock.now());
     let html = render(&[source_line], false, &[slice]);
@@ -473,9 +580,26 @@ pub(super) async fn measure_batches(
         let wrapped = input
             .parent_element()
             .is_some_and(|parent| parent.class_list().contains("editor-word-wrap"));
-        if count == 1 && !wrapped && lengths[start] > openwebide_core::editor::MAX_MEASURE_BYTES {
-            let result =
-                measure_paragraph(&paint, &scope, start, &current, &render, Some(actions)).await?;
+        if count == 1 && lengths[start] > openwebide_core::editor::MAX_MEASURE_BYTES {
+            let result = if wrapped {
+                measure_wrapped_paragraph(actions, &paint, &scope, start, &current, &render)
+                    .await?
+                    .map(|(width, geometry)| {
+                        (
+                            width,
+                            openwebide_core::editor::MeasuredRowGeometry::Wrapped(geometry),
+                        )
+                    })
+            } else {
+                measure_paragraph(&paint, &scope, start, &current, &render, Some(actions))
+                    .await?
+                    .map(|(width, geometry)| {
+                        (
+                            width,
+                            openwebide_core::editor::MeasuredRowGeometry::Horizontal(geometry),
+                        )
+                    })
+            };
             if !current()
                 || !input.is_connected()
                 || metrics_identity(&input).as_ref() != Some(metrics)
@@ -483,13 +607,10 @@ pub(super) async fn measure_batches(
                 return Ok(None);
             }
             if let Some((width, measured)) = result {
-                if !plan.record_layout(range, &[measured.height], &[width]) {
+                if !plan.record_layout(range, &[measured.height()], &[width]) {
                     return Err(());
                 }
-                geometry(
-                    start,
-                    openwebide_core::editor::MeasuredRowGeometry::Horizontal(measured),
-                );
+                geometry(start, measured);
                 progress(plan.completed());
                 paint.set_inner_html("");
                 continue;
@@ -622,6 +743,73 @@ pub(super) fn metrics_identity(input: &web_sys::HtmlTextAreaElement) -> Option<S
         style.get_property_value("font-feature-settings").ok()?,
         style.get_property_value("font-variant-ligatures").ok()?
     ))
+}
+
+#[cfg(feature = "test-support")]
+pub(super) async fn check_wrapped_paragraph_geometry(
+    input: &web_sys::HtmlTextAreaElement,
+    scope: &crate::state::workspace::EditorRowPaint,
+    logical: usize,
+    actions: EditorActions,
+    render: impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
+) -> Result<bool, ()> {
+    let (_probe, paint) = styled_row_probe(input)?;
+    let Some((width, bounded)) =
+        measure_wrapped_paragraph(actions, &paint, scope, logical, &|| true, &render).await?
+    else {
+        web_sys::console::error_1(&"bounded wrapped paragraph rejected".into());
+        return Ok(false);
+    };
+    paint.set_inner_html(&render(
+        &[scope.projection.lines()[logical].source_line],
+        false,
+        &[],
+    ));
+    let row = paint
+        .query_selector(".editor-source-line")
+        .map_err(|_| ())?
+        .ok_or(())?;
+    let bounds = row.get_bounding_client_rect();
+    let body = scope.projection.line_body(logical).ok_or(())?;
+    let index = scope.projection.visual_line_index(logical).ok_or(())?;
+    let Some(complete) = super::editor_geometry::preparation_geometry(
+        &row,
+        body,
+        index.clone(),
+        &bounds,
+        true,
+        &|| true,
+    )
+    .await
+    else {
+        return Ok(false);
+    };
+    let actual = bounded.anchors(0..index.len() - 1).ok_or(())?;
+    let expected = complete.anchors(0..index.len() - 1).ok_or(())?;
+    if (width - f64::from(row.scroll_width())).abs() > 0.25
+        || (bounded.height - bounds.height()).abs() > 0.25
+    {
+        web_sys::console::error_1(
+            &format!(
+                "wrapped extents {width}/{} vs {}/{}",
+                bounded.height,
+                row.scroll_width(),
+                bounds.height()
+            )
+            .into(),
+        );
+        return Ok(false);
+    }
+    if let Some((a, b)) = actual.iter().zip(expected).find(|(a, b)| {
+        (a.left - b.left).abs() > 0.25
+            || (a.top - b.top).abs() > 0.25
+            || (a.width - b.width).abs() > 0.25
+            || (a.height - b.height).abs() > 0.25
+    }) {
+        web_sys::console::error_1(&format!("wrapped anchor {a:?} vs {b:?}").into());
+        return Ok(false);
+    }
+    Ok(actual.len() == expected.len())
 }
 
 #[cfg(feature = "test-support")]

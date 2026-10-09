@@ -12503,8 +12503,8 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
             .call0(&wasm_bindgen::JsValue::NULL)
             .unwrap();
         assert!(
-            cold > 65_536.0,
-            "cold height measurement must supply full-row anchors"
+            cold > 0.0 && cold <= openwebide_core::editor::MAX_PARAGRAPH_PROBE_BYTES as f64,
+            "eligible cold wrapped measurement must use bounded source probes: {cold}"
         );
         assert!(
             paint > 0.0 && paint <= 65_536.0,
@@ -18209,5 +18209,212 @@ async fn cooperative_cold_glyph_geometry_matches_complete_and_cancels_in_both_mo
     }
     for font in loaded {
         removeEditorFont(&font);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn bounded_wrapped_paragraphs_preserve_complete_styled_geometry_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::EditorFont};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let loaded = load_all_editor_fonts().await;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for font in EditorFont::ALL {
+            for healing in [false, true] {
+                for ligatures in [false, true] {
+                    for whitespace in [false, true] {
+                        let source = format!(
+                            "let value = \"{}\";",
+                            "word 文😀e\u{301}\t != -> café ".repeat(if whitespace {
+                                2500
+                            } else {
+                                5000
+                            })
+                        );
+                        let mounted = mount_test({
+                            let source = source.clone();
+                            move |state| {
+                                state.seed_project();
+                                state
+                                    .projects
+                                    .projects
+                                    .update(|projects| projects[0].mode = mode);
+                                state.workspace.open_file.set(Some("wrapped.rs".into()));
+                                state.workspace.content.set(source.into());
+                                state.settings.editor_preferences.update(|preferences| {
+                                    preferences.word_wrap = true;
+                                    preferences.font = font;
+                                    preferences.texture_healing = healing;
+                                    preferences.ligatures = ligatures;
+                                    preferences.show_whitespace = whitespace;
+                                });
+                                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+                            }
+                        });
+                        let actions = EditorActions::new(mounted.state.workspace);
+                        wait_until("wrapped exact row cache", || {
+                            mounted
+                                .state
+                                .workspace
+                                .editor_row_cache
+                                .get_untracked()
+                                .is_some()
+                                && mounted
+                                    .root
+                                    .query_selector(".editor-code.highlight-ready")
+                                    .unwrap()
+                                    .is_some()
+                        })
+                        .await;
+                        let input: web_sys::HtmlTextAreaElement =
+                            mounted.element(".editor-textarea").unchecked_into();
+                        let scope = mounted
+                            .state
+                            .workspace
+                            .editor_row_cache
+                            .get_untracked()
+                            .unwrap()
+                            .paint;
+                        assert!(
+                            openwebide_frontend::components::bounded_wrapped_matches_complete(
+                                &input, &scope, actions
+                            )
+                            .await,
+                            "{mode:?} {font:?} healing={healing} ligatures={ligatures} whitespace={whitespace}"
+                        );
+                        assert_eq!(actions.source(), source);
+                    }
+                }
+            }
+        }
+    }
+    for font in loaded {
+        removeEditorFont(&font);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn wrapped_chunk_cancellation_discards_old_geometry_in_both_modes() {
+    #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+    export function interruptWrappedChunk(input, value) {
+        const original = Range.prototype.getClientRects;
+        let armed = true, fired = false, published = false;
+        Range.prototype.getClientRects = function() {
+            const result = original.call(this);
+            const element = this.startContainer.nodeType === Node.TEXT_NODE ? this.startContainer.parentElement : this.startContainer;
+            if (armed && element?.closest?.('.editor-height-measure .editor-source-line[data-source-start]')) {
+                armed = false;
+                queueMicrotask(() => {
+                    fired = true;
+                    published = input.parentElement.classList.contains('highlight-ready');
+                    input.value = value;
+                    input.dispatchEvent(new Event('input'));
+                });
+            }
+            return result;
+        };
+        return [() => { Range.prototype.getClientRects = original; }, () => [fired, published]];
+    }
+    "#)]
+    extern "C" {
+        fn interruptWrappedChunk(
+            input: &web_sys::HtmlTextAreaElement,
+            value: &str,
+        ) -> js_sys::Array;
+    }
+    struct Audit(js_sys::Array);
+    impl Drop for Audit {
+        fn drop(&mut self) {
+            self.0
+                .get(0)
+                .unchecked_into::<js_sys::Function>()
+                .call0(&wasm_bindgen::JsValue::NULL)
+                .unwrap();
+        }
+    }
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = format!(
+            "let value = \"{}\";",
+            "word 文😀e\u{301}\t != -> café ".repeat(5000)
+        );
+        let changed = format!("z{source}");
+        let mounted = mount_test({
+            let source = source.clone();
+            move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("wrapped-cancel.rs".into()));
+                state.workspace.content.set(source.into());
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = true);
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+            }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        let audit = Audit(interruptWrappedChunk(&input, &changed));
+        let flags = audit.0.get(1).unchecked_into::<js_sys::Function>();
+        wait_until("wrapped chunk interrupted", || {
+            flags
+                .call0(&wasm_bindgen::JsValue::NULL)
+                .unwrap()
+                .unchecked_into::<js_sys::Array>()
+                .get(0)
+                .as_bool()
+                == Some(true)
+        })
+        .await;
+        assert_eq!(
+            flags
+                .call0(&wasm_bindgen::JsValue::NULL)
+                .unwrap()
+                .unchecked_into::<js_sys::Array>()
+                .get(1)
+                .as_bool(),
+            Some(false)
+        );
+        wait_until("replacement wrapped source owns paint", || {
+            actions.source() == changed
+                && mounted
+                    .root
+                    .query_selector(".editor-code.highlight-ready")
+                    .unwrap()
+                    .is_some()
+        })
+        .await;
+        let scope = mounted
+            .state
+            .workspace
+            .editor_row_cache
+            .get_untracked()
+            .unwrap()
+            .paint;
+        assert!(
+            openwebide_frontend::components::bounded_wrapped_matches_complete(
+                &input, &scope, actions
+            )
+            .await
+        );
+        assert_eq!(actions.source(), changed);
+        wait_until("cancelled wrapped probes released", || {
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .query_selector(".editor-row-measure")
+                .unwrap()
+                .is_none()
+        })
+        .await;
     }
 }

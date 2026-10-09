@@ -197,3 +197,87 @@ mod tests {
         }
     }
 }
+
+/// Clip a token's original text runs without re-segmenting its unused prefix.
+/// Ordered run ends belong to the facade's validated immutable source/style scope.
+pub fn retained_paint_ranges(
+    ends: &[usize],
+    token: Range<usize>,
+    selected: Range<usize>,
+) -> Option<Vec<Range<usize>>> {
+    if token.start > token.end
+        || selected.start > selected.end
+        || selected.start < token.start
+        || selected.end > token.end
+        || ends.binary_search(&token.end).is_err()
+    {
+        return None;
+    }
+    if selected.is_empty() {
+        return Some(Vec::new());
+    }
+    let first = ends.partition_point(|end| *end <= selected.start);
+    let last = ends.partition_point(|end| *end < selected.end);
+    let mut start = first
+        .checked_sub(1)
+        .map_or(token.start, |previous| ends[previous].max(token.start));
+    let mut result = Vec::with_capacity(last + 1 - first);
+    for &end in ends.get(first..=last)? {
+        if end <= start || end > token.end {
+            return None;
+        }
+        result.push(start.max(selected.start) - token.start..end.min(selected.end) - token.start);
+        start = end;
+    }
+    Some(result)
+}
+
+#[cfg(test)]
+mod retained_run_tests {
+    use super::*;
+    #[test]
+    fn arbitrary_windows_match_full_run_clipping_across_token_offsets() {
+        for source in [
+            "word 文😀e\u{301} ".repeat(1000),
+            format!("{}e{} tail", "prefix ".repeat(200), "\u{301}".repeat(800)),
+        ] {
+            let complete = super::super::visual_text_run_ranges(&source).collect::<Vec<_>>();
+            for offset in [0, 11, 519] {
+                let mut ends = vec![offset];
+                ends.extend(complete.iter().map(|run| offset + run.end));
+                let boundaries = source
+                    .char_indices()
+                    .map(|(at, _)| at)
+                    .chain([source.len()])
+                    .collect::<Vec<_>>();
+                for pair in boundaries.windows(2).step_by(37) {
+                    let start = pair[0];
+                    let end = (start + 777).min(source.len());
+                    let end = boundaries[boundaries.partition_point(|at| *at <= end) - 1];
+                    let expected = complete
+                        .iter()
+                        .filter_map(|run| {
+                            let start = start.max(run.start);
+                            let end = end.min(run.end);
+                            (start < end).then_some(start..end)
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        retained_paint_ranges(
+                            &ends,
+                            offset..offset + source.len(),
+                            offset + start..offset + end
+                        ),
+                        Some(expected)
+                    );
+                }
+            }
+        }
+        assert!(retained_paint_ranges(&[10, 20], 0..15, 1..4).is_none());
+        assert!(retained_paint_ranges(&[10, 20], 10..20, 9..14).is_none());
+        assert_eq!(
+            retained_paint_ranges(&[10, 20], 10..20, 13..13),
+            Some(vec![])
+        );
+    }
+}

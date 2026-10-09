@@ -21,6 +21,8 @@ pub use pointer::{PointerSelection, selection_scroll_delta};
 mod motion_queue;
 pub use motion_queue::{MotionQueue, MotionRequest};
 mod paragraph;
+mod wrapped_paragraph;
+pub use wrapped_paragraph::WrappedParagraphPreparation;
 mod visual_index;
 pub use paragraph::{
     MAX_PARAGRAPH_PROBE_BYTES, ParagraphMeasurementPlan, ParagraphMeasurements, ParagraphProbe,
@@ -58,7 +60,7 @@ pub use capacity::{
     TextPage, editor_limit,
 };
 mod paint;
-pub use paint::{PaintCoverage, PaintPosition, PaintSelection};
+pub use paint::{PaintCoverage, PaintPosition, PaintSelection, retained_paint_ranges};
 mod viewport;
 pub use viewport::{
     DocumentExtent, EditorViewport, MAX_MEASURE_BATCHES_PER_FRAME, MAX_MEASURE_BYTES,
