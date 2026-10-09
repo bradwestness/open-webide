@@ -27,6 +27,7 @@ pub mod executor;
 pub mod host_admin;
 pub mod memory;
 pub mod model;
+pub mod plugins;
 pub mod policy;
 pub mod questions;
 pub mod scheduled;

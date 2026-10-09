@@ -80,6 +80,9 @@ pub struct PluginCompatibility {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginContributions {
+    #[serde(default, rename = "toolGroups", skip_serializing_if = "Vec::is_empty")]
+    pub tool_groups: Vec<PluginToolGroup>,
+    #[serde(default)]
     pub skills: Vec<PluginSkill>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,7 +99,7 @@ impl PluginManifest {
         ).expect("static SemVer pattern")
         });
         if self.schema_version != 1
-            || self.compatibility.plugin_api != 1
+            || !matches!(self.compatibility.plugin_api, 1 | 2)
             || self
                 .schema
                 .as_deref()
@@ -137,10 +140,21 @@ impl PluginManifest {
         if let Some(readme) = &self.readme {
             package_path(readme)?;
         }
-        if self.contributions.skills.is_empty()
+        if (self.contributions.skills.is_empty() && self.contributions.tool_groups.is_empty())
             || self.contributions.skills.len() > crate::skills::MAX_SKILLS
+            || self.contributions.tool_groups.len() > 4
+            || self
+                .contributions
+                .tool_groups
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.contributions.tool_groups.len()
+            || (!self.contributions.tool_groups.is_empty() && self.compatibility.plugin_api != 2)
         {
-            return Err(invalid("A skills package must contribute 1–100 skills."));
+            return Err(invalid(
+                "Plugins require skills or unique supported tool groups; tool groups need plugin API 2.",
+            ));
         }
         let mut paths = std::collections::BTreeSet::new();
         for skill in &self.contributions.skills {
@@ -179,10 +193,18 @@ pub struct PluginInstallation {
     pub revision: i64,
     pub hosts: Vec<String>,
     pub installed_at: i64,
+    #[serde(default)]
+    pub default_enabled: bool,
+    #[serde(default)]
+    pub update_policy: PluginUpdatePolicy,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordPlugin {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_policy: Option<PluginUpdatePolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<Box<PluginPackage>>,
     pub prepared: PreparedPlugin,
     pub revision: Option<i64>,
 }
@@ -407,13 +429,21 @@ fn digest_hex(bytes: &[u8]) -> String {
     result
 }
 
-/// Database adapters serialize this result atomically; installation never activates tools.
+/// Database adapters serialize this result atomically; verified content establishes defaults for project activation.
 pub fn record_installation(
     mut current: Vec<PluginInstallation>,
     request: &RecordPlugin,
     now: i64,
 ) -> Result<Vec<PluginInstallation>, PluginError> {
     request.prepared.validate()?;
+    if let Some(package) = &request.package {
+        package.validate()?;
+        if package.prepared != request.prepared {
+            return Err(invalid(
+                "Plugin content does not match the installation receipt.",
+            ));
+        }
+    }
     let source = &request.prepared.source;
     let existing = current.iter_mut().find(|entry| {
         entry.prepared.source.repository == source.repository
@@ -427,6 +457,10 @@ pub fn record_installation(
             .revision
             .is_some_and(|revision| revision != existing.revision)
             || (!same && request.revision != Some(existing.revision))
+            || (request
+                .update_policy
+                .is_some_and(|policy| policy != existing.update_policy)
+                && request.revision != Some(existing.revision))
         {
             return Err(PluginError::Conflict(
                 "Plugin installation changed. Refresh before updating.".into(),
@@ -447,6 +481,17 @@ pub fn record_installation(
         if !same {
             existing.hosts.clear();
             existing.prepared = request.prepared.clone();
+            existing.revision += 1;
+            existing.default_enabled = false;
+        }
+        if request.package.is_some() && !existing.default_enabled {
+            existing.default_enabled = true;
+            existing.revision += 1;
+        }
+        if let Some(policy) = request.update_policy
+            && policy != existing.update_policy
+        {
+            existing.update_policy = policy;
             existing.revision += 1;
         }
         if !existing.hosts.contains(&request.prepared.host_id) {
@@ -470,6 +515,8 @@ pub fn record_installation(
             revision: 1,
             hosts: vec![request.prepared.host_id.clone()],
             installed_at: now,
+            default_enabled: request.package.is_some(),
+            update_policy: request.update_policy.unwrap_or_default(),
         });
     }
     current.sort_by(|a, b| {
@@ -725,6 +772,8 @@ mod tests {
     #[test]
     fn receipts_merge_hosts_without_enabling_and_updates_require_revision() {
         let request = RecordPlugin {
+            update_policy: None,
+            package: None,
             prepared: receipt(),
             revision: None,
         };
@@ -751,6 +800,8 @@ mod tests {
     #[test]
     fn same_commit_cannot_change_its_validated_contents() {
         let request = RecordPlugin {
+            update_policy: None,
+            package: None,
             prepared: receipt(),
             revision: None,
         };
@@ -889,4 +940,211 @@ pub struct PluginSkillOrigin {
     pub name: String,
     pub version: String,
     pub commit: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginUpdatePolicy {
+    #[default]
+    Notify,
+    Automatic,
+    Off,
+}
+#[derive(Clone, Debug)]
+pub struct PluginUpdate {
+    pub installation: PluginInstallation,
+    pub marketplace: marketplace::MarketplaceSource,
+    pub version: String,
+    pub automatic: bool,
+}
+/// Shared update discovery uses SemVer precedence and the installation's source.
+pub fn available_updates(
+    installations: &[PluginInstallation],
+    markets: &marketplace::MarketplaceSettings,
+) -> Vec<PluginUpdate> {
+    discover_updates(installations, markets, false)
+}
+pub fn automatic_updates(
+    installations: &[PluginInstallation],
+    markets: &marketplace::MarketplaceSettings,
+) -> Vec<PluginUpdate> {
+    discover_updates(installations, markets, true)
+}
+fn discover_updates(
+    installations: &[PluginInstallation],
+    markets: &marketplace::MarketplaceSettings,
+    automatic_only: bool,
+) -> Vec<PluginUpdate> {
+    installations
+        .iter()
+        .filter_map(|entry| {
+            if entry.update_policy == PluginUpdatePolicy::Off
+                || (automatic_only && entry.update_policy != PluginUpdatePolicy::Automatic)
+            {
+                return None;
+            }
+            let current = semver::Version::parse(&entry.prepared.manifest.version).ok()?;
+            markets
+                .catalogs
+                .iter()
+                .filter(|catalog| catalog.source.repository == entry.prepared.source.repository)
+                .flat_map(|catalog| {
+                    catalog
+                        .catalog
+                        .plugins
+                        .iter()
+                        .filter(|plugin| {
+                            plugin.publisher == entry.prepared.manifest.publisher
+                                && plugin.name == entry.prepared.manifest.name
+                        })
+                        .flat_map(move |plugin| {
+                            plugin
+                                .releases
+                                .iter()
+                                .map(move |release| (catalog, release))
+                        })
+                })
+                .filter_map(|(catalog, release)| {
+                    let version = semver::Version::parse(&release.version).ok()?;
+                    (release.source.path == entry.prepared.source.path
+                        && version.cmp_precedence(&current).is_gt()
+                        && (version.pre.is_empty() || !current.pre.is_empty())
+                        && (!automatic_only
+                            || (version.major == current.major
+                                && (current.major != 0 || version.minor == current.minor))))
+                        .then_some((catalog, release, version))
+                })
+                .max_by(|a, b| a.2.cmp_precedence(&b.2))
+                .map(|(catalog, release, version)| PluginUpdate {
+                    installation: entry.clone(),
+                    marketplace: catalog.source.clone(),
+                    version: release.version.clone(),
+                    automatic: entry.update_policy == PluginUpdatePolicy::Automatic
+                        && version.major == current.major
+                        && (current.major != 0 || version.minor == current.minor),
+                })
+        })
+        .collect()
+}
+
+/// Platform service groups available through host-installed plugins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PluginToolGroup {
+    Web,
+    Memory,
+    Scheduling,
+    SkillAuthoring,
+}
+pub fn enabled_tool_groups(
+    bindings: &[ProjectPlugin],
+) -> std::collections::BTreeSet<PluginToolGroup> {
+    bindings
+        .iter()
+        .filter(|binding| binding.enabled)
+        .flat_map(|binding| {
+            binding
+                .prepared
+                .manifest
+                .contributions
+                .tool_groups
+                .iter()
+                .copied()
+        })
+        .collect()
+}
+
+pub fn default_bindings(installations: &[PluginInstallation]) -> Vec<ProjectPlugin> {
+    installations
+        .iter()
+        .filter(|entry| entry.default_enabled)
+        .map(|entry| ProjectPlugin {
+            id: 0,
+            revision: entry.revision,
+            prepared: entry.prepared.clone(),
+            enabled: true,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+    use testing::{catalog, receipt};
+    #[test]
+    fn notify_is_default_and_updates_use_semver_source_and_compatible_auto_policy() {
+        let mut cache = catalog();
+        for (version, path) in [
+            ("0.1.10", "plugins/pr-review"),
+            ("0.1.2", "plugins/pr-review"),
+            ("0.2.0", "plugins/pr-review"),
+            ("1.0.0-rc.1", "plugins/pr-review"),
+            ("9.0.0", "plugins/other"),
+        ] {
+            cache.catalog.plugins[0]
+                .releases
+                .push(marketplace::CatalogRelease {
+                    version: version.into(),
+                    source: marketplace::CatalogReleaseSource {
+                        commit: "b".repeat(40),
+                        path: path.into(),
+                    },
+                });
+        }
+        let mut entries = record_installation(
+            Vec::new(),
+            &RecordPlugin {
+                prepared: receipt(),
+                revision: None,
+                package: None,
+                update_policy: None,
+            },
+            0,
+        )
+        .unwrap();
+        // Match the fixture directory, independent of the release order.
+        for release in &mut cache.catalog.plugins[0].releases {
+            if release.source.path == "plugins/pr-review" {
+                release.source.path = entries[0].prepared.source.path.clone();
+            }
+        }
+        let mut markets = marketplace::MarketplaceSettings {
+            revision: 1,
+            sources: vec![cache.source.clone()],
+            catalogs: vec![cache],
+        };
+        assert_eq!(entries[0].update_policy, PluginUpdatePolicy::Notify);
+        assert_eq!(available_updates(&entries, &markets)[0].version, "0.2.0");
+        entries[0].update_policy = PluginUpdatePolicy::Automatic;
+        assert!(!available_updates(&entries, &markets)[0].automatic);
+        assert_eq!(automatic_updates(&entries, &markets)[0].version, "0.1.10");
+        markets.catalogs[0].catalog.plugins[0]
+            .releases
+            .retain(|release| release.version != "0.2.0");
+        assert_eq!(available_updates(&entries, &markets)[0].version, "0.1.10");
+        assert!(available_updates(&entries, &markets)[0].automatic);
+        entries[0].update_policy = PluginUpdatePolicy::Off;
+        assert!(available_updates(&entries, &markets).is_empty());
+    }
+    #[test]
+    fn preferences_are_revision_checked_and_verified_content_cannot_mismatch_receipts() {
+        let request = RecordPlugin {
+            prepared: receipt(),
+            revision: None,
+            package: None,
+            update_policy: None,
+        };
+        let entries = record_installation(Vec::new(), &request, 0).unwrap();
+        let mut update = request.clone();
+        update.update_policy = Some(PluginUpdatePolicy::Off);
+        assert!(record_installation(entries.clone(), &update, 1).is_err());
+        update.revision = Some(entries[0].revision);
+        let changed = record_installation(entries.clone(), &update, 1).unwrap();
+        assert_eq!(changed[0].update_policy, PluginUpdatePolicy::Off);
+        assert!(record_installation(changed, &update, 2).is_err());
+        let mut wrong = testing::package();
+        wrong.prepared.source.commit = "b".repeat(40);
+        update.package = Some(Box::new(wrong));
+        assert!(record_installation(entries, &update, 2).is_err());
+    }
 }

@@ -21,6 +21,14 @@ pub struct PluginsState {
     pub loaded: RwSignal<bool>,
     pub error: RwSignal<Option<String>>,
 }
+impl PluginsState {
+    pub fn updates(self) -> Vec<openwebide_core::plugins::PluginUpdate> {
+        openwebide_core::plugins::available_updates(
+            &self.installations.get(),
+            &self.marketplaces.get(),
+        )
+    }
+}
 impl Default for PluginsState {
     fn default() -> Self {
         Self {

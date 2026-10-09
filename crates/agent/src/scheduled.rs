@@ -4,14 +4,15 @@ pub fn authorize_host_plan(plan: &mut openwebide_core::RunPlan, path: &str) {
     if plan.request.model_settings.tools == Some(false) {
         return;
     }
-    let mut tools = crate::session::tools_for_host(true);
-    tools.extend(
-        plan.request
-            .tools
-            .iter()
-            .filter(|tool| !tools_contains(&tool.name))
-            .cloned(),
-    );
+    let mut tools = plan.request.tools.clone();
+    for tool in crate::session::tools_for_host(true)
+        .into_iter()
+        .filter(|tool| crate::policy::BRIDGE_TOOLS.contains(&tool.name.as_str()))
+    {
+        if !tools.iter().any(|existing| existing.name == tool.name) {
+            tools.push(tool);
+        }
+    }
     plan.connection.tool_selection.apply(&mut tools);
     plan.request.tools = tools;
     plan.kind = if plan.request.tools.is_empty() {
@@ -21,9 +22,6 @@ pub fn authorize_host_plan(plan: &mut openwebide_core::RunPlan, path: &str) {
             project_path: path.into(),
         }
     };
-}
-fn tools_contains(name: &str) -> bool {
-    crate::vfs_tools().iter().any(|tool| tool.name == name)
 }
 use crate::{ToolExecutor, ToolOutcome, ToolPreview};
 use openwebide_core::{

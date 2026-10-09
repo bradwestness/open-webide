@@ -14,5 +14,8 @@ openwebide-llm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[dev-dependencies]
+openwebide-core = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

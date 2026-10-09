@@ -291,7 +291,7 @@ impl Backend for FakeBackend {
     }
     fn plugin_package<'a>(
         &'a self,
-        _project: i64,
+        _project: Option<i64>,
         _expected: &'a openwebide_core::plugins::PreparedPlugin,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::PluginPackage, String>> {
         Box::pin(async {
@@ -335,6 +335,12 @@ impl Backend for FakeBackend {
                 .position(|e| e.prepared.source == request.source && e.revision == request.revision)
                 .ok_or("Installation changed")?;
             entries.remove(index);
+            for bindings in self.project_plugin_entries.borrow_mut().values_mut() {
+                bindings.retain(|binding| {
+                    binding.prepared.source.repository != request.source.repository
+                        || binding.prepared.source.path != request.source.path
+                });
+            }
             Ok(entries.clone())
         })
     }
@@ -379,6 +385,28 @@ impl Backend for FakeBackend {
             )
             .map_err(|error| error.to_string())?;
             *self.plugins.borrow_mut() = entries.clone();
+            if request.package.is_some() {
+                let mut projects = self.project_plugin_entries.borrow_mut();
+                projects.entry(1).or_default();
+                for bindings in projects.values_mut() {
+                    if let Some(binding) = bindings.iter_mut().find(|binding| {
+                        binding.prepared.source.repository == request.prepared.source.repository
+                            && binding.prepared.source.path == request.prepared.source.path
+                    }) {
+                        if binding.enabled {
+                            binding.prepared = request.prepared.clone();
+                            binding.revision += 1;
+                        }
+                    } else {
+                        bindings.push(openwebide_core::plugins::ProjectPlugin {
+                            id: i64::try_from(bindings.len()).unwrap() + 1,
+                            revision: 1,
+                            prepared: request.prepared.clone(),
+                            enabled: true,
+                        });
+                    }
+                }
+            }
             Ok(entries)
         })
     }

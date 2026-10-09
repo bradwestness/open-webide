@@ -1676,8 +1676,8 @@ mod skill_tests {
                         assert!(!result.content.contains("PRIVATE INSTRUCTIONS"));
                     }
                     if read.name == "skill_creator" {
-                        assert!(result.content.contains("held-out"));
-                        assert!(result.content.contains("Never invent"));
+                        assert!(result.content.contains("Skill Authoring plugin"));
+                        assert!(result.content.contains("skill_read"));
                     }
                 }
                 let resource = executor

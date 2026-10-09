@@ -916,22 +916,23 @@ pub async fn run_local_agent(
         content: user_content,
         editor: editor_context,
     };
-    openwebide_agent::memory::configure(
-        &mut input.tools,
-        &mut input.system_prompt,
-        &memories,
-        runtime.settings.context_limit,
-    );
     let skills = api
         .with_value(Clone::clone)
         .session_skills(session_id)
         .await?;
-    openwebide_agent::scheduled::configure(&mut input.tools);
-    openwebide_agent::skills::configure(
+    let plugin_bindings = api
+        .with_value(Clone::clone)
+        .project_plugins(project.id)
+        .await?;
+    openwebide_agent::plugins::configure(
         &mut input.tools,
         &mut input.system_prompt,
-        &skills,
-        runtime.settings.context_limit,
+        &openwebide_agent::plugins::PluginContext {
+            bindings: &plugin_bindings,
+            memories: &memories,
+            skills: &skills,
+            context_limit: runtime.settings.context_limit,
+        },
     );
     let mut plan = openwebide_agent::session::plan(&runtime, input);
     plan.plugin_skills = openwebide_agent::skills::package_snapshot(&skills);

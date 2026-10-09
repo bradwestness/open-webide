@@ -1171,11 +1171,14 @@ impl BackendApi {
     }
     pub async fn plugin_package(
         &self,
-        project: i64,
+        project: Option<i64>,
         expected: &openwebide_core::plugins::PreparedPlugin,
     ) -> Result<openwebide_core::plugins::PluginPackage, String> {
-        self.post(&format!("/projects/{project}/plugins/package"), expected)
-            .await
+        let path = project.map_or_else(
+            || "/plugins/package".into(),
+            |id| format!("/projects/{id}/plugins/package"),
+        );
+        self.post(&path, expected).await
     }
     pub async fn plugin_installations(
         &self,

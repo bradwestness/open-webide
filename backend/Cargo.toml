@@ -30,5 +30,8 @@ spin-sdk = { workspace = true }
 thiserror = { workspace = true }
 web-push-native = "0.5"
 
+[dev-dependencies]
+openwebide-core = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

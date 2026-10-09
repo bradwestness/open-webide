@@ -575,7 +575,7 @@ pub trait Backend {
     }
     fn plugin_package<'a>(
         &'a self,
-        _project: i64,
+        _project: Option<i64>,
         _expected: &'a openwebide_core::plugins::PreparedPlugin,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::PluginPackage, String>> {
         Box::pin(async { Err("Plugin management unavailable".into()) })
@@ -1507,7 +1507,7 @@ impl Backend for BackendApi {
     }
     fn plugin_package<'a>(
         &'a self,
-        project: i64,
+        project: Option<i64>,
         expected: &'a openwebide_core::plugins::PreparedPlugin,
     ) -> LocalBoxFuture<'a, Result<openwebide_core::plugins::PluginPackage, String>> {
         Box::pin(BackendApi::plugin_package(self, project, expected))

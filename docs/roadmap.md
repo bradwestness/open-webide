@@ -368,20 +368,22 @@ capability.
   and [database-backed project skills](agent-skills.md); keep discovery and context
   loading bounded through the deferred-tool-loading work above. Add context/run hooks later when
   needed; declarative UI contributions are a later stage of this same system.
-  The skills-only baseline is shipped: package/catalog schemas, offline authoring
+  The baseline supports skills and optional platform tool groups: package/catalog schemas, offline authoring
   validation and CI, and a commit-pinned PR Review reference release. The status-bar
   Plugins interface shows Installed and Available lists with individual marketplace
   source labels, browses the official/custom Git catalogs and installs validated
   immutable snapshots on either host (including server-host installation without an
-  open project), enables managed skills per project, applies manual version
-  changes/rollback and removes plugins. Settings configures marketplace sources;
+  open project), enables installed plugins across existing/new projects with saved
+  per-project opt-outs, applies version changes/rollback and removes plugins.
+  Web, Project Memory, Scheduling and Skill Authoring are first-party plugins;
+  core workspace tools remain built in. Notify is the default update policy,
+  with a status-bar count, individual updates and Update All; Automatic supports
+  compatible updates during idle app checks, and Off suppresses updates. Settings configures marketplace sources;
   the official source is always available. Sources, caches and installation records
   are user-scoped database data, and runs pin their package skill content. Remaining
-  work includes enabling installed plugins by default in every project, including
-  newly opened projects, with persisted per-project disable overrides and host
-  preparation through the shared facade. Current activation is explicit per project.
-  Also remaining: tool/runtime contributions, dependencies/configuration, automatic
-  update policies, file-based suggestions and agent-facing plugin management.
+  work includes choosing fresh-install plugin defaults, checks while all clients
+  are closed, arbitrary tool runtimes/MCP contributions, dependencies/configuration,
+  file-based suggestions and agent-facing plugin management.
 - Use one package format with typed contributions rather than mutually exclusive
   plugin types. A package can combine skills, MCP servers/tools and language
   support, declarative panels/editor annotations and eventual editor hooks; validate compatibility,

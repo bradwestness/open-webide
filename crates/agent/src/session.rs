@@ -117,7 +117,13 @@ pub fn plan(runtime: &ModelRuntime, input: PlanInput) -> openwebide_core::RunPla
     let projectless =
         input.environment.project_name.is_none() && input.environment.project_root.is_none();
     let tools = if projectless {
-        projectless_tools()
+        input
+            .tools
+            .into_iter()
+            .filter(|tool| {
+                is_projectless_tool(&tool.name) || crate::scheduled::is_scheduled_tool(&tool.name)
+            })
+            .collect()
     } else {
         input.tools
     };

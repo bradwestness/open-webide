@@ -3713,3 +3713,5 @@ button.browser-item {
 .plugin-empty { padding: var(--space-2) 0; }
 .phone-layout .plugin-row { grid-template-columns: 24px minmax(0, 1fr); }
 .phone-layout .plugin-row-actions { grid-column: 2; justify-content: flex-end; }
+
+.plugin-update-count { color: var(--warn); }

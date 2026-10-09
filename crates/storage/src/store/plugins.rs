@@ -34,6 +34,19 @@ impl<D: Db> Store<D> {
                 let json = serde_json::to_string(&next)
                     .map_err(|error| StorageError::Db(error.to_string()))?;
                 store.set_user_setting(user, KEY, &json).await?;
+                if let Some(package) = &request.package {
+                    store.db.execute("INSERT INTO plugin_defaults(user_id,repository,path,package) VALUES(?,?,?,?) ON CONFLICT(user_id,repository,path) DO UPDATE SET package=excluded.package", &[
+                        DbValue::Int(user.get()), DbValue::Text(request.prepared.source.repository.clone()), DbValue::Text(request.prepared.source.path.clone()),
+                        DbValue::Text(serde_json::to_string(package).map_err(|error| StorageError::Db(error.to_string()))?),
+                    ]).await?;
+                    let projects = store.db.execute("SELECT id FROM projects WHERE user_id=?", &[DbValue::Int(user.get())]).await?;
+                    for row in projects.rows {
+                        store.apply_plugin_default(user, row.get_int(0)?, package, now).await?;
+                    }
+                }
+                if !next.iter().find(|entry|entry.prepared.source.repository==request.prepared.source.repository && entry.prepared.source.path==request.prepared.source.path).is_some_and(|entry|entry.default_enabled) {
+                    store.db.execute("DELETE FROM plugin_defaults WHERE user_id=? AND repository=? AND path=?", &[DbValue::Int(user.get()), DbValue::Text(request.prepared.source.repository.clone()), DbValue::Text(request.prepared.source.path.clone())]).await?;
+                }
                 Ok(next)
             })
             .await
@@ -59,6 +72,8 @@ mod tests {
                 .await
                 .unwrap();
             let request = RecordPlugin {
+                update_policy: None,
+                package: None,
                 prepared: receipt(),
                 revision: None,
             };
@@ -191,61 +206,220 @@ impl<D: Db> Store<D> {
         command: &ProjectPluginCommand,
         now: i64,
     ) -> Result<Vec<ProjectPlugin>, StorageError> {
-        self.db.transaction(|tx|async move {
-            let store = Store::new(tx);
-            let current = store.project_plugins(user,project).await?;
-            match command {
-                ProjectPluginCommand::Enable {package,installation_revision,revision} => {
-                    package.validate().map_err(plugin_error)?;
-                    let receipt = &package.prepared;
-                    let installations = store.plugin_installations(user).await?;
-                    let installation = installations.iter().find(|entry|entry.prepared.source==receipt.source && entry.prepared.manifest==receipt.manifest && entry.prepared.digest==receipt.digest && entry.hosts.contains(&receipt.host_id))
+        self.db
+            .transaction(|tx| async move {
+                Store::new(tx)
+                    .project_plugin_command_in_transaction(user, project, command, now)
+                    .await
+            })
+            .await
+    }
+    async fn project_plugin_command_in_transaction(
+        &self,
+        user: UserId,
+        project: i64,
+        command: &ProjectPluginCommand,
+        now: i64,
+    ) -> Result<Vec<ProjectPlugin>, StorageError> {
+        let current = self.project_plugins(user, project).await?;
+        match command {
+            ProjectPluginCommand::Enable {
+                package,
+                installation_revision,
+                revision,
+            } => {
+                package.validate().map_err(plugin_error)?;
+                let receipt = &package.prepared;
+                let installations = self.plugin_installations(user).await?;
+                let installation = installations.iter().find(|entry|entry.prepared.source==receipt.source && entry.prepared.manifest==receipt.manifest && entry.prepared.digest==receipt.digest && entry.hosts.contains(&receipt.host_id))
                         .ok_or_else(||StorageError::Conflict("Prepare this installed version on the project host before enabling it.".into()))?;
-                    if installation.revision != *installation_revision { return Err(StorageError::Conflict("Installed plugin changed. Refresh before enabling it.".into())); }
-                    let previous = current.iter().find(|entry|entry.prepared.source.repository==receipt.source.repository && entry.prepared.source.path==receipt.source.path);
-                    if previous.map(|entry|entry.revision) != *revision { return Err(StorageError::Conflict("Project plugin changed. Refresh before enabling it.".into())); }
-                    let existing_skills = store.project_skills(user,project).await?;
-                    let previous_ids = if let Some(previous)=previous {
-                        store.db.execute("SELECT skill_id FROM project_plugin_skills WHERE plugin_id=?",&[DbValue::Int(previous.id)]).await?.rows.iter().map(|row|row.get_int(0)).collect::<Result<Vec<_>,_>>()?
-                    } else {Vec::new()};
-                    let unrelated = existing_skills.entries.iter().filter(|entry|!previous_ids.contains(&entry.id)).collect::<Vec<_>>();
-                    if unrelated.len()+package.skills.len() > openwebide_core::skills::MAX_SKILLS { return Err(StorageError::InvalidRequest("This project would exceed 100 skills.".into())); }
-                    if package.skills.iter().any(|draft|unrelated.iter().any(|entry|entry.draft.name==draft.name)) { return Err(StorageError::Conflict("A contributed skill name already exists in this project. Remove or rename that skill first.".into())); }
-                    let json = serde_json::to_string(receipt).map_err(|error|StorageError::Db(error.to_string()))?;
-                    let id = if let Some(previous)=previous {
-                        store.db.execute("UPDATE project_plugins SET revision=revision+1,enabled=1,prepared=? WHERE id=?",&[DbValue::Text(json),DbValue::Int(previous.id)]).await?;
-                        previous.id
-                    } else {
-                        store.db.execute("INSERT INTO project_plugins(user_id,project_id,repository,path,prepared) VALUES(?,?,?,?,?)",&[DbValue::Int(user.get()),DbValue::Int(project),DbValue::Text(receipt.source.repository.clone()),DbValue::Text(receipt.source.path.clone()),DbValue::Text(json)]).await?.last_insert_rowid
-                    };
-                    for old in existing_skills.entries.iter().filter(|entry|previous_ids.contains(&entry.id)) {
-                        if !package.skills.iter().any(|draft|draft.name==old.draft.name) { store.db.execute("DELETE FROM project_skills WHERE id=?",&[DbValue::Int(old.id)]).await?; }
-                    }
-                    for draft in &package.skills {
-                        let mut draft = draft.clone(); draft.enabled = true;
-                        let json = serde_json::to_string(&draft).map_err(|error|StorageError::Db(error.to_string()))?;
-                        let skill = if let Some(old)=existing_skills.entries.iter().find(|entry|previous_ids.contains(&entry.id) && entry.draft.name==draft.name) {
-                            store.db.execute("UPDATE project_skills SET draft=?,revision=revision+1,updated_at=? WHERE id=?",&[DbValue::Text(json),DbValue::Int(now),DbValue::Int(old.id)]).await?;
-                            old.id
-                        } else {
-                            store.db.execute("INSERT INTO project_skills(user_id,project_id,name,draft,updated_at) VALUES(?,?,?,?,?)",&[DbValue::Int(user.get()),DbValue::Int(project),DbValue::Text(draft.name.clone()),DbValue::Text(json),DbValue::Int(now)]).await?.last_insert_rowid
-                        };
-                        store.db.execute("INSERT OR IGNORE INTO project_plugin_skills(plugin_id,skill_id) VALUES(?,?)",&[DbValue::Int(id),DbValue::Int(skill)]).await?;
+                if installation.revision != *installation_revision {
+                    return Err(StorageError::Conflict(
+                        "Installed plugin changed. Refresh before enabling it.".into(),
+                    ));
+                }
+                let previous = current.iter().find(|entry| {
+                    entry.prepared.source.repository == receipt.source.repository
+                        && entry.prepared.source.path == receipt.source.path
+                });
+                if previous.map(|entry| entry.revision) != *revision {
+                    return Err(StorageError::Conflict(
+                        "Project plugin changed. Refresh before enabling it.".into(),
+                    ));
+                }
+                let existing_skills = self.project_skills(user, project).await?;
+                let previous_ids = if let Some(previous) = previous {
+                    self.db
+                        .execute(
+                            "SELECT skill_id FROM project_plugin_skills WHERE plugin_id=?",
+                            &[DbValue::Int(previous.id)],
+                        )
+                        .await?
+                        .rows
+                        .iter()
+                        .map(|row| row.get_int(0))
+                        .collect::<Result<Vec<_>, _>>()?
+                } else {
+                    Vec::new()
+                };
+                let unrelated = existing_skills
+                    .entries
+                    .iter()
+                    .filter(|entry| !previous_ids.contains(&entry.id))
+                    .collect::<Vec<_>>();
+                if unrelated.len() + package.skills.len() > openwebide_core::skills::MAX_SKILLS {
+                    return Err(StorageError::InvalidRequest(
+                        "This project would exceed 100 skills.".into(),
+                    ));
+                }
+                if package
+                    .skills
+                    .iter()
+                    .any(|draft| unrelated.iter().any(|entry| entry.draft.name == draft.name))
+                {
+                    return Err(StorageError::Conflict("A contributed skill name already exists in this project. Remove or rename that skill first.".into()));
+                }
+                let json = serde_json::to_string(receipt)
+                    .map_err(|error| StorageError::Db(error.to_string()))?;
+                let id = if let Some(previous) = previous {
+                    self.db.execute("UPDATE project_plugins SET revision=revision+1,enabled=1,prepared=? WHERE id=?",&[DbValue::Text(json),DbValue::Int(previous.id)]).await?;
+                    previous.id
+                } else {
+                    self.db.execute("INSERT INTO project_plugins(user_id,project_id,repository,path,prepared) VALUES(?,?,?,?,?)",&[DbValue::Int(user.get()),DbValue::Int(project),DbValue::Text(receipt.source.repository.clone()),DbValue::Text(receipt.source.path.clone()),DbValue::Text(json)]).await?.last_insert_rowid
+                };
+                for old in existing_skills
+                    .entries
+                    .iter()
+                    .filter(|entry| previous_ids.contains(&entry.id))
+                {
+                    if !package
+                        .skills
+                        .iter()
+                        .any(|draft| draft.name == old.draft.name)
+                    {
+                        self.db
+                            .execute(
+                                "DELETE FROM project_skills WHERE id=?",
+                                &[DbValue::Int(old.id)],
+                            )
+                            .await?;
                     }
                 }
-                ProjectPluginCommand::Disable {id,revision} => {
-                    let entry = current.iter().find(|entry|entry.id==*id && entry.revision==*revision).ok_or_else(||StorageError::Conflict("Project plugin changed. Refresh before disabling it.".into()))?;
-                    let skills = store.project_skills(user,project).await?;
-                    let ids = store.db.execute("SELECT skill_id FROM project_plugin_skills WHERE plugin_id=?",&[DbValue::Int(entry.id)]).await?.rows.iter().map(|row|row.get_int(0)).collect::<Result<Vec<_>,_>>()?;
-                    for entry in skills.entries.into_iter().filter(|entry|ids.contains(&entry.id)) {
-                        let mut draft=entry.draft;draft.enabled=false;
-                        store.db.execute("UPDATE project_skills SET draft=?,revision=revision+1,updated_at=? WHERE id=?",&[DbValue::Text(serde_json::to_string(&draft).map_err(|error|StorageError::Db(error.to_string()))?),DbValue::Int(now),DbValue::Int(entry.id)]).await?;
-                    }
-                    store.db.execute("UPDATE project_plugins SET enabled=0,revision=revision+1 WHERE id=?",&[DbValue::Int(*id)]).await?;
+                for draft in &package.skills {
+                    let mut draft = draft.clone();
+                    draft.enabled = true;
+                    let json = serde_json::to_string(&draft)
+                        .map_err(|error| StorageError::Db(error.to_string()))?;
+                    let skill = if let Some(old) = existing_skills.entries.iter().find(|entry| {
+                        previous_ids.contains(&entry.id) && entry.draft.name == draft.name
+                    }) {
+                        self.db.execute("UPDATE project_skills SET draft=?,revision=revision+1,updated_at=? WHERE id=?",&[DbValue::Text(json),DbValue::Int(now),DbValue::Int(old.id)]).await?;
+                        old.id
+                    } else {
+                        self.db.execute("INSERT INTO project_skills(user_id,project_id,name,draft,updated_at) VALUES(?,?,?,?,?)",&[DbValue::Int(user.get()),DbValue::Int(project),DbValue::Text(draft.name.clone()),DbValue::Text(json),DbValue::Int(now)]).await?.last_insert_rowid
+                    };
+                    self.db.execute("INSERT OR IGNORE INTO project_plugin_skills(plugin_id,skill_id) VALUES(?,?)",&[DbValue::Int(id),DbValue::Int(skill)]).await?;
                 }
             }
-            store.project_plugins(user,project).await
-        }).await
+            ProjectPluginCommand::Disable { id, revision } => {
+                let entry = current
+                    .iter()
+                    .find(|entry| entry.id == *id && entry.revision == *revision)
+                    .ok_or_else(|| {
+                        StorageError::Conflict(
+                            "Project plugin changed. Refresh before disabling it.".into(),
+                        )
+                    })?;
+                let skills = self.project_skills(user, project).await?;
+                let ids = self
+                    .db
+                    .execute(
+                        "SELECT skill_id FROM project_plugin_skills WHERE plugin_id=?",
+                        &[DbValue::Int(entry.id)],
+                    )
+                    .await?
+                    .rows
+                    .iter()
+                    .map(|row| row.get_int(0))
+                    .collect::<Result<Vec<_>, _>>()?;
+                for entry in skills
+                    .entries
+                    .into_iter()
+                    .filter(|entry| ids.contains(&entry.id))
+                {
+                    let mut draft = entry.draft;
+                    draft.enabled = false;
+                    self.db.execute("UPDATE project_skills SET draft=?,revision=revision+1,updated_at=? WHERE id=?",&[DbValue::Text(serde_json::to_string(&draft).map_err(|error|StorageError::Db(error.to_string()))?),DbValue::Int(now),DbValue::Int(entry.id)]).await?;
+                }
+                self.db
+                    .execute(
+                        "UPDATE project_plugins SET enabled=0,revision=revision+1 WHERE id=?",
+                        &[DbValue::Int(*id)],
+                    )
+                    .await?;
+            }
+        }
+        self.project_plugins(user, project).await
+    }
+    pub(super) async fn inherit_plugin_defaults(
+        &self,
+        user: UserId,
+        project: i64,
+        now: i64,
+    ) -> Result<(), StorageError> {
+        let defaults = self
+            .db
+            .execute(
+                "SELECT package FROM plugin_defaults WHERE user_id=?",
+                &[DbValue::Int(user.get())],
+            )
+            .await?;
+        for row in defaults.rows {
+            let package: openwebide_core::plugins::PluginPackage =
+                serde_json::from_str(row.get_text(0)?)
+                    .map_err(|error| StorageError::Db(error.to_string()))?;
+            self.apply_plugin_default(user, project, &package, now)
+                .await?;
+        }
+        Ok(())
+    }
+    async fn apply_plugin_default(
+        &self,
+        user: UserId,
+        project: i64,
+        package: &openwebide_core::plugins::PluginPackage,
+        now: i64,
+    ) -> Result<(), StorageError> {
+        let bindings = self.project_plugins(user, project).await?;
+        let previous = bindings.iter().find(|binding| {
+            binding.prepared.source.repository == package.prepared.source.repository
+                && binding.prepared.source.path == package.prepared.source.path
+        });
+        if previous.is_some_and(|binding| {
+            !binding.enabled
+                || (binding.prepared.source == package.prepared.source
+                    && binding.prepared.digest == package.prepared.digest)
+        }) {
+            return Ok(());
+        }
+        let installation = self
+            .plugin_installations(user)
+            .await?
+            .into_iter()
+            .find(|entry| entry.prepared.source == package.prepared.source)
+            .ok_or_else(|| StorageError::Conflict("Plugin installation changed.".into()))?;
+        self.project_plugin_command_in_transaction(
+            user,
+            project,
+            &ProjectPluginCommand::Enable {
+                package: Box::new(package.clone()),
+                installation_revision: installation.revision,
+                revision: previous.map(|binding| binding.revision),
+            },
+            now,
+        )
+        .await?;
+        Ok(())
     }
     pub async fn remove_plugin(
         &self,
@@ -261,6 +435,7 @@ impl<D: Db> Store<D> {
             let scope=[DbValue::Int(user.get()),DbValue::Text(entry.prepared.source.repository.clone()),DbValue::Text(entry.prepared.source.path.clone())];
             store.db.execute("DELETE FROM project_skills WHERE id IN (SELECT s.skill_id FROM project_plugin_skills s JOIN project_plugins p ON p.id=s.plugin_id WHERE p.user_id=? AND p.repository=? AND p.path=?)",&scope).await?;
             store.db.execute("DELETE FROM project_plugins WHERE user_id=? AND repository=? AND path=?",&scope).await?;
+            store.db.execute("DELETE FROM plugin_defaults WHERE user_id=? AND repository=? AND path=?",&scope).await?;
             entries.retain(|entry|entry.prepared.source.repository!=request.source.repository || entry.prepared.source.path!=request.source.path);
             store.set_user_setting(user,KEY,&serde_json::to_string(&entries).map_err(|error|StorageError::Db(error.to_string()))?).await?;
             Ok(entries)
@@ -318,6 +493,8 @@ mod lifecycle_tests {
                     .record_plugin(
                         user,
                         &RecordPlugin {
+                            update_policy: None,
+                            package: None,
                             prepared: package.prepared.clone(),
                             revision: None,
                         },
@@ -417,6 +594,8 @@ mod lifecycle_tests {
                     .record_plugin(
                         user,
                         &RecordPlugin {
+                            update_policy: None,
+                            package: None,
                             prepared: updated.prepared.clone(),
                             revision: Some(entries[0].revision),
                         },
@@ -456,6 +635,8 @@ mod lifecycle_tests {
                     .record_plugin(
                         user,
                         &RecordPlugin {
+                            update_policy: None,
+                            package: None,
                             prepared: package.prepared.clone(),
                             revision: Some(entries[0].revision),
                         },
@@ -612,6 +793,8 @@ mod lifecycle_tests {
                 .record_plugin(
                     user,
                     &RecordPlugin {
+                        update_policy: None,
+                        package: None,
                         prepared: package.prepared.clone(),
                         revision: None,
                     },
@@ -730,6 +913,307 @@ mod lifecycle_tests {
                     )
                     .await
                     .is_err()
+            );
+        });
+    }
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+    use crate::rusqlite_db::RusqliteDb;
+    use openwebide_core::{NewProject, WorkspaceMode, plugins::testing::package};
+    #[test]
+    fn installation_defaults_apply_to_existing_and_future_projects_without_reviving_disable_overrides()
+     {
+        futures::executor::block_on(async {
+            for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+                let store = Store::new(RusqliteDb::open_in_memory().unwrap());
+                store.migrate().await.unwrap();
+                let user = store
+                    .insert_user("owner", "hash", UserRole::User, 0)
+                    .await
+                    .unwrap()
+                    .id;
+                let other = store
+                    .insert_user("other", "hash", UserRole::User, 0)
+                    .await
+                    .unwrap()
+                    .id;
+                let project = store
+                    .create_project(
+                        &NewProject {
+                            name: "first".into(),
+                            mode,
+                            path: None,
+                        },
+                        user,
+                        0,
+                    )
+                    .await
+                    .unwrap();
+                let other_project = store
+                    .create_project(
+                        &NewProject {
+                            name: "other".into(),
+                            mode,
+                            path: None,
+                        },
+                        other,
+                        0,
+                    )
+                    .await
+                    .unwrap();
+                let package = package();
+                let entries = store
+                    .record_plugin(
+                        user,
+                        &RecordPlugin {
+                            update_policy: None,
+                            prepared: package.prepared.clone(),
+                            revision: None,
+                            package: Some(Box::new(package.clone())),
+                        },
+                        1,
+                    )
+                    .await
+                    .unwrap();
+                assert!(entries[0].default_enabled);
+                assert!(
+                    store
+                        .project_skills(user, project.id)
+                        .await
+                        .unwrap()
+                        .entries[0]
+                        .draft
+                        .enabled
+                );
+                assert!(
+                    store
+                        .project_plugins(other, other_project.id)
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+                let binding = store
+                    .project_plugins(user, project.id)
+                    .await
+                    .unwrap()
+                    .remove(0);
+                store
+                    .project_plugin_command(
+                        user,
+                        project.id,
+                        &ProjectPluginCommand::Disable {
+                            id: binding.id,
+                            revision: binding.revision,
+                        },
+                        2,
+                    )
+                    .await
+                    .unwrap();
+                let mut updated = package.clone();
+                updated.prepared.source.commit = "b".repeat(40);
+                updated.prepared.manifest.version = "0.2.0".into();
+                updated.prepared.digest = "d".repeat(64);
+                updated.skills[0].instructions = "New instructions".into();
+                let entries = store
+                    .record_plugin(
+                        user,
+                        &RecordPlugin {
+                            update_policy: None,
+                            prepared: updated.prepared.clone(),
+                            revision: Some(entries[0].revision),
+                            package: Some(Box::new(updated.clone())),
+                        },
+                        3,
+                    )
+                    .await
+                    .unwrap();
+                assert!(!store.project_plugins(user, project.id).await.unwrap()[0].enabled);
+                assert!(
+                    !store
+                        .project_skills(user, project.id)
+                        .await
+                        .unwrap()
+                        .entries[0]
+                        .draft
+                        .enabled
+                );
+                let future = store
+                    .create_project(
+                        &NewProject {
+                            name: "future".into(),
+                            mode,
+                            path: None,
+                        },
+                        user,
+                        4,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    store.project_skills(user, future.id).await.unwrap().entries[0]
+                        .draft
+                        .instructions,
+                    "New instructions"
+                );
+                store
+                    .remove_plugin(
+                        user,
+                        &RemovePlugin {
+                            source: updated.prepared.source,
+                            revision: entries[0].revision,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                assert!(
+                    store
+                        .project_plugins(user, project.id)
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+                assert!(
+                    store
+                        .project_skills(user, future.id)
+                        .await
+                        .unwrap()
+                        .entries
+                        .is_empty()
+                );
+                let fresh = store
+                    .create_project(
+                        &NewProject {
+                            name: "fresh".into(),
+                            mode,
+                            path: None,
+                        },
+                        user,
+                        5,
+                    )
+                    .await
+                    .unwrap();
+                assert!(
+                    store
+                        .project_plugins(user, fresh.id)
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod default_conflict_tests {
+    use super::*;
+    use crate::rusqlite_db::RusqliteDb;
+    use openwebide_core::{NewProject, SkillCommand, WorkspaceMode, plugins::testing::package};
+    #[test]
+    fn conflicting_personal_content_rolls_back_defaults_and_all_project_activation() {
+        futures::executor::block_on(async {
+            let store = Store::new(RusqliteDb::open_in_memory().unwrap());
+            store.migrate().await.unwrap();
+            let user = store
+                .insert_user("owner", "hash", UserRole::User, 0)
+                .await
+                .unwrap()
+                .id;
+            let first = store
+                .create_project(
+                    &NewProject {
+                        name: "local".into(),
+                        mode: WorkspaceMode::Local,
+                        path: None,
+                    },
+                    user,
+                    0,
+                )
+                .await
+                .unwrap();
+            let second = store
+                .create_project(
+                    &NewProject {
+                        name: "remote".into(),
+                        mode: WorkspaceMode::Remote,
+                        path: None,
+                    },
+                    user,
+                    0,
+                )
+                .await
+                .unwrap();
+            let package = package();
+            let mut personal = package.skills[0].clone();
+            personal.instructions = "Personal content".into();
+            store
+                .skill_command(
+                    user,
+                    second.id,
+                    &SkillCommand::Create {
+                        draft: personal.clone(),
+                    },
+                    false,
+                    0,
+                )
+                .await
+                .unwrap();
+            assert!(
+                store
+                    .record_plugin(
+                        user,
+                        &RecordPlugin {
+                            prepared: package.prepared.clone(),
+                            revision: None,
+                            package: Some(Box::new(package)),
+                            update_policy: None
+                        },
+                        1
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(store.plugin_installations(user).await.unwrap().is_empty());
+            assert!(
+                store
+                    .project_plugins(user, first.id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                store
+                    .project_skills(user, first.id)
+                    .await
+                    .unwrap()
+                    .entries
+                    .is_empty()
+            );
+            assert_eq!(
+                store.project_skills(user, second.id).await.unwrap().entries[0].draft,
+                personal
+            );
+            let future = store
+                .create_project(
+                    &NewProject {
+                        name: "future".into(),
+                        mode: WorkspaceMode::Local,
+                        path: None,
+                    },
+                    user,
+                    2,
+                )
+                .await
+                .unwrap();
+            assert!(
+                store
+                    .project_plugins(user, future.id)
+                    .await
+                    .unwrap()
+                    .is_empty()
             );
         });
     }

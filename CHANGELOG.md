@@ -9,11 +9,15 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Enable installed plugins across existing and new projects by default, with persisted project opt-outs that survive updates. Store verified contributions atomically and preserve personal content on conflicts.
+- Migrate optional web, memory, scheduling and skill-authoring tools to host-installed first-party plugins using one contribution policy in local and remote runs; retain core workspace tools.
+- Notify about plugin updates by default with a status-bar count, per-plugin updates and Update All. Add Automatic/Off preferences, compatible update checks while the app is open, pinned active-run content and distinct menu action icons.
+
 - Hide installed plugins from Available, restoring them after uninstall; choose installed plugin releases from their gear menu.
 
 - Show plugins in a single Available list with individual marketplace source labels; use Open WebIDE branding and consistent plugin terminology.
 
-- Install plugins on the server host without opening a project; project activation remains explicit. Use the standard overflow icon and download action, with plugin details on the title and release/management actions in the gear menu.
+- Install plugins on the server host without opening a project; project-specific opt-outs remain available. Use the standard overflow icon and download action, with plugin details on the title and release/management actions in the gear menu.
 - Browse plugins in compact, searchable Installed and Available lists with counts, publisher/version metadata, inline actions and per-package gear menus. Keep release details and manual pinned installation behind secondary controls.
 - Open plugin search and package lifecycle controls beside Output in the status bar, with a direct link to marketplace-only settings. Use the shared magnifier search row, hamburger action menu, Lucide add icons and modal spacing.
 - Keep the official plugin marketplace permanently available, restore it in older account settings, and allow removal only for custom sources.

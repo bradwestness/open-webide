@@ -62,7 +62,7 @@ export function fakeBridgeHttp() {
         const body = JSON.parse((await request.text()) || '{}');
         const path = new URL(request.url).pathname;
         mock.calls.push({ path, body, authorization: request.headers.get('Authorization') });
-        if (path === '/plugins/prepare' || path === '/plugins/package') return mock.invalid ? new Response(JSON.stringify({error:'preparation failed'}), {status:400}) : new Response(mock.plugin);
+        if (path === '/plugins/prepare' || path === '/plugins/package') { const plugin = JSON.parse(mock.plugin); return mock.invalid ? new Response(JSON.stringify({error:'preparation failed'}), {status:400}) : new Response(JSON.stringify(path === '/plugins/prepare' ? (plugin.prepared || plugin) : plugin)); }
         if (path === '/scheduler/host') return new Response(JSON.stringify({id:'paired-host', name:'Test host', last_seen:0}));
         if (path === '/host/info' && !mock.hanging) return new Response(JSON.stringify({host_name:'bridge-host', os:'linux', scope:'bridge host', cpu:'Test CPU', logical_cores:8, ram_total_bytes:32000000000, ram_available_bytes:16000000000, disks:[], temperatures:[], gpus:[], fans:[], notes:[]}));
         if (path === '/environment' && !mock.hanging) return new Response(JSON.stringify({os: 'linux', shell: 'sh'}));
@@ -2226,10 +2226,7 @@ async fn plugins_install_and_enable_use_the_same_workflow_on_paired_and_remote_h
         .unwrap();
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         let http = HttpGuard(fake_bridge_http());
-        set_bridge_plugin(
-            &http.0,
-            &serde_json::to_string(&package().prepared).unwrap(),
-        );
+        set_bridge_plugin(&http.0, &serde_json::to_string(&package()).unwrap());
         let fixture = contractFolder().await;
         let handle = contractHandle(&fixture);
         let captured = std::rc::Rc::new(std::cell::Cell::new(None));
@@ -2270,6 +2267,14 @@ async fn plugins_install_and_enable_use_the_same_workflow_on_paired_and_remote_h
             .plugin_preparations
             .borrow_mut()
             .push_back(receive);
+        let (package_send, package_receive) = futures::channel::oneshot::channel();
+        package_send.send(Ok(package.clone())).unwrap();
+        mounted
+            .state
+            .fake
+            .plugin_packages
+            .borrow_mut()
+            .push_back(package_receive);
         plugins
             .repository
             .set(package.prepared.source.repository.clone());
@@ -2286,6 +2291,8 @@ async fn plugins_install_and_enable_use_the_same_workflow_on_paired_and_remote_h
             plugins.error.get_untracked()
         );
         assert_eq!(plugins.installations.get_untracked().len(), 1);
+        assert!(plugins.installations.get_untracked()[0].default_enabled);
+        assert!(plugins.project_plugins.get_untracked()[0].enabled);
         assert!(mounted.state.fake.plugin_commands.borrow().is_empty());
         set_bridge_plugin(&http.0, &serde_json::to_string(&package).unwrap());
         let (send, receive) = futures::channel::oneshot::channel();

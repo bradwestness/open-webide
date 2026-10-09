@@ -22,6 +22,11 @@ async fn plugins_guard_preparation_before_recording_on_account_project_and_host_
         let fake = Rc::new(FakeBackend::default());
         let (send, receive) = futures::channel::oneshot::channel();
         fake.plugin_preparations.borrow_mut().push_back(receive);
+        let (package_send, package_receive) = futures::channel::oneshot::channel();
+        package_send
+            .send(Ok(openwebide_core::plugins::testing::package()))
+            .unwrap();
+        fake.plugin_packages.borrow_mut().push_back(package_receive);
         let captured = Rc::new(Cell::new(None));
         let slot = captured.clone();
         let mounted = mount_test_with_backend(fake.clone(), move |state| {
@@ -136,6 +141,8 @@ async fn plugins_discard_an_old_accounts_installation_list() {
     let entries = openwebide_core::plugins::record_installation(
         Vec::new(),
         &openwebide_core::plugins::RecordPlugin {
+            update_policy: None,
+            package: None,
             prepared: receipt(),
             revision: None,
         },
@@ -150,11 +157,8 @@ async fn plugins_discard_an_old_accounts_installation_list() {
 }
 
 #[wasm_bindgen_test]
-async fn plugins_marketplace_install_and_explicit_project_activation() {
-    use openwebide_core::plugins::{
-        ProjectPlugin,
-        testing::{catalog, package},
-    };
+async fn plugins_marketplace_install_enables_by_default_and_uninstall_restores_available() {
+    use openwebide_core::plugins::testing::{catalog, package};
     let fake = Rc::new(FakeBackend::default());
     let mut catalog = catalog();
     let mut newer = catalog.catalog.plugins[0].releases[0].clone();
@@ -169,6 +173,9 @@ async fn plugins_marketplace_install_and_explicit_project_activation() {
     let (send, receive) = futures::channel::oneshot::channel();
     send.send(Ok(package().prepared)).unwrap();
     fake.plugin_preparations.borrow_mut().push_back(receive);
+    let (send, receive) = futures::channel::oneshot::channel();
+    send.send(Ok(package())).unwrap();
+    fake.plugin_packages.borrow_mut().push_back(receive);
     let captured = Rc::new(Cell::new(None));
     let slot = captured.clone();
     let mounted = mount_test_with_backend(fake.clone(), move |state| {
@@ -243,30 +250,8 @@ async fn plugins_marketplace_install_and_explicit_project_activation() {
             .unwrap()
             .is_some()
     );
-    let (send, receive) = futures::channel::oneshot::channel();
-    send.send(Ok(package())).unwrap();
-    fake.plugin_packages.borrow_mut().push_back(receive);
-    let binding = ProjectPlugin {
-        id: 1,
-        revision: 1,
-        prepared: package().prepared,
-        enabled: true,
-    };
-    let (send, receive) = futures::channel::oneshot::channel();
-    send.send(Ok(vec![binding])).unwrap();
-    fake.project_plugin_results.borrow_mut().push_back(receive);
-    mounted.click(".plugin-row-actions > button");
-    settle().await;
-    assert_eq!(fake.plugin_commands.borrow().len(), 1);
-    let command = fake.plugin_commands.borrow()[0].1.clone();
-    let openwebide_core::plugins::ProjectPluginCommand::Enable {
-        package: activated, ..
-    } = &command
-    else {
-        panic!("Expected activation")
-    };
-    assert!(activated.skills[0].instructions.contains("review"));
-    assert!(!activated.skills[0].resources.is_empty());
+    assert!(plugins.project_plugins.get_untracked()[0].enabled);
+    assert!(plugins.installations.get_untracked()[0].default_enabled);
     assert!(
         mounted
             .root
@@ -284,7 +269,7 @@ async fn plugins_marketplace_install_and_explicit_project_activation() {
     mounted.click_text("Disable");
     settle().await;
     assert!(matches!(
-        fake.plugin_commands.borrow()[1].1,
+        fake.plugin_commands.borrow()[0].1,
         openwebide_core::plugins::ProjectPluginCommand::Disable { .. }
     ));
     mounted.click("button[aria-label='Installed plugin actions']");
@@ -370,6 +355,8 @@ async fn plugins_reject_mismatched_catalog_identity_and_stale_activation_package
         let entries = openwebide_core::plugins::record_installation(
             Vec::new(),
             &openwebide_core::plugins::RecordPlugin {
+                update_policy: None,
+                package: None,
                 prepared: package().prepared,
                 revision: None,
             },
@@ -765,5 +752,129 @@ async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_mod
         );
         settle().await;
         assert!(!mounted.state.ui.plugins_open.get_untracked());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn plugins_notify_updates_in_status_bar_and_update_all_from_the_same_facade() {
+    use openwebide_core::plugins::{
+        PluginUpdatePolicy, RecordPlugin,
+        testing::{catalog, package},
+    };
+    use openwebide_frontend::components::{PluginsDialog, StatusBar};
+    for (projectless, policy) in [
+        (false, PluginUpdatePolicy::Notify),
+        (true, PluginUpdatePolicy::Notify),
+        (false, PluginUpdatePolicy::Automatic),
+        (true, PluginUpdatePolicy::Automatic),
+        (false, PluginUpdatePolicy::Off),
+        (true, PluginUpdatePolicy::Off),
+    ] {
+        let fake = Rc::new(FakeBackend::default());
+        let original = package();
+        let mut updated = original.clone();
+        updated.prepared.source.commit = "b".repeat(40);
+        updated.prepared.digest = "d".repeat(64);
+        updated.prepared.manifest.version = "0.1.1".into();
+        let mut catalog = catalog();
+        catalog.catalog.plugins[0].releases.push(
+            openwebide_core::plugins::marketplace::CatalogRelease {
+                version: "0.1.1".into(),
+                source: openwebide_core::plugins::marketplace::CatalogReleaseSource {
+                    commit: updated.prepared.source.commit.clone(),
+                    path: updated.prepared.source.path.clone(),
+                },
+            },
+        );
+        fake.marketplaces
+            .borrow_mut()
+            .sources
+            .push(catalog.source.clone());
+        fake.marketplaces.borrow_mut().catalogs.push(catalog);
+        *fake.plugins.borrow_mut() = openwebide_core::plugins::record_installation(
+            Vec::new(),
+            &RecordPlugin {
+                prepared: original.prepared.clone(),
+                revision: None,
+                package: Some(Box::new(original)),
+                update_policy: Some(policy),
+            },
+            0,
+        )
+        .unwrap();
+        if policy == PluginUpdatePolicy::Automatic {
+            let (send, receive) = futures::channel::oneshot::channel();
+            send.send(Ok(updated.prepared.clone())).unwrap();
+            fake.plugin_preparations.borrow_mut().push_back(receive);
+            let (send, receive) = futures::channel::oneshot::channel();
+            send.send(Ok(updated.clone())).unwrap();
+            fake.plugin_packages.borrow_mut().push_back(receive);
+        }
+        let mounted = mount_test_with_backend(fake.clone(), move |state| {
+            state.seed_project();
+            if projectless {
+                state.projects.active_project.set(None);
+            }
+            state.auth.set_user(User {
+                id: UserId::new(1),
+                username: "owner".into(),
+                role: UserRole::User,
+                created_at: 0,
+            });
+            let ui = state.ui;
+            view! {<StatusBar health=RwSignal::new(None).read_only() on_toggle_terminal=||{}/><Show when=move ||ui.plugins_open.get()><PluginsDialog/></Show>}
+        });
+        settle().await;
+        assert_eq!(fake.plugins.borrow()[0].update_policy, policy);
+        if policy != PluginUpdatePolicy::Notify {
+            assert_eq!(
+                fake.plugins.borrow()[0].prepared.manifest.version,
+                if policy == PluginUpdatePolicy::Automatic {
+                    "0.1.1"
+                } else {
+                    "0.1.0"
+                }
+            );
+            assert!(
+                mounted
+                    .root
+                    .query_selector("[aria-label='1 plugin updates available']")
+                    .unwrap()
+                    .is_none()
+            );
+            continue;
+        }
+        assert!(fake.plugin_requests.borrow().is_empty());
+        assert!(
+            mounted
+                .root
+                .query_selector("[aria-label='1 plugin updates available']")
+                .unwrap()
+                .is_some()
+        );
+        mounted.click("button[title='Browse and manage plugins']");
+        settle().await;
+        mounted.click("button[aria-label='Plugin actions']");
+        settle().await;
+        let (send, receive) = futures::channel::oneshot::channel();
+        send.send(Ok(updated.prepared.clone())).unwrap();
+        fake.plugin_preparations.borrow_mut().push_back(receive);
+        let (send, receive) = futures::channel::oneshot::channel();
+        send.send(Ok(updated)).unwrap();
+        fake.plugin_packages.borrow_mut().push_back(receive);
+        mounted.click_text("Update All");
+        settle().await;
+        assert_eq!(fake.plugins.borrow()[0].prepared.manifest.version, "0.1.1");
+        assert_eq!(
+            fake.plugin_requests.borrow()[0].0,
+            if projectless { None } else { Some(1) }
+        );
+        assert!(
+            mounted
+                .root
+                .query_selector("[aria-label='1 plugin updates available']")
+                .unwrap()
+                .is_none()
+        );
     }
 }

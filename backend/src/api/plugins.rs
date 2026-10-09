@@ -13,7 +13,13 @@ pub(crate) async fn record(
     state: &AppState,
     user: AuthedUser,
 ) -> Result<JsonResp, ApiError> {
-    let request: RecordPlugin = parse_json(read_body(req, 256 * 1024).await?)?;
+    let request: RecordPlugin = parse_json(
+        read_body(
+            req,
+            openwebide_core::plugins::MAX_PACKAGE_BYTES + 256 * 1024,
+        )
+        .await?,
+    )?;
     Ok(json_response(
         200,
         &state.store.record_plugin(user.id, &request, now()).await?,
@@ -170,8 +176,10 @@ pub(crate) async fn package(
     path: &str,
     user: AuthedUser,
 ) -> Result<JsonResp, ApiError> {
-    let project = project_id(path, "/plugins/package")?;
-    super::files::remote_project_path(state, user.id, project, "").await?;
+    if path != "/api/plugins/package" {
+        let project = project_id(path, "/plugins/package")?;
+        super::files::remote_project_path(state, user.id, project, "").await?;
+    }
     let expected: PreparedPlugin = parse_json(read_body(req, 256 * 1024).await?)?;
     expected
         .validate()

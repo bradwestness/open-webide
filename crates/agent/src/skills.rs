@@ -66,7 +66,7 @@ pub fn definition(name: &str) -> ToolDefinition {
             serde_json::json!({"type":"object","properties":{"id":{"type":"integer"},"resource":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["id"],"additionalProperties":false}),
         ),
         "skill_create" => (
-            "Save a reusable skill; use skill_creator to design it. Resources: relative paths, text or base64 when binary=true. Never executes resources.",
+            "Save a reusable skill; read the skill-authoring skill for its design workflow. Resources: relative paths, text or base64 when binary=true. Never executes resources.",
             serde_json::json!({"type":"object","properties":{"draft":draft},"required":["draft"],"additionalProperties":false}),
         ),
         "skill_update" => (
@@ -123,7 +123,7 @@ impl CreatorArgs {
     }
 }
 /// Adapted workflow guidance; no Claude CLI dependency or automatic external calls.
-pub const CREATOR_GUIDANCE: &str = include_str!("skill-creator.md");
+pub const CREATOR_MIGRATION_NOTICE: &str = "Install the Skill Authoring plugin and read its skill-authoring skill with skill_read for the authoring and evaluation workflow.";
 pub trait SkillStore: Send + Sync {
     fn execute(
         &self,
@@ -309,7 +309,7 @@ impl<E: ToolExecutor + Sync, S: SkillStore> ToolExecutor for SkillTools<E, S> {
                     let entry = data.entries.iter().find(|entry| entry.id == id).ok_or("Enabled skill not found")?;
                     Some(instructions(entry, 0, 4000))
                 } else { None };
-                return Ok(serde_json::json!({"goal":args.goal,"existing_skill":existing,"workflow":CREATOR_GUIDANCE}).to_string());
+                return Ok(serde_json::json!({"goal":args.goal,"existing_skill":existing,"workflow":CREATOR_MIGRATION_NOTICE}).to_string());
             }
             if let crate::tools::Tool::SkillList(args) = &parsed {
                 if args.offset > openwebide_core::skills::MAX_SKILLS { return Err("Invalid skill list offset".into()); }

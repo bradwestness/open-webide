@@ -118,10 +118,16 @@ impl MarketplaceCatalog {
             if !identities.insert((&plugin.publisher, &plugin.name))
                 || plugin.releases.is_empty()
                 || plugin.releases.len() > 32
-                || plugin.categories != ["skills"]
+                || plugin.categories.is_empty()
+                || plugin
+                    .categories
+                    .iter()
+                    .any(|category| !matches!(category.as_str(), "skills" | "tools"))
+                || plugin.categories.iter().collect::<BTreeSet<_>>().len()
+                    != plugin.categories.len()
             {
                 return Err(invalid(
-                    "Catalog packages need a unique identity, skills category and 1–32 releases.",
+                    "Catalog packages need a unique identity, supported categories and 1–32 releases.",
                 ));
             }
             let mut versions = BTreeSet::new();
@@ -142,6 +148,7 @@ impl MarketplaceCatalog {
                     readme: None,
                     compatibility: super::PluginCompatibility { plugin_api: 1 },
                     contributions: super::PluginContributions {
+                        tool_groups: Vec::new(),
                         skills: vec![super::PluginSkill {
                             path: "skills/example/SKILL.md".into(),
                         }],

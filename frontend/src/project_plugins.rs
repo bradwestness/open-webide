@@ -30,10 +30,7 @@ impl PluginTransport {
         match self {
             Self::Remote(api, id) => {
                 api.with_value(Clone::clone)
-                    .plugin_package(
-                        id.ok_or("Open a project before enabling a plugin.")?,
-                        expected,
-                    )
+                    .plugin_package(*id, expected)
                     .await
             }
             Self::Local(client) => client.plugin_package(expected).await,
@@ -51,6 +48,8 @@ pub struct CatalogSelection {
 enum Operation {
     Refresh,
     Catalogs,
+    UpdateAll,
+    Policy(Box<PluginInstallation>, PluginUpdatePolicy),
     Sources(Vec<MarketplaceSource>),
     Install(Option<CatalogSelection>),
     Enable(Box<PluginInstallation>),
@@ -61,6 +60,8 @@ enum Operation {
 pub struct ProjectPluginActions {
     pub refresh: Callback<()>,
     pub refresh_catalogs: Callback<()>,
+    pub update_all: Callback<()>,
+    pub set_update_policy: Callback<(PluginInstallation, PluginUpdatePolicy)>,
     pub save_sources: Callback<Vec<MarketplaceSource>>,
     pub install: Callback<()>,
     pub install_release: Callback<CatalogSelection>,
@@ -118,7 +119,13 @@ impl ProjectPluginActions {
             spawn_local(async move {
                 let refresh_skills = matches!(
                     operation,
-                    Operation::Enable(_) | Operation::Disable(_) | Operation::Remove(_)
+                    Operation::Install(_)
+                        | Operation::UpdateAll
+                        | Operation::Catalogs
+                        | Operation::Refresh
+                        | Operation::Enable(_)
+                        | Operation::Disable(_)
+                        | Operation::Remove(_)
                 );
                 let result =
                     run_operation(operation, api, state, host, project, current.clone()).await;
@@ -160,9 +167,39 @@ impl ProjectPluginActions {
                 refresh.run(());
             }
         });
+        let checked = StoredValue::new(None::<u64>);
+        Effect::new(move |_| {
+            let account = auth.generation.get();
+            if state.loaded.get()
+                && !state.busy.get()
+                && auth.user.get().is_some()
+                && checked.get_value() != Some(account)
+            {
+                checked.set_value(Some(account));
+                perform.run(Operation::Catalogs);
+            }
+        });
+        let timer = leptos::leptos_dom::helpers::set_interval_with_handle(
+            move || {
+                if auth.user.get_untracked().is_some() && !chat.streaming.get_untracked() {
+                    perform.run(Operation::Catalogs);
+                }
+            },
+            std::time::Duration::from_secs(15 * 60),
+        )
+        .ok();
+        on_cleanup(move || {
+            if let Some(timer) = timer {
+                timer.clear();
+            }
+        });
         Self {
             refresh,
             refresh_catalogs: Callback::new(move |()| perform.run(Operation::Catalogs)),
+            update_all: Callback::new(move |()| perform.run(Operation::UpdateAll)),
+            set_update_policy: Callback::new(move |(entry, policy)| {
+                perform.run(Operation::Policy(Box::new(entry), policy));
+            }),
             save_sources: Callback::new(move |sources| perform.run(Operation::Sources(sources))),
             install: Callback::new(move |()| perform.run(Operation::Install(None))),
             install_release: Callback::new(move |release| {
@@ -191,7 +228,9 @@ async fn run_operation(
             if !current() {
                 return Ok(());
             }
-            state.installations.set(entries);
+            let mut entries = entries;
+
+            state.installations.set(entries.clone());
             let markets = backend.plugin_marketplaces().await?;
             if !current() {
                 return Ok(());
@@ -205,6 +244,45 @@ async fn run_operation(
                 state.project_plugins.set(entries);
             }
             state.loaded.set(true);
+            for entry in entries
+                .clone()
+                .into_iter()
+                .filter(|entry| !entry.default_enabled)
+            {
+                let transport = match host.resolve_guarded(project, true, current.clone()).await? {
+                    ProjectExecution::Remote { api, .. } => PluginTransport::Remote(api, project),
+                    ProjectExecution::Local(client) => PluginTransport::Local(client),
+                };
+                if !current() {
+                    return Ok(());
+                }
+                let package = transport.package(&entry.prepared).await?;
+                validate_loaded_plugin(&entry.prepared, &package)?;
+                if !current() {
+                    return Ok(());
+                }
+                entries = backend
+                    .record_plugin(&RecordPlugin {
+                        update_policy: None,
+                        prepared: package.prepared.clone(),
+                        revision: Some(entry.revision),
+                        package: Some(Box::new(package)),
+                    })
+                    .await?;
+                if !current() {
+                    return Ok(());
+                }
+            }
+            if !current() {
+                return Ok(());
+            }
+            state.installations.set(entries);
+            if let Some(id) = project {
+                let bindings = backend.project_plugins(id).await?;
+                if current() {
+                    state.project_plugins.set(bindings);
+                }
+            }
         }
         Operation::Catalogs => {
             let refreshed = backend.refresh_plugin_marketplaces().await?;
@@ -213,6 +291,7 @@ async fn run_operation(
             }
             state.marketplaces.set(refreshed.settings);
             state.failures.set(refreshed.failures);
+            update_plugins(api, state, host, project, current, true).await?;
         }
         Operation::Sources(sources) => {
             let request = SaveMarketplaces {
@@ -261,69 +340,19 @@ async fn run_operation(
             }
         }
         Operation::Install(selection) => {
-            let (source, expected) = if let Some(selection) = selection {
-                let markets = state.marketplaces.get_untracked();
-                let catalog = markets
-                    .catalogs
-                    .iter()
-                    .find(|c| c.source == selection.marketplace)
-                    .ok_or("Refresh this marketplace first.")?;
-                let source = catalog
-                    .catalog
-                    .resolve(
-                        &catalog.source,
-                        &selection.publisher,
-                        &selection.name,
-                        &selection.version,
-                    )
-                    .map_err(|e| e.to_string())?;
-                (source, Some(selection))
-            } else {
-                (
-                    PluginSource {
-                        repository: state.repository.get_untracked().trim().into(),
-                        commit: state.commit.get_untracked().trim().into(),
-                        path: state.path.get_untracked().trim().into(),
-                    },
-                    None,
-                )
-            };
-            source.validate().map_err(|e| e.to_string())?;
-            let revision = state.installations.with_untracked(|entries| {
-                entries
-                    .iter()
-                    .find(|e| {
-                        e.prepared.source.repository == source.repository
-                            && e.prepared.source.path == source.path
-                    })
-                    .map(|e| e.revision)
-            });
-            let transport = match host.resolve_guarded(project, true, current.clone()).await? {
-                ProjectExecution::Remote { api, .. } => PluginTransport::Remote(api, project),
-                ProjectExecution::Local(client) => PluginTransport::Local(client),
-            };
-            if !current() {
-                return Ok(());
-            }
-            let prepared = transport.prepare(&source).await?;
-            prepared.validate().map_err(|e| e.to_string())?;
-            if prepared.source != source {
-                return Err("Plugin host returned a different source.".into());
-            }
-            if expected.is_some_and(|e| {
-                e.publisher != prepared.manifest.publisher
-                    || e.name != prepared.manifest.name
-                    || e.version != prepared.manifest.version
-            }) {
-                return Err(
-                    "Plugin identity or version does not match its marketplace release.".into(),
-                );
-            }
-            if !current() {
-                return Ok(());
-            }
+            install_plugin(api, state, host, project, current, selection).await?;
+        }
+        Operation::UpdateAll => {
+            update_plugins(api, state, host, project, current, false).await?;
+        }
+        Operation::Policy(entry, policy) => {
             let entries = backend
-                .record_plugin(&RecordPlugin { prepared, revision })
+                .record_plugin(&RecordPlugin {
+                    prepared: entry.prepared.clone(),
+                    revision: Some(entry.revision),
+                    package: None,
+                    update_policy: Some(policy),
+                })
                 .await?;
             if current() {
                 state.installations.set(entries);
@@ -363,6 +392,8 @@ async fn run_operation(
             }
             let entries = backend
                 .record_plugin(&RecordPlugin {
+                    update_policy: None,
+                    package: None,
                     prepared: package.prepared.clone(),
                     revision: Some(entry.revision),
                 })
@@ -387,4 +418,161 @@ async fn run_operation(
         }
     }
     Ok(())
+}
+
+fn validate_loaded_plugin(
+    expected: &PreparedPlugin,
+    package: &PluginPackage,
+) -> Result<(), String> {
+    package.validate().map_err(|error| error.to_string())?;
+    if package.prepared.source != expected.source
+        || package.prepared.manifest != expected.manifest
+        || package.prepared.digest != expected.digest
+    {
+        return Err("Plugin host returned different plugin content.".into());
+    }
+    Ok(())
+}
+
+async fn install_plugin(
+    api: Api,
+    state: PluginsState,
+    host: ProjectHost,
+    project: Option<i64>,
+    current: impl Fn() -> bool + Clone + 'static,
+    selection: Option<CatalogSelection>,
+) -> Result<(), String> {
+    let backend = api.with_value(Clone::clone);
+
+    let (source, expected) = if let Some(selection) = selection {
+        let markets = state.marketplaces.get_untracked();
+        let catalog = markets
+            .catalogs
+            .iter()
+            .find(|c| c.source == selection.marketplace)
+            .ok_or("Refresh this marketplace first.")?;
+        let source = catalog
+            .catalog
+            .resolve(
+                &catalog.source,
+                &selection.publisher,
+                &selection.name,
+                &selection.version,
+            )
+            .map_err(|e| e.to_string())?;
+        (source, Some(selection))
+    } else {
+        (
+            PluginSource {
+                repository: state.repository.get_untracked().trim().into(),
+                commit: state.commit.get_untracked().trim().into(),
+                path: state.path.get_untracked().trim().into(),
+            },
+            None,
+        )
+    };
+    source.validate().map_err(|e| e.to_string())?;
+    let revision = state.installations.with_untracked(|entries| {
+        entries
+            .iter()
+            .find(|e| {
+                e.prepared.source.repository == source.repository
+                    && e.prepared.source.path == source.path
+            })
+            .map(|e| e.revision)
+    });
+    let transport = match host.resolve_guarded(project, true, current.clone()).await? {
+        ProjectExecution::Remote { api, .. } => PluginTransport::Remote(api, project),
+        ProjectExecution::Local(client) => PluginTransport::Local(client),
+    };
+    if !current() {
+        return Ok(());
+    }
+    let prepared = transport.prepare(&source).await?;
+    prepared.validate().map_err(|e| e.to_string())?;
+    if prepared.source != source {
+        return Err("Plugin host returned a different source.".into());
+    }
+    if expected.is_some_and(|e| {
+        e.publisher != prepared.manifest.publisher
+            || e.name != prepared.manifest.name
+            || e.version != prepared.manifest.version
+    }) {
+        return Err("Plugin identity or version does not match its marketplace release.".into());
+    }
+    if !current() {
+        return Ok(());
+    }
+    let package = transport.package(&prepared).await?;
+    validate_loaded_plugin(&prepared, &package)?;
+    if !current() {
+        return Ok(());
+    }
+    let entries = backend
+        .record_plugin(&RecordPlugin {
+            update_policy: None,
+            prepared: package.prepared.clone(),
+            revision,
+            package: Some(Box::new(package)),
+        })
+        .await?;
+    if !current() {
+        return Ok(());
+    }
+    state.installations.set(entries);
+    if let Some(id) = project {
+        let bindings = backend.project_plugins(id).await?;
+        if current() {
+            state.project_plugins.set(bindings);
+        }
+    }
+    Ok(())
+}
+async fn update_plugins(
+    api: Api,
+    state: PluginsState,
+    host: ProjectHost,
+    project: Option<i64>,
+    current: impl Fn() -> bool + Clone + 'static,
+    automatic_only: bool,
+) -> Result<(), String> {
+    let installed = state.installations.get_untracked();
+    let markets = state.marketplaces.get_untracked();
+    let updates = if automatic_only {
+        automatic_updates(&installed, &markets)
+    } else {
+        available_updates(&installed, &markets)
+    };
+    let mut failures = Vec::new();
+    for update in updates
+        .into_iter()
+        .filter(|update| !automatic_only || update.automatic)
+    {
+        if !current() {
+            return Ok(());
+        }
+        let name = update.installation.prepared.manifest.display_name.clone();
+        if let Err(error) = install_plugin(
+            api,
+            state,
+            host,
+            project,
+            current.clone(),
+            Some(CatalogSelection {
+                marketplace: update.marketplace,
+                publisher: update.installation.prepared.manifest.publisher,
+                name: update.installation.prepared.manifest.name,
+                version: update.version,
+            }),
+        )
+        .await
+        {
+            failures.push(format!("{name}: {error}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n"))
+    }
 }

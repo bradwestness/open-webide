@@ -76,7 +76,7 @@ finish reading all instruction pages before following a skill; binary resources
 are returned as base64 pages for reconstruction. Catalog descriptions are
 shortened to 256 characters; the full description is available on read.
 
-Reads, discovery and creator guidance run without approval. Saving, editing and
+Reads and discovery run without approval. Saving, editing and
 deleting follow the run's normal approval mode and show the proposed content.
 Configured server tool selections still apply. Skills cannot expand tool
 permissions or override user instructions. Stale revisions report a conflict;
@@ -86,14 +86,15 @@ Deleting a session leaves skills intact; deleting its project removes them.
 ## Creating and improving a skill
 
 Ask the agent to turn a recurring workflow or the current conversation into a
-skill. `skill_creator` supplies an adaptation of
+skill. Install the Skill Authoring plugin from Plugins; its `skill-authoring`
+skill supplies an adaptation of
 [Anthropic's skill-creator workflow](https://github.com/anthropics/skills/blob/main/skills/skill-creator/SKILL.md),
 reviewed on October 9, 2026, using your configured Ollama or llama.cpp model.
 It captures intent, drafts concise instructions and resources, offers realistic
 test prompts and baseline comparisons, collects user feedback and iterates.
 Trigger evaluation includes related prompts that should not activate the skill.
 
-The tool provides guidance; it does not secretly launch benchmarks or save a
+The skill provides guidance; it does not secretly launch benchmarks or save a
 skill. The agent continues with the user and existing tools. Rigorous evaluation
 requires comparable fresh sessions; when isolation is unavailable, the workflow
 asks the user to run the prompts in fresh sessions and labels weaker checks.

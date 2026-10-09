@@ -462,7 +462,7 @@ pub(super) async fn build_run_plan(
     let tools = if environment.project_root.is_some() {
         workspace_tools()
     } else {
-        Vec::new()
+        openwebide_agent::session::projectless_tools()
     };
     let memories = state.store.session_memories(user_id, session_id).await?;
     let mut input = openwebide_agent::session::PlanInput {
@@ -473,19 +473,23 @@ pub(super) async fn build_run_plan(
         content: send.content,
         editor: send.editor_context,
     };
-    openwebide_agent::memory::configure(
-        &mut input.tools,
-        &mut input.system_prompt,
-        &memories,
-        runtime.settings.context_limit,
-    );
     let skills = state.store.session_skills(user_id, session_id).await?;
-    openwebide_agent::scheduled::configure(&mut input.tools);
-    openwebide_agent::skills::configure(
+    let plugin_bindings = if let Some(project) = session.project_id {
+        state.store.project_plugins(user_id, project).await?
+    } else {
+        openwebide_core::plugins::default_bindings(
+            &state.store.plugin_installations(user_id).await?,
+        )
+    };
+    openwebide_agent::plugins::configure(
         &mut input.tools,
         &mut input.system_prompt,
-        &skills,
-        runtime.settings.context_limit,
+        &openwebide_agent::plugins::PluginContext {
+            bindings: &plugin_bindings,
+            memories: &memories,
+            skills: &skills,
+            context_limit: runtime.settings.context_limit,
+        },
     );
     let mut plan = openwebide_agent::session::plan(&runtime, input);
     plan.plugin_skills = openwebide_agent::skills::package_snapshot(&skills);

@@ -23,6 +23,7 @@ unicode-bidi = "0.3.18"
 unicode-width = "0.2.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+semver = "1"
 sha2 = { workspace = true }
 url = "2"
 serde_yaml_ng = "0.10"

@@ -20,6 +20,8 @@ pub fn StatusBar(
     let chat = expect_context::<ChatState>();
     let git = expect_context::<GitState>();
     let show_terminal = chat.show_terminal.read_only();
+    let plugins = use_context::<crate::state::plugins::PluginsState>();
+    let updates = Signal::derive(move || plugins.map_or(0, |plugins| plugins.updates().len()));
     let ui = expect_context::<crate::state::ui::UiState>();
     let layout = expect_context::<crate::state::layout::LayoutState>();
     let git_status: Signal<Option<openwebide_core::GitRepoStatus>> =
@@ -81,7 +83,7 @@ pub fn StatusBar(
             <button type="button" class=move || if ui.plugins_open.get() { "status-btn active" } else { "status-btn" }
                 title="Browse and manage plugins" aria-haspopup="dialog" aria-expanded=move || ui.plugins_open.get().to_string()
                 on:click=move |_| ui.plugins_open.update(|open| *open = !*open)>
-                <super::ui::Icon name=super::ui::IconName::Puzzle />"Plugins"
+                <super::ui::Icon name=super::ui::IconName::Puzzle />"Plugins"<Show when=move || {updates.get()>0}><span class="plugin-count plugin-update-count" title="Plugin updates available" aria-label=move ||format!("{} plugin updates available",updates.get())>{move ||updates.get()}</span></Show>
             </button>
             <button
                 class=move || if show_terminal.get() { "status-btn active" } else { "status-btn" }

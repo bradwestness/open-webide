@@ -319,24 +319,37 @@ fn run_plan_prepares_chat_and_remote_agent_without_mutations() {
                     }
                 );
                 let mut tools = workspace_tools();
-                tools.extend(openwebide_agent::memory::TOOL_NAMES.iter().map(|name| {
-                    name.parse::<openwebide_agent::tools::ToolName>()
-                        .unwrap()
-                        .definition()
-                }));
-                openwebide_agent::scheduled::configure(&mut tools);
-                openwebide_agent::skills::configure(
+                openwebide_agent::plugins::configure(
                     &mut tools,
                     &mut None,
-                    &openwebide_core::ProjectSkills::default(),
-                    None,
+                    &openwebide_agent::plugins::PluginContext {
+                        bindings: &[],
+                        memories: &openwebide_core::ProjectMemories::default(),
+                        skills: &openwebide_core::ProjectSkills::default(),
+                        context_limit: None,
+                    },
                 );
                 tools.push(openwebide_agent::tasks::executor::definition());
                 assert_eq!(plan.request.tools, tools);
             } else {
                 assert_eq!(plan.kind, RunKind::WebChat);
                 let mut tools = openwebide_agent::session::projectless_tools();
-                openwebide_agent::scheduled::configure(&mut tools);
+                openwebide_agent::plugins::configure(
+                    &mut tools,
+                    &mut None,
+                    &openwebide_agent::plugins::PluginContext {
+                        bindings: &[],
+                        memories: &openwebide_core::ProjectMemories {
+                            enabled: false,
+                            entries: Vec::new(),
+                        },
+                        skills: &openwebide_core::ProjectSkills {
+                            enabled: false,
+                            entries: Vec::new(),
+                        },
+                        context_limit: None,
+                    },
+                );
                 tools.push(openwebide_agent::tasks::executor::definition());
                 assert_eq!(plan.request.tools, tools);
             }
@@ -1423,6 +1436,12 @@ fn project_memory_run_planning_includes_enabled_context_and_tools_and_omits_proj
             )
             .await
             .unwrap();
+        install_tool_group(
+            &store,
+            user.id,
+            openwebide_core::plugins::PluginToolGroup::Memory,
+        )
+        .await;
         let state = AppState { store };
         let body = || SendMessageBody {
             content: "go".into(),
@@ -1909,6 +1928,12 @@ fn project_skill_run_planning_includes_enabled_context_and_tools_and_omits_proje
             )
             .await
             .unwrap();
+        install_tool_group(
+            &store,
+            user.id,
+            openwebide_core::plugins::PluginToolGroup::SkillAuthoring,
+        )
+        .await;
         let state = AppState { store };
         let body = || SendMessageBody {
             content: "go".into(),
@@ -2171,4 +2196,29 @@ fn host_tools_require_configured_ssh_admin_and_projectless_scope_in_both_modes()
             vec!["host_inspect"]
         );
     });
+}
+
+async fn install_tool_group(
+    store: &openwebide_storage::Store<crate::state::AppDb>,
+    user: openwebide_core::UserId,
+    group: openwebide_core::plugins::PluginToolGroup,
+) {
+    let mut package = openwebide_core::plugins::testing::package();
+    package.skills.clear();
+    package.prepared.manifest.contributions.skills.clear();
+    package.prepared.manifest.contributions.tool_groups = vec![group];
+    package.prepared.manifest.compatibility.plugin_api = 2;
+    store
+        .record_plugin(
+            user,
+            &openwebide_core::plugins::RecordPlugin {
+                prepared: package.prepared.clone(),
+                revision: None,
+                package: Some(Box::new(package)),
+                update_policy: None,
+            },
+            0,
+        )
+        .await
+        .unwrap();
 }

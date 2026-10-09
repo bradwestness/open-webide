@@ -9,14 +9,15 @@ the Installed gear menu. Uninstalling returns a plugin to Available. Listings sh
 source named Open WebIDE. Click a row’s name to inspect plugin details
 and use the gear menu to choose a release. Install it on the open project's
 execution host, or on the server host when no project is open. Plugins currently
-contribute agent skills.
+contribute agent skills and optional platform tool groups.
 
-Installation does not enable a plugin. **Enable for project** loads the verified
-instructions/resources into the database as managed project skills. They appear
-in Skills and use the existing `skill_list` and `skill_read` agent tools. Their
-package provenance is visible; update, disable or remove them through Plugins.
-Personal skills remain independent, and a duplicate skill name aborts activation
-without overwriting it. The project's global Skills switch still applies.
+Installation enables a plugin across your existing projects by default. New
+projects inherit installed plugins too. **Disable for project** saves an opt-out;
+updates preserve it. **Enable for project** removes that opt-out by loading the
+installed version. Verified instructions/resources are stored as managed project
+skills, with visible provenance. Personal skills remain independent; a contributed
+skill name collision aborts the installation transaction without overwriting data.
+The project's global Skills switch still applies.
 
 Use **Manage marketplace sources** in the Plugins hamburger menu to open
 Settings → Plugins. That settings tab
@@ -28,20 +29,26 @@ default branch and root `marketplace.json`. It is built in and cannot be removed
 Additional sources accept a public Git repository URL, optional branch/tag/commit
 reference, and catalog file path.
 Releases declare only their immutable commit and package directory; every package
-inherits its marketplace's repository. Refreshing catalogs updates discovery,
-while installed versions remain pinned. A failed refresh preserves cached
+inherits its marketplace's repository. Refreshing catalogs updates discovery; Notify installations remain pinned. A failed refresh preserves cached
 releases and reports the failed source. Removing a custom source stops discovery
 without uninstalling its packages. Sources and caches are user-scoped database settings.
 
-Select another catalog release to update or roll back an installation, then
-**Apply installed version** to change this project's active skills. Other projects
-retain their enabled versions. **Disable for project** keeps the package installed
-and its managed skills saved but inactive. **Uninstall** asks for confirmation,
-then removes the logical installation and its managed skills from all your
-projects. It retains host snapshots for active runs. Runs pin enabled package
-instructions and resources at startup, so changes apply to subsequent runs.
+The Plugins status-bar button shows a count when updates are available. The
+hamburger menu offers **Update All**; each installed plugin's gear menu offers an
+individual update, release selection and update preferences. **Notify** is the
+default: checking a catalog does not install its newer releases. **Automatic**
+applies compatible updates; major version changes, and minor changes before 1.0,
+still need a manual update. **Off** hides update notifications and prevents automatic
+updates. Checks run at sign-in and every 15 minutes while the app is open. Failed
+checks preserve cached releases; failed updates preserve the installed version.
 
-For packages outside a catalog, choose **Install a pinned package manually** from
+Selecting another release updates or rolls back the installation and enabled
+projects together. Project opt-outs remain disabled. **Uninstall** removes the
+installation, inherited defaults and managed skills from all your projects,
+without deleting personal memories, skills or schedules. Host snapshots and active
+run instructions/resources remain pinned; changes apply to subsequent runs.
+
+For packages outside a catalog, choose **Install a pinned plugin manually** from
 the Plugins hamburger menu and
 enter a public Git repository URL (HTTP, HTTPS, SSH or Git protocol), a full
 lowercase commit ID, and the directory containing `plugin.json`; use `.` for the
@@ -58,7 +65,7 @@ credentials; credentials cannot be embedded in repository URLs.
 
 The shared plugin facade selects the project host. Both transports use the same
 core validation and installation policy. The native bridge reads Git objects from
-a bare cache, validates the draft API 1 skills manifest and skill resources, and
+a bare cache, validates API 1 skills and API 2 platform tool-group manifests and skill resources, and
 publishes a commit/content-addressed snapshot by atomic rename. Hooks, checkout
 filters, package scripts and runtime installers are not run. Symlinks, submodules,
 path collisions and unsupported contributions are rejected. Packages are limited
@@ -85,6 +92,15 @@ leave the previous record and snapshot intact. Account, project, session or host
 changes prevent stale browser results from recording an installation. An already
 submitted server transaction may finish for its authenticated account.
 
-Automatic updates, runtime dependency preparation and agent-facing plugin
-management remain on the roadmap. Language, MCP, UI and editor contributions are
-not accepted yet.
+Plugin API 2 adds `contributions.toolGroups`: `web`, `memory`, `scheduling` and
+`skill-authoring`. A plugin can combine these with skills or contribute a tool
+group alone with `skills: []`. These groups use the existing shared platform
+handlers and approval rules. File editing, shell execution, git, questions and
+task coordination remain core tools. The first-party Skill Authoring plugin owns
+the former built-in authoring workflow; discovery/read tools remain available.
+Both run adapters apply one contribution policy, and scheduled host adaptation
+preserves the selected tool set.
+
+Choosing which plugins ship installed on fresh accounts remains undecided.
+Arbitrary tool runtimes/MCP servers, dependencies, language, UI and editor
+contributions remain on the roadmap.

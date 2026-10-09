@@ -622,6 +622,26 @@ impl<D: Db> Store<D> {
         user_id: UserId,
         created_at: i64,
     ) -> Result<Project, StorageError> {
+        self.db
+            .transaction(|tx| async move {
+                let store = Store::new(tx);
+                let project = store
+                    .create_project_in_transaction(new, user_id, created_at)
+                    .await?;
+                store
+                    .inherit_plugin_defaults(user_id, project.id, created_at)
+                    .await?;
+                Ok(project)
+            })
+            .await
+    }
+
+    async fn create_project_in_transaction(
+        &self,
+        new: &NewProject,
+        user_id: UserId,
+        created_at: i64,
+    ) -> Result<Project, StorageError> {
         // Re-opening a folder that already has a project returns that
         // project instead of creating a duplicate: closing a tab only hides
         // it, so the same folder can be opened again later. The unique
@@ -2080,7 +2100,9 @@ mod tests {
                 .await
                 .unwrap()
                 .id;
-            let project = edit_project(&store, user).await;
+            // Seed projects using the historical schema, before plugin defaults existed.
+            let project_id = store.db.execute("INSERT INTO projects(name,mode,path,user_id,created_at) VALUES('p','remote','p',?,1)", &[DbValue::Int(user.get())]).await.unwrap().last_insert_rowid;
+            let project = store.get_project(project_id, user).await.unwrap();
             // Seed with the old schema rather than today's session decoder.
             let session_id = store.db.execute("INSERT INTO sessions (name, project_id, user_id, created_at) VALUES ('s', ?, ?, 1)", &[DbValue::Int(project.id), DbValue::Int(user.get())]).await.unwrap().last_insert_rowid;
             let diff = edit(Some("a"), "b");
