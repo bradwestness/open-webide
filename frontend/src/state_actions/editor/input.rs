@@ -82,11 +82,8 @@ impl EditorActions {
                 continue;
             }
             if projection
-                .line_body(row)
-                .is_none_or(|body| body.as_bytes().contains(&b'\t'))
-                || projection
-                    .visual_line_index(row)
-                    .is_none_or(|index| !index.source_paint_eligible())
+                .visual_line_index(row)
+                .is_none_or(|index| !index.source_paint_eligible() || index.has_tabs())
             {
                 return false;
             }

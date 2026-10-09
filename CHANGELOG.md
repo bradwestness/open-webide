@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse immutable long-row tab metadata during cold native-input admission,
+  avoiding repeated source scans while preserving complete-layout fallbacks.
+
 - Name the editor input for its file and announce Ctrl+M Tab-navigation changes
   to assistive technology, with current keyboard guidance on the native input.
 

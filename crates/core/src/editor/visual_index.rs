@@ -14,6 +14,7 @@ struct Coordinates {
     points: Vec<Position>,
     end: Position,
     horizontal: bool,
+    tabs: bool,
 }
 
 /// Immutable coordinates for one exact logical-line body. Callers retain the
@@ -33,12 +34,14 @@ impl VisualLineIndex {
         let mut points = vec![Position::default()];
         let mut end = Position::default();
         let mut horizontal = body.len() > super::MAX_MEASURE_BYTES;
+        let mut tabs = false;
         for (byte, glyph) in body.grapheme_indices(true) {
             if byte - points.last()?.byte >= STEP_BYTES {
                 points.push(Position { byte, ..end });
             }
             for ch in glyph.chars() {
                 end.native += ch.len_utf16();
+                tabs |= ch == '\t';
                 if horizontal && !super::viewport::horizontal_paint_character(ch) {
                     horizontal = false;
                 }
@@ -53,6 +56,7 @@ impl VisualLineIndex {
             points,
             end,
             horizontal,
+            tabs,
         })))
     }
     /// Exact cluster checkpoints for a styled geometry adapter; omit EOF.
@@ -110,6 +114,11 @@ impl VisualLineIndex {
     /// controls, reversed scripts and display breaks retain full-paragraph probes.
     pub fn source_paint_eligible(&self) -> bool {
         self.0.horizontal
+    }
+    /// Tab presence belongs to this exact immutable source snapshot, avoiding
+    /// another long-row scan when admitting native input during preparation.
+    pub fn has_tabs(&self) -> bool {
+        self.0.tabs
     }
     pub fn horizontal_paint_bounds(&self, scroll: f64, width: f64) -> Option<std::ops::Range<f64>> {
         super::viewport::horizontal_paint_geometry(self.0.horizontal, scroll, width)
@@ -200,6 +209,30 @@ impl VisualLineIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tab_metadata_retains_exact_source_snapshot() {
+        let prefix = "文😀e\u{301}".repeat(10000);
+        for (body, tabs) in [
+            (String::new(), false),
+            ("short\trow".into(), true),
+            (prefix.clone(), false),
+            (format!("\t{prefix}"), true),
+            (format!("{prefix}\t"), true),
+            (format!("{prefix}\t{prefix}"), true),
+        ] {
+            let index = VisualLineIndex::new(&body).unwrap();
+            let retained = index.clone();
+            assert_eq!(index.has_tabs(), tabs);
+            assert_eq!(retained.has_tabs(), tabs);
+            assert!(index.shared_with(&retained));
+        }
+        let original = VisualLineIndex::new(&prefix).unwrap();
+        let changed = VisualLineIndex::new(&format!("{prefix}\t")).unwrap();
+        assert!(!original.has_tabs());
+        assert!(changed.has_tabs());
+        assert!(!original.shared_with(&changed));
+    }
+
     #[test]
     fn probe_anchor_ranges_match_complete_anchor_filtering() {
         for body in [
