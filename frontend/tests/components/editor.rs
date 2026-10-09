@@ -12948,7 +12948,8 @@ async fn styled_horizontal_slices_resume_original_runs_without_scanning_token_pr
                         .unwrap()
                         .rows[0]
                         .1
-                        .clone();
+                        .clone()
+                        .unwrap();
                     if let Some(previous) = &retained_runs {
                         assert!(std::sync::Arc::ptr_eq(previous, &runs));
                         assert_eq!(scanned, 0, "{mode:?} warm styled run boundaries");
@@ -12989,8 +12990,8 @@ async fn styled_horizontal_slices_resume_original_runs_without_scanning_token_pr
             }
             assert!(actions.prepare_paragraph_measurements(&stale, 0).is_none());
             assert!(std::sync::Arc::ptr_eq(
-                &cache.rows[0].1,
-                &mounted
+                cache.rows[0].1.as_ref().unwrap(),
+                mounted
                     .state
                     .workspace
                     .editor_paint_runs
@@ -12998,6 +12999,8 @@ async fn styled_horizontal_slices_resume_original_runs_without_scanning_token_pr
                     .unwrap()
                     .rows[0]
                     .1
+                    .as_ref()
+                    .unwrap()
             ));
         }
         openwebide_frontend::state_actions::editor::take_paint_run_segment_bytes();
@@ -13160,6 +13163,96 @@ async fn paragraph_changed_prefix_reuse_matches_complete_geometry_and_rejects_st
             "{mode:?} reused complete geometry"
         );
         assert_eq!(actions.source(), changed);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn unavailable_styled_runs_skip_capped_rescans_but_prepare_paragraphs_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        highlight::{Token, TokenKind},
+    };
+    use openwebide_frontend::state_actions::editor::{EditorActions, take_paint_run_segment_bytes};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mut tokens = vec![
+            Token {
+                kind: TokenKind::Keyword,
+                text: "a".into()
+            };
+            16 * 1024 - 2
+        ];
+        let text = "word 文😀e\u{301} ".repeat(5000);
+        let complete_segment_bytes = text.len();
+        tokens.push(Token {
+            kind: TokenKind::String,
+            text,
+        });
+        let source = tokens
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<String>();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("over-budget.rs".into()));
+            state.workspace.active_project.set(Some(1));
+            state.workspace.content.set(source.into());
+            view! { <div /> }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        actions
+            .prepare_edit(openwebide_core::editor::Selection::caret(0))
+            .unwrap();
+        let (paint, _) = actions
+            .prepare_row_measurements(
+                "run cache metrics".into(),
+                actions.projection().unwrap(),
+                (true, std::sync::Arc::new(vec![tokens.into()])),
+                std::sync::Arc::from([0]),
+                openwebide_core::editor::Indentation::default(),
+                false,
+            )
+            .unwrap();
+        take_paint_run_segment_bytes();
+        assert!(actions.prepare_paragraph_measurements(&paint, 0).is_some());
+        let initial = take_paint_run_segment_bytes();
+        assert!(
+            initial > complete_segment_bytes,
+            "{mode:?}: first attempt includes capped and complete tables"
+        );
+        for _ in 0..3 {
+            assert!(actions.prepare_paragraph_measurements(&paint, 0).is_some());
+            assert_eq!(
+                take_paint_run_segment_bytes(),
+                complete_segment_bytes,
+                "{mode:?}: complete preparation remains available without retrying capped metadata"
+            );
+        }
+        let cache = mounted
+            .state
+            .workspace
+            .editor_paint_runs
+            .get_untracked()
+            .unwrap();
+        assert_eq!(cache.rows.len(), 1);
+        assert!(cache.rows[0].1.is_none());
+        mounted.state.workspace.active_project.set(Some(2));
+        assert!(actions.prepare_paragraph_measurements(&paint, 0).is_none());
+        assert_eq!(take_paint_run_segment_bytes(), 0);
+        assert_eq!(
+            mounted
+                .state
+                .workspace
+                .editor_paint_runs
+                .get_untracked()
+                .unwrap()
+                .paint
+                .key,
+            cache.paint.key
+        );
     }
 }
 

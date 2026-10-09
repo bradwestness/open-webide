@@ -898,7 +898,7 @@ impl EditorActions {
                 .find(|(index, _)| *index == row)
                 .map(|(_, runs)| runs.clone())
         }) {
-            return Some(runs);
+            return runs;
         }
         if self.workspace.editor_paint_runs.with_untracked(|cache| {
             cache
@@ -913,7 +913,7 @@ impl EditorActions {
         {
             return None;
         }
-        let runs = styled_paint_runs(body, &paint_row(paint, row)?, MAX_RETAINED_PAINT_RUNS)?;
+        let runs = styled_paint_runs(body, &paint_row(paint, row)?, MAX_RETAINED_PAINT_RUNS);
         self.workspace.editor_paint_runs.update(|cache| {
             let cache = cache.get_or_insert_with(|| crate::state::workspace::EditorPaintRuns {
                 paint: paint.clone(),
@@ -928,7 +928,7 @@ impl EditorActions {
             }
             cache.rows.push((row, runs.clone()));
         });
-        Some(runs)
+        runs
     }
     fn paragraph_paint_run_start(
         self,
@@ -1048,6 +1048,101 @@ impl EditorActions {
 mod tests {
     use super::*;
     use openwebide_core::highlight::TokenKind;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn unavailable_styled_run_tables_are_scoped_bounded_and_not_rescanned() {
+        Owner::new().with(|| {
+            let workspace = crate::state::workspace::WorkspaceState::new();
+            workspace.active_project.set(Some(1));
+            workspace.open_file.set(Some("over-budget.rs".into()));
+            let mut tokens = vec![
+                Token {
+                    kind: TokenKind::Keyword,
+                    text: "a".into()
+                };
+                MAX_RETAINED_PAINT_RUNS - 2
+            ];
+            tokens.push(Token {
+                kind: TokenKind::String,
+                text: "word 文😀e\u{301} ".repeat(5000),
+            });
+            let body = tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<String>();
+            let source = std::iter::repeat_n(body.as_str(), MAX_PAINT_RUN_ROWS + 1)
+                .collect::<Vec<_>>()
+                .join("\n");
+            workspace.content.set(source.clone().into());
+            let actions = EditorActions::new(workspace);
+            let paint = actions
+                .row_paint_snapshot(
+                    "font metrics".into(),
+                    FoldProjection::new(&source, &Default::default()),
+                    (true, Arc::new(vec![tokens.into(); MAX_PAINT_RUN_ROWS + 1])),
+                    Arc::from([]),
+                    Indentation::default(),
+                    false,
+                )
+                .unwrap();
+            take_paint_run_segment_bytes();
+            assert!(actions.cached_styled_paint_runs(&paint, 0).is_none());
+            assert!(take_paint_run_segment_bytes() > 0);
+            for _ in 0..4 {
+                assert!(actions.cached_styled_paint_runs(&paint, 0).is_none());
+                assert_eq!(take_paint_run_segment_bytes(), 0);
+            }
+            for case in 0..5 {
+                let mut stale = paint.clone();
+                match case {
+                    0 => stale.account_generation += 1,
+                    1 => stale.key.0 += 1,
+                    2 => stale.key.1 = "other.rs".into(),
+                    3 => stale.epoch += 1,
+                    _ => stale.read_revision += 1,
+                }
+                assert!(actions.cached_styled_paint_runs(&stale, 0).is_none());
+                assert_eq!(take_paint_run_segment_bytes(), 0);
+                assert_eq!(
+                    workspace
+                        .editor_paint_runs
+                        .get_untracked()
+                        .unwrap()
+                        .rows
+                        .len(),
+                    1
+                );
+            }
+            workspace.editor_layout_epoch.update(|epoch| *epoch += 1);
+            let mut reconciled = paint.clone();
+            reconciled.layout_epoch = workspace.editor_layout_epoch.get_untracked();
+            reconciled.view_revision = workspace.editor_view_revision.get_untracked();
+            assert!(actions.cached_styled_paint_runs(&reconciled, 0).is_none());
+            assert!(take_paint_run_segment_bytes() > 0);
+            assert!(actions.cached_styled_paint_runs(&reconciled, 0).is_none());
+            assert_eq!(take_paint_run_segment_bytes(), 0);
+            let mut restyled = reconciled.clone();
+            restyled.tokens = Arc::new((*paint.tokens).clone());
+            assert!(actions.cached_styled_paint_runs(&restyled, 0).is_none());
+            assert!(take_paint_run_segment_bytes() > 0);
+            for row in 1..=MAX_PAINT_RUN_ROWS {
+                assert!(actions.cached_styled_paint_runs(&restyled, row).is_none());
+            }
+            let cache = workspace.editor_paint_runs.get_untracked().unwrap();
+            assert_eq!(cache.rows.len(), MAX_PAINT_RUN_ROWS);
+            assert!(cache.rows.iter().all(|(_, runs)| runs.is_none()));
+            assert!(cache.rows.iter().all(|(row, _)| *row != 0));
+            take_paint_run_segment_bytes();
+            assert!(actions.cached_styled_paint_runs(&restyled, 0).is_none());
+            assert!(take_paint_run_segment_bytes() > 0, "evicted rows may retry");
+            // A rejected retained table must not disable complete paragraph preparation.
+            assert!(
+                actions
+                    .prepare_paragraph_measurements(&restyled, 0)
+                    .is_some()
+            );
+        });
+    }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]

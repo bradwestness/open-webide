@@ -174,11 +174,13 @@ pub struct EditorParagraphCache {
     pub rows: Vec<(usize, Arc<openwebide_core::editor::ParagraphMeasurements>)>,
 }
 
-/// Original styled paint runs, independent of completed DOM geometry.
+/// Original styled paint runs, independent of completed DOM geometry. An absent
+/// table records unavailable metadata for this exact source/style scope, so a
+/// rejected retention budget is not scanned again on every viewport update.
 #[derive(Clone, Debug)]
 pub struct EditorPaintRuns {
     pub paint: EditorRowPaint,
-    pub rows: Vec<(usize, Arc<[usize]>)>,
+    pub rows: Vec<(usize, Option<Arc<[usize]>>)>,
 }
 
 #[derive(Clone, Debug)]

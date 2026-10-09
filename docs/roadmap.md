@@ -84,7 +84,9 @@ tracks the remaining work rather than every optimization already shipped.
   run-boundary interval once. Probe target/commit lookup now visits only sparse
   anchors within the measured glyph range. Initial run-table
   construction and unsupported-boundary fallbacks still scan complete rows;
-  capped metadata attempts now stop once their run budget is exceeded.
+  capped metadata attempts now stop once their run budget is exceeded and retain
+  that result within their bounded exact-source/style cache. Uncapped fallback
+  construction still segments full rows.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   final context assembly and bounded metadata publication,

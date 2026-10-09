@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Remember unavailable styled run tables within their exact source/style scope,
+  avoiding repeated capped scans while preserving complete paragraph preparation.
+
 - Share Unicode traversal across ordered styled-paragraph anchor boundaries,
   preserving exact grapheme admission and sparse-checkpoint fallbacks.
 
