@@ -246,6 +246,7 @@ pub fn DropdownSelect(
 #[component]
 pub fn ActionMenu(
     aria_label: &'static str,
+    #[prop(default = IconName::Ellipsis)] icon: IconName,
     #[prop(default = false)] context_only: bool,
     children: ChildrenFn,
 ) -> impl IntoView {
@@ -272,7 +273,7 @@ pub fn ActionMenu(
     view! {
         <span class="ui-action-menu-context" node_ref=root>
         <Dropdown aria_label=aria_label class="ui-action-menu" trigger_class=if context_only { "sr-only" } else { "icon-btn ui-icon" } hide_caret=true open=open pointer_anchor=anchor.into()
-            on_open=Callback::new(move |()| anchor.set(None)) label=|| view! { <Icon name=IconName::Ellipsis /> }>
+            on_open=Callback::new(move |()| anchor.set(None)) label=move || view! { <Icon name=icon /> }>
             <div class="ui-action-items" on:click=move |event| {
                 if event.target().and_then(|target| target.dyn_into::<web_sys::Element>().ok())
                     .is_some_and(|target| target.closest("button").ok().flatten().is_some()) { open.set(false); }

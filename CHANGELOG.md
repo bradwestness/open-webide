@@ -9,7 +9,7 @@ for what's still ahead.
 
 ## [Unreleased]
 
-- Open plugin search and package lifecycle controls beside Output in the status bar, with a direct link to marketplace-only settings.
+- Open plugin search and package lifecycle controls beside Output in the status bar, with a direct link to marketplace-only settings. Use the shared magnifier search row, hamburger action menu, Lucide add icons and modal spacing.
 - Keep the official plugin marketplace permanently available, restore it in older account settings, and allow removal only for custom sources.
 - Browse the official and custom public Git marketplaces from the status-bar Plugins interface,
   with searchable cached releases and repository inheritance. Install pinned

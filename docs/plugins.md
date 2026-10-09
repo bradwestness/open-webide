@@ -13,7 +13,8 @@ package provenance is visible; update, disable or remove them through Plugins.
 Personal skills remain independent, and a duplicate skill name aborts activation
 without overwriting it. The project's global Skills switch still applies.
 
-Use **Manage marketplace sources** to open Settings → Plugins. That settings tab
+Use **Manage marketplace sources** in the Plugins hamburger menu to open
+Settings → Plugins. That settings tab
 only configures marketplace sources; search, install, uninstall and project
 enable/disable controls live in the Plugins interface.
 

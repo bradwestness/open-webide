@@ -447,6 +447,7 @@ async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_mod
             let ui = state.ui;
             let settings = state.settings;
             view! {
+                <style>{include_str!("../../styles.css")}</style>
                 <StatusBar health=RwSignal::new(None).read_only() on_toggle_terminal=|| {} />
                 <Show when=move || ui.plugins_open.get()><PluginsDialog/></Show>
                 <Show when=move || settings.show_settings.get()>
@@ -479,6 +480,42 @@ async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_mod
                 .unwrap()
                 .contains("Installed packages")
         );
+        assert!(
+            mounted
+                .root
+                .query_selector("[role='menu']")
+                .unwrap()
+                .is_none()
+        );
+        let input = mounted.element("input[aria-label='Search plugins']");
+        let magnifier = mounted.element(".panel-search-row > .ui-icon-glyph");
+        let menu = mounted.element("button[aria-label='Plugin actions']");
+        let input_box = input.get_bounding_client_rect();
+        let icon_box = magnifier.get_bounding_client_rect();
+        let menu_box = menu.get_bounding_client_rect();
+        assert!(icon_box.right() <= input_box.left());
+        assert!(input_box.right() <= menu_box.left());
+        assert!(
+            (input_box.y() + input_box.height() / 2.0 - menu_box.y() - menu_box.height() / 2.0)
+                .abs()
+                < 1.0
+        );
+        mounted.click("button[aria-label='Plugin actions']");
+        settle().await;
+        assert!(
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Refresh installations")
+        );
+        assert!(
+            mounted
+                .root
+                .text_content()
+                .unwrap()
+                .contains("Refresh marketplaces")
+        );
         mounted.click_text("Manage marketplace sources");
         settle().await;
         assert!(!mounted.state.ui.plugins_open.get_untracked());
@@ -509,6 +546,15 @@ async fn plugins_status_bar_discovery_and_source_settings_navigation_in_both_mod
                 .query_selector("input[aria-label='Search plugins']")
                 .unwrap()
                 .is_none()
+        );
+        let browse = mounted.element("#settings-panel-plugins .ui-inline-actions button.btn.ghost");
+        assert!(
+            browse.get_bounding_client_rect().width()
+                < browse
+                    .parent_element()
+                    .unwrap()
+                    .get_bounding_client_rect()
+                    .width()
         );
         mounted.click_text("Browse plugins");
         settle().await;
