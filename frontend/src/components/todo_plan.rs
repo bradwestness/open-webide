@@ -24,7 +24,7 @@ pub fn TodoPlanPanel() -> impl IntoView {
         <Show when=move || chat.todo_loading.get() && chat.todo_plan.with(Option::is_none)><div class="todo-notice">"Loading plan…"</div></Show>
         <Show when=move || chat.todo_error.get().is_some()>
             <div class="todo-notice">{move || chat.todo_error.get()}
-                {actions.map(|actions| view! { <button class="btn ghost" disabled=move || chat.todo_loading.get() on:click=move |_| { if let Some(session) = chat.active_session.get_untracked() { actions.refresh.run(session); } }>"Retry"</button> })}
+                {actions.map(|actions| view! { <button class="btn ghost" aria-label="Retry loading plan" disabled=move || chat.todo_loading.get() on:click=move |_| { if let Some(session) = chat.active_session.get_untracked() { actions.refresh.run(session); } }>"Retry"</button> })}
             </div>
         </Show>
     }
