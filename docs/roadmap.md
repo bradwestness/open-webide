@@ -83,7 +83,9 @@ tracks the remaining work rather than every optimization already shipped.
   long-token and plain-run boundaries, and avoid repeated prefix segmentation for
   over-limit styled run tables. Unchanged styled suffixes now map exact source and
   glyph positions in bounded replay batches, validate incoming browser overlap,
-  and freshly measure the final extent. Ordered coordinate queries share cluster
+  and freshly measure the final extent. Live intermediate probes also omit
+  redundant global overflow layout while retaining exact overlap validation.
+  Ordered coordinate queries share cluster
   traversal while preserving every old/new source-byte check. Styled paragraph
   anchor construction also shares traversal across ordered paint boundaries,
   omitting boundaries inside clusters as before. Shifted tabs retain

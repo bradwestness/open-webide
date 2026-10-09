@@ -157,7 +157,7 @@ async fn measure_paragraph(
     }
     let suffix = actions.and_then(|actions| actions.paragraph_suffix(scope, logical));
     let mut probes = 0_usize;
-    while let Some(probe) = plan.probe().cloned() {
+    while plan.probe().is_some() {
         if !current() {
             return Ok(None);
         }
@@ -176,15 +176,7 @@ async fn measure_paragraph(
         if !current() {
             return Ok(None);
         }
-        let Some(layout) = measure_paragraph_probe(
-            paint,
-            scope,
-            logical,
-            &probe,
-            plan.local_origin(),
-            &targets,
-            render,
-        )?
+        let Some(layout) = measure_paragraph_probe(paint, scope, logical, &plan, &targets, render)?
         else {
             return Ok(None);
         };
@@ -223,7 +215,7 @@ async fn measure_paragraph(
 struct ParagraphLayout {
     width: f64,
     height: f64,
-    scroll_width: f64,
+    scroll_width: Option<f64>,
     rectangles: Vec<openwebide_core::editor::GlyphRectangle>,
 }
 
@@ -231,11 +223,15 @@ fn measure_paragraph_probe(
     paint: &web_sys::Element,
     scope: &crate::state::workspace::EditorRowPaint,
     logical: usize,
-    probe: &openwebide_core::editor::ParagraphProbe,
-    phase: f64,
+    plan: &openwebide_core::editor::ParagraphMeasurementPlan<'_>,
     targets: &[usize],
     render: &impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
 ) -> Result<Option<ParagraphLayout>, ()> {
+    let Some(probe) = plan.probe() else {
+        return Ok(None);
+    };
+    let phase = plan.local_origin();
+    let measure_extent = plan.requires_extent();
     let body = scope.projection.line_body(logical).ok_or(())?;
     let source_line = scope.projection.lines()[logical].source_line;
     let timing = ProbeTiming::installed();
@@ -316,7 +312,7 @@ fn measure_paragraph_probe(
     // Read the final overflow at document coordinates only after capturing
     // precise local rectangles. Inline layout and transformed overflow round
     // differently at large coordinates; use the original inline layout path.
-    if probe.origin > 0.0 {
+    if measure_extent && probe.origin > 0.0 {
         let gap = row.first_element_child().ok_or(())?;
         gap.set_attribute(
             "style",
@@ -337,7 +333,8 @@ fn measure_paragraph_probe(
             remaining -= width;
         }
     }
-    let source_width = f64::from(row.scroll_width());
+    let source_width =
+        measure_extent.then(|| f64::from(row.scroll_width()).max(viewport_width.ceil()));
     if let (Some(trace), Some(started)) = (&timing, started) {
         trace.report(
             paint,
@@ -349,7 +346,7 @@ fn measure_paragraph_probe(
     Ok(Some(ParagraphLayout {
         width: viewport_width,
         height: bounds.height(),
-        scroll_width: source_width.max(viewport_width.ceil()),
+        scroll_width: source_width,
         rectangles,
     }))
 }

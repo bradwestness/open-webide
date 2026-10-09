@@ -475,14 +475,20 @@ impl<'a> ParagraphMeasurementPlan<'a> {
         Some(targets)
     }
     /// Rectangles already include the probe's measured horizontal origin.
+    /// Intermediate probes may omit overflow; the terminal probe must measure it.
     pub fn record(
         &mut self,
         width: f64,
         height: f64,
-        scroll_width: f64,
+        scroll_width: impl Into<Option<f64>>,
         rectangles: &[GlyphRectangle],
     ) -> bool {
-        self.record_measurement(width, height, Some(scroll_width), rectangles, None)
+        self.record_measurement(width, height, scroll_width.into(), rectangles, None)
+    }
+
+    /// Whether this probe must provide the exact document-coordinate overflow.
+    pub fn requires_extent(&self) -> bool {
+        self.continuation.is_none()
     }
 
     fn record_measurement(
@@ -670,6 +676,54 @@ mod tests {
             ));
         }
         plan.finish_with_measurements().unwrap()
+    }
+
+    #[test]
+    fn live_probes_defer_overflow_and_require_a_fresh_terminal_extent() {
+        for source in ["x".repeat(100_000), "word 文😀 e\u{301} ".repeat(8000)] {
+            let (width, complete, _) = measured(&source);
+            let mut plan =
+                ParagraphMeasurementPlan::new(&source, VisualLineIndex::new(&source).unwrap())
+                    .unwrap();
+            let mut intermediate = 0;
+            while let Some(probe) = plan.probe().cloned() {
+                let rectangles = rectangles(&plan);
+                assert_eq!(plan.requires_extent(), probe.bytes.end == source.len());
+                if plan.requires_extent() {
+                    assert!(!plan.record(244.0, 15.0, None, &rectangles));
+                    assert!(!plan.finished);
+                    assert!(plan.record(244.0, 15.0, Some(width), &rectangles));
+                } else {
+                    assert!(plan.record(244.0, 15.0, None, &rectangles));
+                    intermediate += 1;
+                }
+            }
+            let (actual_width, actual, retained) = plan.finish_with_measurements().unwrap();
+            assert!(intermediate > 5);
+            assert_eq!(actual_width.to_bits(), width.to_bits());
+            assert_eq!(actual, complete);
+            assert!(
+                retained.records[..retained.records.len() - 1]
+                    .iter()
+                    .all(|record| record.scroll_width.is_none())
+            );
+            assert_eq!(retained.records.last().unwrap().scroll_width, Some(width));
+        }
+    }
+
+    #[test]
+    fn omitted_overflow_does_not_weaken_overlap_or_dimension_validation() {
+        let source = "word 文😀 ".repeat(8000);
+        let mut plan =
+            ParagraphMeasurementPlan::new(&source, VisualLineIndex::new(&source).unwrap()).unwrap();
+        assert!(!plan.requires_extent());
+        assert!(plan.record(244.0, 15.0, None, &rectangles(&plan)));
+        let mut changed = rectangles(&plan);
+        changed[0].left += 1.0;
+        assert!(!plan.record(244.0, 15.0, None, &changed));
+        assert!(!plan.record(244.0, f64::NAN, None, &rectangles(&plan)));
+        assert!(!plan.record(240.0, 15.0, None, &rectangles(&plan)));
+        assert!(plan.record(244.0, 15.0, None, &rectangles(&plan)));
     }
     #[test]
     fn completed_geometry_keeps_shared_original_run_boundaries() {

@@ -3121,3 +3121,45 @@ All five CI jobs passed for checkpoint `47c26d8` in run `37912907218`, including
 Docker HTTPS transport and the full frontend browser suite. This remains a
 checkpoint result; the goal's near-limit, physical-input and complete release
 gates are still outstanding.
+
+### Terminal-only paragraph extents (2026-10-09)
+
+The shared Rust paragraph plan now exposes whether the current live probe needs
+a document overflow extent. Intermediate records may omit it, as retained suffix
+records already could; the terminal record must supply a fresh extent. The DOM
+adapter still measures every requested glyph and validates exact overlap, but
+only builds global-coordinate gaps and reads overflow for the terminal probe.
+No geometry approximations, admission caps or fallback limits changed. Both
+workspace modes use this plan and adapter.
+
+Production bundles from the same `a89117e` checkout were measured with and without
+this change, using the same frozen WASI backend, Linux Chromium 154 image, four
+CPU quota and 10 GiB container ceiling. Each cohort has two fresh samples per
+mode of the genuinely String-styled 1,048,567-byte row, with a verified beginning
+edit and process-tree PSS. Freezing the runtime prevents build cleanup from
+invalidating a sample. [Baseline traces](editor-performance/terminal-paragraph-extents-baseline-linux.jsonl)
+and [candidate traces](editor-performance/terminal-paragraph-extents-candidate-linux.jsonl)
+retain all measurements; their checkout header identifies the mounted root repo,
+while the frontend bundle comes from the isolated `a89117e` worktree.
+
+| Mode/sample | Baseline load / cold geometry (ms) | Candidate load / cold geometry (ms) | Baseline / candidate input (ms) | Baseline / candidate peak PSS (KiB) |
+| --- | --- | --- | --- | --- |
+| local/1 | 4148 / 1979 | 4004 / 1182 | 140 / 136 | 675591 / 687753 |
+| local/2 | 5416 / 2086 | 3221 / 1094 | 137 / 144 | 686211 / 693189 |
+| remote/1 | 4021 / 1906 | 3241 / 1090 | 129 / 136 | 711274 / 707380 |
+| remote/2 | 4034 / 1892 | 3402 / 1181 | 138 / 140 | 693090 / 700752 |
+
+Cold geometry work decreased about 40–45% in these samples. Input and peak memory
+show no consistent improvement, and the remaining startup cost still takes
+seconds. These small instrumented cohorts do not clear the full responsiveness,
+memory or physical-input release gates.
+
+Validation: 560 parser-enabled and 424 minimal core tests passed, including
+missing terminal extents, exact completed geometry, invalid dimensions and
+altered overlap. Strict core and optimized WASM component-test lint passed.
+Optimized Chromium near-limit and full font/feature/whitespace contracts passed
+in both modes. The production bundle also built successfully.
+The final optimized Chromium regression run passed all six paragraph contracts
+(30.42 s), covering final global overflow rounding, near-limit complete-row
+geometry, altered-overlap fallback, changed-prefix/stale-scope rejection,
+unchanged suffix reuse and the font/feature/whitespace matrix in both modes.

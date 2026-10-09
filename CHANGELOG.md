@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Avoid repeated global overflow layout during bounded paragraph preparation;
+  preserve exact glyph geometry and freshly measure the final document extent
+  in both workspace modes.
+
 - Validate, stably order and deduplicate final syntax structure metadata across
   bounded worker batches, retaining exact source ownership and hiding incomplete
   contexts in both workspace modes.
