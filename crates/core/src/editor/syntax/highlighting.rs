@@ -575,7 +575,10 @@ mod tests {
 
     #[test]
     fn document_dependent_color_classification_remains_fresh() {
-        fn classify(node: super::super::Node<'_>) -> Option<TokenKind> {
+        fn classify(
+            node: super::super::Node<'_>,
+            _parent: Option<super::super::Node<'_>>,
+        ) -> Option<TokenKind> {
             if node.kind() != "identifier" {
                 return None;
             }

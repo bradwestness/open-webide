@@ -95,7 +95,7 @@ impl ParsedContexts {
         )?;
         charge_visits(visited, ancestry)?;
         let mut next = HashMap::new();
-        visit_parts(root, |node, complete| {
+        visit_parts(root, |node, parent, complete| {
             if !complete {
                 charge_visits(visited, 1)?;
                 let mut ancestry = 0;
@@ -112,23 +112,26 @@ impl ParsedContexts {
                 charge_visits(visited, ancestry)?;
                 return Ok(());
             }
-            let retained = self.subtrees.candidate(root, node).and_then(|part| {
-                if let Some(previous) = &part.value.ancestors
-                    && previous != &ancestors(node, provider)?
-                {
-                    return None;
-                }
-                let metadata = part.value.contexts.mapped(|range| {
-                    let start = range.start.checked_add(node.start_byte())?;
-                    let end = range.end.checked_add(node.start_byte())?;
-                    (start <= end
-                        && end <= node.end_byte()
-                        && text.is_char_boundary(start)
-                        && text.is_char_boundary(end))
-                    .then_some(start..end)
-                })?;
-                Some((part.clone(), metadata))
-            });
+            let retained = self
+                .subtrees
+                .candidate(root, node, parent)
+                .and_then(|part| {
+                    if let Some(previous) = &part.value.ancestors
+                        && previous != &ancestors(node, provider)?
+                    {
+                        return None;
+                    }
+                    let metadata = part.value.contexts.mapped(|range| {
+                        let start = range.start.checked_add(node.start_byte())?;
+                        let end = range.end.checked_add(node.start_byte())?;
+                        (start <= end
+                            && end <= node.end_byte()
+                            && text.is_char_boundary(start)
+                            && text.is_char_boundary(end))
+                        .then_some(start..end)
+                    })?;
+                    Some((part.clone(), metadata))
+                });
             let metadata = if let Some((part, metadata)) = retained {
                 charge_visits(visited, part.visits)?;
                 #[cfg(test)]
@@ -161,6 +164,7 @@ impl ParsedContexts {
                             node.id(),
                             Part::new(
                                 node,
+                                parent,
                                 *visited - before,
                                 RetainedContexts {
                                     contexts: relative,

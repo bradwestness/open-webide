@@ -561,11 +561,23 @@ fn visit_node<'tree>(
     visited: &mut usize,
     mut visitor: impl FnMut(Node<'tree>) -> Result<(), SyntaxStatus>,
 ) -> Result<(), SyntaxStatus> {
+    visit_node_with_parent(node, None, visited, |node, _| visitor(node))
+}
+
+fn visit_node_with_parent<'tree>(
+    node: Node<'tree>,
+    parent: Option<Node<'tree>>,
+    visited: &mut usize,
+    mut visitor: impl FnMut(Node<'tree>, Option<Node<'tree>>) -> Result<(), SyntaxStatus>,
+) -> Result<(), SyntaxStatus> {
     let mut cursor = node.walk();
+    let mut parents = Vec::new();
     loop {
         subtrees::charge_visits(visited, 1)?;
-        visitor(cursor.node())?;
+        let current = cursor.node();
+        visitor(current, parents.last().copied().or(parent))?;
         if cursor.goto_first_child() {
+            parents.push(current);
             continue;
         }
         loop {
@@ -575,6 +587,7 @@ fn visit_node<'tree>(
             if !cursor.goto_parent() {
                 return Ok(());
             }
+            parents.pop();
         }
     }
 }
@@ -738,6 +751,116 @@ fn input_edit_change(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_parent_context_matches_complete_tree_parent_and_colors() {
+        let mut checked = Vec::new();
+        for (path, source) in [
+            (
+                "sample.rs",
+                "fn main() { let value: Option<String> = Some(call()); } // note\n",
+            ),
+            (
+                "sample.ts",
+                "function run(value: string): string { return value; }",
+            ),
+            ("sample.js", "function run(value) { return call(value); }"),
+            (
+                "sample.tsx",
+                "function App(): string { return <span id='x'>{value}</span>; }",
+            ),
+            (
+                "sample.py",
+                "class App:\n    def run(self):\n        return call(value)\n",
+            ),
+            (
+                "sample.jsx",
+                "const App = () => <span title='x'>{value}</span>;",
+            ),
+            (
+                "sample.java",
+                "class App { String run() { return call(); } }",
+            ),
+            ("sample.cs", "class App { string Run() => Call(); }"),
+            ("sample.cpp", "struct App { int run() { return call(); } };"),
+            (
+                "sample.php",
+                "<?php class App { function run() { return call(); } }",
+            ),
+            ("sample.sh", "run() { echo \"value $HOME\"; }"),
+            ("sample.c", "int run(void) { return call(); }"),
+            (
+                "sample.go",
+                "package main\nfunc run() string { return call() }",
+            ),
+            ("sample.html", "<div class='x'><span>value</span></div>"),
+            ("sample.css", "body { color: red; margin: 1px; }"),
+            ("sample.json", "{\"value\": [true, 1, \"text\"]}"),
+            ("sample.yaml", "value: [true, 1, text]\nnext: |\n  text\n"),
+            ("sample.toml", "[section]\nvalue = [true, 1, \"text\"]\n"),
+            ("sample.ini", "[section]\nvalue = text\n"),
+            (
+                "sample.xml",
+                "<root value='text'><child>text</child></root>",
+            ),
+            (
+                "sample.md",
+                "# Heading\n\n**text** and `code`\n\n```rust\nfn run() {}\n```\n",
+            ),
+        ] {
+            let language = crate::highlight::language_from_path(path);
+            let mut document = SyntaxDocument::new(language).unwrap();
+            assert_eq!(
+                document.update(source, || true),
+                SyntaxStatus::Ready { incremental: false }
+            );
+            let mut check_tree = |tree: &Tree, provider: SyntaxProvider| {
+                checked.push(provider.language);
+                let root = tree.root_node();
+                let check = |node: Node<'_>, parent: Option<Node<'_>>| {
+                    assert_eq!(
+                        parent.map(|parent| parent.id()),
+                        node.parent().map(|parent| parent.id()),
+                        "{path}: {}",
+                        node.kind()
+                    );
+                    if let Some(select) = provider.highlight {
+                        assert_eq!(
+                            select(node, parent),
+                            select(node, node.parent()),
+                            "{path}: {}",
+                            node.kind()
+                        );
+                    }
+                };
+                let mut visited = 0;
+                visit_node_with_parent(root, None, &mut visited, |node, parent| {
+                    check(node, parent);
+                    Ok(())
+                })
+                .unwrap();
+                assert!(visited > 0);
+                subtrees::visit_parts(root, |node, parent, _| {
+                    check(node, parent);
+                    Ok(())
+                })
+                .unwrap();
+            };
+            check_tree(document.tree.as_ref().unwrap(), document.provider.unwrap());
+            for body in &document.embedded {
+                if let Some(tree) = &body.tree {
+                    check_tree(tree, body.provider);
+                }
+            }
+        }
+        for provider in crate::editor::SYNTAX_PROVIDERS {
+            assert!(
+                checked.contains(&provider.language),
+                "missing {:?}",
+                provider.language
+            );
+        }
+    }
 
     #[test]
     fn unchanged_embedded_fallbacks_survive_edits_and_coordinate_shifts() {

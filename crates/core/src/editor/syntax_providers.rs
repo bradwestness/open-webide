@@ -518,14 +518,20 @@ pub fn syntax_provider(language: Language) -> Option<SyntaxProvider> {
         .copied()
 }
 
-pub type HighlightSelector =
-    for<'tree> fn(tree_sitter::Node<'tree>) -> Option<crate::highlight::TokenKind>;
+/// The traversal supplies the immediate parent; classifications obey highlight_scope.
+pub type HighlightSelector = for<'tree> fn(
+    tree_sitter::Node<'tree>,
+    Option<tree_sitter::Node<'tree>>,
+) -> Option<crate::highlight::TokenKind>;
 
-fn built_in_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::TokenKind> {
+fn built_in_highlight(
+    node: tree_sitter::Node<'_>,
+    parent: Option<tree_sitter::Node<'_>>,
+) -> Option<crate::highlight::TokenKind> {
     use crate::highlight::TokenKind;
     // Grammar type wrappers own their complete span, including anonymous
     // terminals named `number` or `string`. Their children cannot also paint it.
-    if node.parent().is_some_and(|parent| {
+    if parent.is_some_and(|parent| {
         matches!(
             parent.kind(),
             "type_identifier"
@@ -575,10 +581,7 @@ fn built_in_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::T
     if node.child_count() != 0 {
         return None;
     }
-    if node
-        .parent()
-        .is_some_and(|parent| parent.kind() == "lifetime")
-    {
+    if parent.is_some_and(|parent| parent.kind() == "lifetime") {
         return None;
     }
     // Anonymous leaves are grammar terminals, never guessed source identifiers.
@@ -601,7 +604,7 @@ fn built_in_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::T
             TokenKind::Operator
         });
     }
-    let parent = node.parent()?;
+    let parent = parent?;
     let same = |field| {
         parent
             .child_by_field_name(field)
@@ -630,26 +633,23 @@ fn built_in_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::T
     None
 }
 
-fn config_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::TokenKind> {
-    if node
-        .parent()
-        .is_some_and(|parent| config_color(parent.kind()).is_some())
-    {
+fn config_highlight(
+    node: tree_sitter::Node<'_>,
+    parent: Option<tree_sitter::Node<'_>>,
+) -> Option<crate::highlight::TokenKind> {
+    if parent.is_some_and(|parent| config_color(parent.kind()).is_some()) {
         return None;
     }
     if node.kind() == "Name" {
         return Some(
-            if node
-                .parent()
-                .is_some_and(|parent| parent.kind() == "Attribute")
-            {
+            if parent.is_some_and(|parent| parent.kind() == "Attribute") {
                 crate::highlight::TokenKind::Attribute
             } else {
                 crate::highlight::TokenKind::Keyword
             },
         );
     }
-    config_color(node.kind()).or_else(|| built_in_highlight(node))
+    config_color(node.kind()).or_else(|| built_in_highlight(node, parent))
 }
 fn config_color(kind: &str) -> Option<crate::highlight::TokenKind> {
     use crate::highlight::TokenKind;
@@ -687,8 +687,11 @@ fn config_color(kind: &str) -> Option<crate::highlight::TokenKind> {
     }
 }
 
-fn markdown_highlight(node: tree_sitter::Node<'_>) -> Option<crate::highlight::TokenKind> {
+fn markdown_highlight(
+    node: tree_sitter::Node<'_>,
+    parent: Option<tree_sitter::Node<'_>>,
+) -> Option<crate::highlight::TokenKind> {
     // Prose punctuation and capitalized words remain plain. Only grammar-defined
     // Markdown constructs receive color, including delimiters and inline code.
-    config_highlight(node).filter(|_| config_color(node.kind()).is_some())
+    config_highlight(node, parent).filter(|_| config_color(node.kind()).is_some())
 }

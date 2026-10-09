@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Carry cursor-provided parent context through syntax color classifiers and
+  retained part checks, avoiding repeated tree searches on wide documents while
+  preserving parent-dependent colors, folds and editing contexts.
+
 - Resume syntax row-index replacement scanning across bounded byte/row batches,
   retain the validated source change until parsing starts, and discard canceled
   or superseded row work without exposing partial indexes or stale structure.

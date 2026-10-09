@@ -203,6 +203,10 @@ never receive guessed code colors. Edit highlighting uses the same cached
 providers, with extensible highlight selectors and parser-protected literal/comment
 spans, including interpolation code and HTML script/style bodies. Tokens preserve
 source bytes; the DOM adapter only normalizes CRLF for textarea alignment.
+Highlight selectors receive the node and its cursor-provided immediate parent
+(`None` for a tree root), preserving declared node/parent/document dependencies
+without searching backward through wide sibling lists. Retained syntax parts
+use that same parent context for identity and dependency checks.
 Inline/Split diffs, recovery reviews, Git previews and chat diff previews parse
 each complete source version with the shared providers, then intersect syntax
 colors with word-change boundaries.

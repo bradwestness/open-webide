@@ -40,7 +40,7 @@ impl ParsedFolds {
             publish(span, lines, ranges);
         }
         let mut next = HashMap::new();
-        visit_parts(root, |node, complete| {
+        visit_parts(root, |node, parent, complete| {
             if !complete {
                 charge_visits(visited, 1)?;
                 if let Some(span) = fold(node, provider) {
@@ -48,23 +48,26 @@ impl ParsedFolds {
                 }
                 return Ok(());
             }
-            let reused = self.subtrees.candidate(root, node).and_then(|chunk| {
-                let spans = chunk
-                    .value
-                    .spans
-                    .iter()
-                    .map(|&(start, end)| {
-                        Some((
-                            absolute(start, node.start_position())?,
-                            absolute(end, node.start_position())?,
-                        ))
-                    })
-                    .collect::<Option<Vec<_>>>()?;
-                spans
-                    .iter()
-                    .all(|&(start, end)| valid(start, lines) && valid(end, lines))
-                    .then(|| (chunk.clone(), spans))
-            });
+            let reused = self
+                .subtrees
+                .candidate(root, node, parent)
+                .and_then(|chunk| {
+                    let spans = chunk
+                        .value
+                        .spans
+                        .iter()
+                        .map(|&(start, end)| {
+                            Some((
+                                absolute(start, node.start_position())?,
+                                absolute(end, node.start_position())?,
+                            ))
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    spans
+                        .iter()
+                        .all(|&(start, end)| valid(start, lines) && valid(end, lines))
+                        .then(|| (chunk.clone(), spans))
+                });
             let spans = if let Some((chunk, spans)) = reused {
                 charge_visits(visited, chunk.visits)?;
                 #[cfg(test)]
@@ -102,7 +105,7 @@ impl ParsedFolds {
                 {
                     next.insert(
                         node.id(),
-                        Part::new(node, *visited - before, Chunk { spans: relative }),
+                        Part::new(node, parent, *visited - before, Chunk { spans: relative }),
                     );
                 }
                 spans

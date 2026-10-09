@@ -1,6 +1,6 @@
 //! Retain descendant color classifications while refreshing external parent roles.
 use super::subtrees::{ParsedSubtrees, Part, charge_visits, visit_parts};
-use super::{Node, SyntaxProvider, SyntaxStatus, Tree, visit_node};
+use super::{Node, SyntaxProvider, SyntaxStatus, Tree, visit_node_with_parent};
 use crate::{editor::SyntaxHighlightScope, highlight::TokenKind};
 use std::{collections::HashMap, ops::Range};
 
@@ -37,37 +37,40 @@ impl ParsedHighlights {
         let root = tree.root_node();
         if provider.highlight_scope == SyntaxHighlightScope::Document {
             self.clear();
-            return visit_node(root, visited, |node| {
-                classify(node, provider, text, spans);
+            return visit_node_with_parent(root, None, visited, |node, parent| {
+                classify(node, parent, provider, text, spans);
                 Ok(())
             });
         }
         charge_visits(visited, 1)?;
-        classify(root, provider, text, spans);
+        classify(root, None, provider, text, spans);
         let mut next = HashMap::new();
-        visit_parts(root, |node, complete| {
+        visit_parts(root, |node, parent, complete| {
             // Only this node's field membership can depend on an external parent.
             charge_visits(visited, 1)?;
-            classify(node, provider, text, spans);
+            classify(node, parent, provider, text, spans);
             if !complete {
                 return Ok(());
             }
-            let retained = self.subtrees.candidate(root, node).and_then(|part| {
-                let absolute = part
-                    .value
-                    .iter()
-                    .map(|(range, kind)| {
-                        let start = node.start_byte().checked_add(range.start)?;
-                        let end = node.start_byte().checked_add(range.end)?;
-                        (start < end
-                            && end <= node.end_byte()
-                            && text.is_char_boundary(start)
-                            && text.is_char_boundary(end))
-                        .then_some((start..end, *kind))
-                    })
-                    .collect::<Option<Spans>>()?;
-                Some((part.clone(), absolute))
-            });
+            let retained = self
+                .subtrees
+                .candidate(root, node, parent)
+                .and_then(|part| {
+                    let absolute = part
+                        .value
+                        .iter()
+                        .map(|(range, kind)| {
+                            let start = node.start_byte().checked_add(range.start)?;
+                            let end = node.start_byte().checked_add(range.end)?;
+                            (start < end
+                                && end <= node.end_byte()
+                                && text.is_char_boundary(start)
+                                && text.is_char_boundary(end))
+                            .then_some((start..end, *kind))
+                        })
+                        .collect::<Option<Spans>>()?;
+                    Some((part.clone(), absolute))
+                });
             if let Some((part, absolute)) = retained {
                 charge_visits(visited, part.visits)?;
                 #[cfg(test)]
@@ -81,8 +84,8 @@ impl ParsedHighlights {
                 let mut descendants = Vec::new();
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
-                    visit_node(child, visited, |child| {
-                        classify(child, provider, text, &mut descendants);
+                    visit_node_with_parent(child, Some(node), visited, |child, parent| {
+                        classify(child, parent, provider, text, &mut descendants);
                         Ok(())
                     })?;
                 }
@@ -96,7 +99,10 @@ impl ParsedHighlights {
                             )
                         })
                         .collect();
-                    next.insert(node.id(), Part::new(node, *visited - before, relative));
+                    next.insert(
+                        node.id(),
+                        Part::new(node, parent, *visited - before, relative),
+                    );
                 }
                 spans.extend(descendants);
             }
@@ -107,8 +113,14 @@ impl ParsedHighlights {
     }
 }
 
-fn classify(node: Node<'_>, provider: SyntaxProvider, text: &str, spans: &mut Spans) {
-    if let Some(kind) = provider.highlight.and_then(|select| select(node)) {
+fn classify(
+    node: Node<'_>,
+    parent: Option<Node<'_>>,
+    provider: SyntaxProvider,
+    text: &str,
+    spans: &mut Spans,
+) {
+    if let Some(kind) = provider.highlight.and_then(|select| select(node, parent)) {
         let range = node.byte_range();
         if !range.is_empty()
             && text.is_char_boundary(range.start)

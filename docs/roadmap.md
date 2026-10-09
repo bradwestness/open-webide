@@ -92,7 +92,8 @@ tracks the remaining work rather than every optimization already shipped.
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   final context assembly and bounded metadata publication,
   larger fenced-code workloads and changed-source plain row-table
-  reconstruction/validation. Cooperative source-change comparison now
+  reconstruction/validation. Color classifiers and retained-part checks now
+  share cursor-provided parents. Cooperative source-change comparison now
   shares the resumable UTF-8 comparison used by plain-row preparation. Syntax
   admission now counts newlines across bounded worker/browser tasks before
   parsing or serialization. Changed-row scanning now retains a source-owned

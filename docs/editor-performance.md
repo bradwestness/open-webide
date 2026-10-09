@@ -2886,3 +2886,32 @@ browser contracts all pass in 6.00 seconds in both modes, including a 49,000-row
 LF/CRLF source through actual worker messages and complete fresh-analysis equality.
 Strict release WASM frontend lint also passes. The preceding admission checkpoint
 completed all five CI jobs successfully in run `37897135708`.
+
+### Cursor-provided syntax parents (2026-10-09)
+
+Syntax traversal now carries the immediate parent alongside each node, using
+owned traversal ancestry rather than repeated Node.parent searches from the tree
+root. Color selectors accept that node/parent pair; built-in code, configuration
+and Markdown colors retain their existing type-wrapper and parent-field rules.
+Custom document-dependent selectors retain their declared cache policy and may
+ignore the parent. Retained context/fold/color parts use the same supplied parent
+kind for construction and candidate validation. Visit charging and source/tree
+identity rules remain unchanged. External ancestry needed by interpolation owners
+and parent-owned fold headers still uses its existing guarded path.
+
+All 519 parser-enabled core tests pass in 4.47 seconds, compared with the preceding
+215.98-second run. The same 40,000-comment LF/CRLF workload, full fresh-analysis
+comparison and record-budget rejection remain in the suite. A first run of the
+unchanged 518 contracts completed in 7.35 seconds before adding the new oracle.
+The added grammar matrix checks actual parent node identity and classification
+agreement at every traversed node and retained frontier for all 22 registered
+grammars, including embedded Markdown and fenced languages. Existing dependency, field-role, document-dependent and cache invalidation
+contracts remain intact. These are unoptimized local native whole-suite timings,
+not Linux/PWA rendering, memory or full responsiveness proof.
+
+All 399 minimal core tests and strict core/WASM frontend lint also pass. All six
+optimized cooperative Chromium contracts pass in 6.53 seconds in both workspace
+modes, including dense admitted rows and warm parser/plain-source replacement.
+Dense
+source record budgets, final metadata/paint assembly, actual styled near-limit
+rendering, geometry, memory and physical device gates remain open.

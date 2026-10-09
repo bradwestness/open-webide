@@ -23,11 +23,11 @@ impl<T> Clone for Part<T> {
 }
 
 impl<T> Part<T> {
-    pub(super) fn new(node: Node<'_>, visits: usize, value: T) -> Self {
+    pub(super) fn new(node: Node<'_>, parent: Option<Node<'_>>, visits: usize, value: T) -> Self {
         Self {
             kind: node.kind_id(),
             bytes: node.byte_range().len(),
-            parent: node.parent().map(|parent| parent.kind_id()),
+            parent: parent.map(|parent| parent.kind_id()),
             visits,
             value: Arc::new(value),
         }
@@ -50,14 +50,19 @@ impl<T> Default for ParsedSubtrees<T> {
 }
 
 impl<T> ParsedSubtrees<T> {
-    pub(super) fn candidate(&self, root: Node<'_>, node: Node<'_>) -> Option<&Part<T>> {
+    pub(super) fn candidate(
+        &self,
+        root: Node<'_>,
+        node: Node<'_>,
+        parent: Option<Node<'_>>,
+    ) -> Option<&Part<T>> {
         if self.tree.as_ref()?.root_node().kind_id() != root.kind_id() {
             return None;
         }
         self.parts.get(&node.id()).filter(|part| {
             part.kind == node.kind_id()
                 && part.bytes == node.byte_range().len()
-                && part.parent == node.parent().map(|parent| parent.kind_id())
+                && part.parent == parent.map(|parent| parent.kind_id())
         })
     }
 
@@ -71,13 +76,14 @@ impl<T> ParsedSubtrees<T> {
 /// The frontier is disjoint, so records and visit credits are never duplicated.
 pub(super) fn visit_parts<'tree>(
     root: Node<'tree>,
-    mut visit: impl FnMut(Node<'tree>, bool) -> Result<(), SyntaxStatus>,
+    mut visit: impl FnMut(Node<'tree>, Option<Node<'tree>>, bool) -> Result<(), SyntaxStatus>,
 ) -> Result<(), SyntaxStatus> {
     const MAX_PART_BYTES: usize = 4096;
     let mut cursor = root.walk();
     if !cursor.goto_first_child() {
         return Ok(());
     }
+    let mut parents = vec![root];
     loop {
         let node = cursor.node();
         // Transparent wrappers may be rebuilt around retained expressions.
@@ -90,15 +96,20 @@ pub(super) fn visit_parts<'tree>(
                 || wraps_subtree
                 || (node.named_child_count() > 0
                     && node.end_position().row > node.start_position().row));
-        visit(node, !descend)?;
+        visit(node, parents.last().copied(), !descend)?;
         if descend && cursor.goto_first_child() {
+            parents.push(node);
             continue;
         }
         loop {
             if cursor.goto_next_sibling() {
                 break;
             }
-            if !cursor.goto_parent() || cursor.node().id() == root.id() {
+            if !cursor.goto_parent() {
+                return Ok(());
+            }
+            parents.pop();
+            if cursor.node().id() == root.id() {
                 return Ok(());
             }
         }
