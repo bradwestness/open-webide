@@ -49,9 +49,13 @@ allowed_outbound_hosts = [
 # the bridge's `--workspace` must equal this source.
 files = [{ source = "../..", destination = "/" }]
 
+[variables.web_push_contact]
+default = "mailto:webpush@openwebide.invalid"
+
 [component.backend.variables]
 bridge_url = "{{ bridge_url }}"
 bridge_secret = "{{ bridge_secret }}"
+web_push_contact = "{{ web_push_contact }}"
 
 [component.backend.build]
 command = "cargo build -p openwebide-backend --target wasm32-wasip2 --release"

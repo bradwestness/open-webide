@@ -22,7 +22,7 @@ use crate::StorageError;
 use crate::db::Db;
 
 /// The highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: i64 = 31;
+pub const SCHEMA_VERSION: i64 = 32;
 
 pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS settings (
@@ -113,6 +113,35 @@ async fn apply_step<D: Db>(
     probe: &(dyn Fn(&str) -> bool + Send + Sync),
 ) -> Result<(), StorageError> {
     match step {
+        32 => {
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS push_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                endpoint TEXT NOT NULL UNIQUE, subscription TEXT NOT NULL,
+                created_at INTEGER NOT NULL)",
+                &[],
+            )
+            .await?;
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS push_notifications (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                event_key TEXT NOT NULL, created_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, session_id, event_key))",
+                &[],
+            )
+            .await?;
+            db.execute("CREATE TABLE IF NOT EXISTS push_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subscription_id INTEGER NOT NULL REFERENCES push_subscriptions(id) ON DELETE CASCADE,
+                session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                payload TEXT NOT NULL, event TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+                lease_until INTEGER NOT NULL DEFAULT 0)", &[]).await?;
+            db.execute("CREATE INDEX IF NOT EXISTS idx_push_due ON push_deliveries(next_attempt, lease_until)", &[]).await?;
+            Ok(())
+        }
         1 => {
             for stmt in MIGRATIONS {
                 db.execute(stmt, &[]).await?;

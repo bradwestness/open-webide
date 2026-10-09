@@ -198,6 +198,12 @@ pub trait RunPersistence: Send + Sync {
     ) -> impl Future<Output = Result<(), String>> + Send {
         std::future::ready(Err("Child task persistence unavailable".into()))
     }
+    fn notify(
+        &self,
+        _event: &openwebide_core::push::RunNotification,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        async { Ok(()) }
+    }
     fn prepare_permission(&self, _id: &str) {}
     fn finish(&self) -> impl Future<Output = ()> + Send {
         async {}
@@ -237,6 +243,12 @@ impl<P: RunPersistence> RunRecorder<P> {
             let terminal = recorded.events.pop();
             recorded.events.append(&mut timing_events);
             recorded.events.extend(terminal);
+        }
+        for event in &recorded.events {
+            if let Some(notification) = openwebide_core::push::RunNotification::from_event(event) {
+                // Notifications are optional side effects; delivery failures never replace a run outcome.
+                let _ = self.persistence.notify(&notification).await;
+            }
         }
         recorded
     }

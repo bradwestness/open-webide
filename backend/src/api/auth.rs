@@ -115,10 +115,11 @@ pub(crate) async fn logout(req: Request, state: &AppState) -> Result<JsonResp, A
     if !crate::auth::csrf_header_ok(req.headers()) {
         return Err(ApiError::unauthorized("not signed in"));
     }
-    if let Ok(user) = crate::auth::authenticate(state, req.headers()).await
-        && let Err(error) = state.store.bump_token_epoch(user.id).await
-    {
-        eprintln!("logout user {}: bump_token_epoch: {error}", user.id);
+    if let Ok(user) = crate::auth::authenticate(state, req.headers()).await {
+        if let Err(error) = state.store.bump_token_epoch(user.id).await {
+            eprintln!("logout user {}: bump_token_epoch: {error}", user.id);
+        }
+        state.store.remove_user_push_subscriptions(user.id).await?;
     }
     let is_https = crate::auth::is_https(req.headers());
     let cookie = crate::auth::clear_cookie(is_https);

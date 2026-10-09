@@ -13,6 +13,15 @@ use serde_json::{Value, json};
 use crate::runs::http_client::ReqwestHttpClient;
 
 pub trait RunBackend: Send + Sync {
+    fn notify(
+        &self,
+        _user: i64,
+        _session: i64,
+        _event: &openwebide_core::push::RunNotification,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        async { Ok(()) }
+    }
+
     fn get_todo_plan(
         &self,
         _user: i64,
@@ -173,6 +182,24 @@ impl BackendClient {
         Self { url, secret, http }
     }
 
+    pub async fn dispatch_push(&self) -> Result<(), String> {
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("{}/push/dispatch", self.url.trim_end_matches('/')))
+            .header("authorization", format!("Bearer {}", self.secret))
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from_static(b"{}")))
+            .map_err(|_| "Invalid dispatcher request")?;
+        let response = self
+            .http
+            .send(request)
+            .await
+            .map_err(|_| "Push dispatcher unavailable")?;
+        if !response.status().is_success() {
+            return Err(format!("Push dispatcher returned {}", response.status()));
+        }
+        Ok(())
+    }
     pub async fn model_runtime(
         &self,
         user_id: i64,
@@ -228,6 +255,23 @@ pub fn encode_query(s: &str) -> String {
 }
 
 impl RunBackend for BackendClient {
+    async fn notify(
+        &self,
+        user: i64,
+        session: i64,
+        event: &openwebide_core::push::RunNotification,
+    ) -> Result<(), String> {
+        let _: Value = self
+            .call(
+                user,
+                "POST",
+                &format!("/sessions/{session}/notifications"),
+                serde_json::to_value(event).map_err(|error| error.to_string())?,
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn get_todo_plan(
         &self,
         user: i64,

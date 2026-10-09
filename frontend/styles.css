@@ -3315,6 +3315,7 @@ button.browser-item {
 .about-modal .about-body { padding: 0; overflow: hidden; flex: 1; }
 .about-modal .about-content { padding: var(--space-6); min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; }
 .about-modal .about-overview { display: flex; align-items: safe center; justify-content: safe center; text-align: center; }
+.logo-mark.about-logo { width: 64px; height: 64px; margin-bottom: var(--space-3); }
 .about-overview .about-build div { display: block; margin-bottom: var(--space-3); }
 .about-modal .modal-header, .about-modal .modal-footer { flex-shrink: 0; }
 

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Show the app logo and a website link in About; open openwebide.com in a new browser tab.
+
 - Install source-owned native input windows before initial layout for eligible
   unwrapped files with large first rows. Keep complete source dimensions behind
   measured paint, preserve saved scroll during preparation, and restore complete

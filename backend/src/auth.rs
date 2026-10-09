@@ -348,3 +348,17 @@ mod tests {
         );
     }
 }
+
+/// Internal delivery dispatcher: authenticates the service without assuming a user identity.
+pub async fn require_bridge_service(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let secret = crate::bridge::bridge_secret(&state.store).await?;
+    let token = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    if !matches!((token, secret.as_deref()), (Some(token), Some(secret)) if constant_time_eq(token.as_bytes(), secret.as_bytes()))
+    {
+        return Err(ApiError::unauthorized("invalid bridge secret"));
+    }
+    Ok(())
+}

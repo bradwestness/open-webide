@@ -535,6 +535,7 @@ pub(crate) async fn send_session_message(
         } else {
             let mut stream = message_stream(
                 store,
+                user_id,
                 session_id,
                 user_message,
                 provider.chat_stream(&request),

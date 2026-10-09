@@ -215,6 +215,13 @@ pub(crate) struct SessionPersistence {
     pub(crate) anchor: i64,
 }
 impl openwebide_agent::session::RunPersistence for SessionPersistence {
+    async fn notify(&self, event: &openwebide_core::push::RunNotification) -> Result<(), String> {
+        self.store
+            .queue_run_notification(self.user, self.session, event, crate::state::now())
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     async fn task(
         &self,
         anchor: i64,

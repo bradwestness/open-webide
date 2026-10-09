@@ -85,8 +85,8 @@ fn AppMenuItems(
     let projects = expect_context::<ProjectsState>();
     view! {
         <div class="app-menu-items">
-            <button type="button" role=(!drawer).then_some("menuitem") class="ui-dropdown-item recent-item" on:click=move |_| { on_close.run(()); on_open_local.run(()); }><super::ui::Icon name=super::ui::IconName::Folder /><span>"Open local folder"</span></button>
-            <button type="button" role=(!drawer).then_some("menuitem") class="ui-dropdown-item recent-item" on:click=move |_| { on_close.run(()); on_open_remote.run(()); }><super::ui::Icon name=super::ui::IconName::Folder /><span>"Open remote folder"</span></button>
+            <button type="button" role=(!drawer).then_some("menuitem") class="ui-dropdown-item recent-item" on:click=move |_| { on_close.run(()); on_open_local.run(()); }><super::ui::Icon name=super::ui::IconName::Folder /><span>"Open local project"</span></button>
+            <button type="button" role=(!drawer).then_some("menuitem") class="ui-dropdown-item recent-item" on:click=move |_| { on_close.run(()); on_open_remote.run(()); }><super::ui::Icon name=super::ui::IconName::Folder /><span>"Open remote project"</span></button>
             <h3 class="app-menu-heading">"Open projects"</h3>
             <For each=move || projects.open_tabs() key=|project| project.id children=move |project| {
                 let id=project.id;
