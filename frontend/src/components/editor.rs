@@ -1481,6 +1481,7 @@ fn HighlightOverlay(
                 return;
             }
             let geometry_paint = paint.clone();
+            let progress_paint = paint.clone();
             let result = super::editor_rows::measure_batches(
                 actions,
                 input,
@@ -1490,7 +1491,12 @@ fn HighlightOverlay(
                     batch_key.try_get_value().as_ref().and_then(Option::as_ref) == Some(&key)
                         && actions.row_preparation_current(ticket)
                 },
-                move |completed| actions.report_row_preparation(ticket, completed),
+                move |completed, prefix| {
+                    if let Some(prefix) = prefix {
+                        actions.retain_measured_prefix(ticket, &progress_paint, prefix);
+                    }
+                    actions.report_row_preparation(ticket, completed);
+                },
                 move |row, geometry| {
                     if actions.row_preparation_current(ticket) && !fragment_cache.is_disposed() {
                         fragment_cache.update_value(|cache| {
@@ -1567,7 +1573,15 @@ fn HighlightOverlay(
             .collect::<Vec<_>>()
     });
     let geometry_pending = Memo::new(move |_| {
-        !fragment_windows.with(Vec::is_empty) && actions.row_geometry_is_pending()
+        !fragment_windows.with(Vec::is_empty)
+            && actions.row_geometry_is_pending()
+            && actions.measured_prefix().is_none()
+    });
+    let partial_geometry = Memo::new(move |_| {
+        actions.measured_rows().is_none()
+            && actions.measured_prefix().is_some_and(|prefix| {
+                prefix.paint.word_wrap || !prefix.paint.projection.has_uniform_rows()
+            })
     });
     let rendered = RwSignal::new(String::new());
     let rendered_scope = RwSignal::new(0_u64);
@@ -1699,7 +1713,7 @@ fn HighlightOverlay(
         rendered.set(html);
         presented_scope.set_value(presentation_scope.get_untracked());
         presentation.set(!viewport.get_untracked().rows.is_empty());
-        ready.set(!viewport.get_untracked().rows.is_empty());
+        ready.set(!viewport.get_untracked().rows.is_empty() && !partial_geometry.get_untracked());
         let published_generation = generation.get_value();
         // Re-align after the highlighted HTML reaches the DOM.
         leptos::leptos_dom::helpers::queue_microtask(move || {
@@ -1905,7 +1919,7 @@ fn HighlightOverlay(
         }
     });
 
-    view! { <div class="editor-highlight" node_ref=node_ref><div class="editor-highlight-content" data-editor-scope=move || rendered_scope.get().to_string() data-viewport-top=move || viewport.get().top.to_string() data-document-height=move || viewport.get().height.to_string() data-textarea-start=move || textarea_start.get().to_string() style=move || viewport.with(|view| if view.height > 0.0 { format!("padding-top:{}px;min-height:max(100%, {}px)", 12.0 + view.top, 24.0 + view.height) } else { String::new() }) inner_html=move || rendered.get() /></div>
+    view! { <div class="editor-highlight" node_ref=node_ref><div class="editor-highlight-content" data-editor-scope=move || rendered_scope.get().to_string() data-viewport-top=move || viewport.get().top.to_string() data-document-height=move || (!partial_geometry.get()).then(|| viewport.get().height.to_string()) data-textarea-start=move || textarea_start.get().to_string() style=move || viewport.with(|view| if view.height > 0.0 { format!("padding-top:{}px;min-height:max(100%, {}px)", 12.0 + view.top, 24.0 + view.height) } else { String::new() }) inner_html=move || rendered.get() /></div>
 
     }
 }
@@ -2474,6 +2488,21 @@ pub fn Editor(
                     input.as_ref().map_or(390.0, |input| {
                         f64::from(crate::viewport::editor_scroll(input).client_height())
                     }),
+                    12.0,
+                );
+            }
+            // Only origin paint is useful before complete source extents exist.
+            // Retain restored scroll requests until the complete table can place them.
+            if editor_actions.scroll().top == 0.0
+                && editor_actions.scroll().left == 0.0
+                && let Some(prefix) = editor_actions.measured_prefix()
+                && let Some(input) = ta.get()
+                && super::editor_rows::metrics_identity(&input).as_ref()
+                    == Some(&prefix.paint.metrics)
+            {
+                return prefix.rows.window(
+                    0.0,
+                    f64::from(crate::viewport::editor_scroll(&input).client_height()),
                     12.0,
                 );
             }

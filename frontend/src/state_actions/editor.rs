@@ -367,9 +367,11 @@ impl EditorActions {
             crate::state::workspace::EditorRowPreparation {
                 ticket,
                 revision,
+                syntax_revision: self.workspace.editor_preparation_revision.get_untracked(),
                 completed: 0,
                 total,
                 paint: None,
+                prefix: None,
             },
         ));
         Some(ticket)

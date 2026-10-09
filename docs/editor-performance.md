@@ -3387,3 +3387,48 @@ composition commit and bidirectional composition cancel after measurement failur
 plus stale account/file rejection. Strict optimized WASM component-test Clippy,
 formatting and whitespace checks pass. These are regression timings, not controlled
 production latency measurements or physical input-method verification.
+
+## Bounded native startup for wrapped and nonuniform rows
+
+The shared editor input facade admits bounded desktop surrounding text before
+wrapped or nonuniform layout completes. The shared core measurement plan exposes
+at most 128 exactly measured origin rows, stopping at the first missing height or
+width. The DOM adapter publishes that prefix once it covers the viewport (or the
+batch/document ends); the shared facade validates the preparation ticket, source,
+syntax revision, account, project, read, font, layout and whitespace preference.
+
+Early origin paint does not publish complete document dimensions or pointer-ready
+geometry. Restored distant scroll waits for the complete table. Wrapped fragment
+paint can use already measured row geometry, while complete measurements and
+native context completion retain the existing publication gate. Failure restores
+complete native input; active composition keeps its installed mapping until
+commit/cancel. Touch still uses complete native input.
+
+Regression coverage audits all textarea assignments for a 1,048,567-byte styled
+wrapped source in both workspace modes, with a 12-KiB source-byte bound and exact
+complete-renderer geometry. This test uses the real Rust syntax service through
+controlled test transport; it does not establish production worker latency. The
+cold-origin test requires visible measured paint before complete geometry, rejects
+partial document extents and verifies a source edit cancels the old ticket. The
+ownership matrix adds wrapped composition commit/cancel and lone-carriage-return
+rows; preparation provenance also rejects syntax and whitespace changes.
+
+The complete source-paint oracle normalizes lone carriage returns as line breaks,
+matching native input and the existing projection contract. Short nonuniform rows
+compare width against the larger of complete paint and the scroll viewport; a
+nonoverflowing file cannot have a scroll width narrower than its viewport. Height
+still uses an independent complete native control. Tolerances and admission limits
+are unchanged.
+
+No new controlled production latency or memory improvement is claimed by this
+checkpoint. The near-limit responsiveness/PSS, unsupported shaping and physical
+Chrome/Edge PWA input and touch checks remain on the roadmap.
+
+Verification: 573 parser-enabled core tests and 430 minimal core tests pass,
+alongside strict native core all-target and optimized WASM component-test Clippy.
+Twelve optimized Chrome contracts pass in both modes, covering the near-limit
+styled startup audit, restored unwrapped geometry, preparation provenance,
+cold origin/edit cancellation, failure/composition ownership, wrapped styled
+geometry and chunk cancellation, fragment scroll/Find, native pointer/edit
+mapping, wrapped row windows, repeated-row sharing and localized row reuse.
+Formatting and whitespace checks pass. Exact-head CI is checked separately.

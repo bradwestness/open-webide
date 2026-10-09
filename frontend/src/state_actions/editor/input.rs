@@ -71,15 +71,7 @@ impl EditorNativeContext {
 }
 
 impl EditorActions {
-    fn initial_native_layout_eligible(self, projection: &FoldProjection) -> bool {
-        // Native surrounding text needs exact source coordinates, not sliced paint.
-        // Uniform unwrapped row boxes prove vertical extent independently of tabs
-        // and bidirectional shaping. Horizontal geometry remains explicitly pending
-        // until the normal complete-layout or bounded-probe policy finishes.
-        !self.preferences().word_wrap && projection.has_uniform_rows()
-    }
-
-    /// Install source-owned surrounding text before initial unwrapped layout.
+    /// Install source-owned surrounding text before initial layout.
     /// Geometry remains explicitly pending; this does not publish source extents.
     pub fn begin_initial_native_context(self) -> bool {
         if self.is_composing() || self.bound_native_context().is_some() || self.limit().is_some() {
@@ -88,9 +80,7 @@ impl EditorActions {
         let Some(mut context) = self.native_context() else {
             return false;
         };
-        if !context.projection.is_windowed()
-            || !self.initial_native_layout_eligible(&context.original)
-        {
+        if !context.projection.is_windowed() {
             return false;
         }
         context.geometry_pending = true;
@@ -334,7 +324,6 @@ impl EditorActions {
                             && previous.key == key
                             && previous.read == self.workspace.editor_read_revision.get_untracked()
                             && previous.account == self.account_generation()
-                            && self.initial_native_layout_eligible(&original)
                     })
                 });
                 let geometry_failed = geometry_pending

@@ -516,11 +516,14 @@ impl EditorActions {
             return None;
         }
         let projection = self.projection()?;
-        let measured = self.measured_rows()?;
-        let top = measured.rows.top(row)?;
+        let rows = self
+            .measured_rows()
+            .map(|measured| measured.rows)
+            .or_else(|| self.measured_prefix().map(|prefix| prefix.rows))?;
+        let top = rows.top(row)?;
         openwebide_core::editor::wrapped_paint_window(
             projection.lines().get(row)?.source.len(),
-            measured.rows.top(row + 1)? - top,
+            rows.top(row + 1)? - top,
             line_height,
             scroll - top,
             viewport_height,
@@ -632,6 +635,77 @@ impl EditorActions {
                 true
             })
             .unwrap_or(false)
+    }
+
+    pub fn retain_measured_prefix(
+        self,
+        ticket: u64,
+        paint: &EditorRowPaint,
+        rows: openwebide_core::editor::MeasuredRows,
+    ) -> bool {
+        if !self.row_preparation_current(ticket)
+            || !self.row_paint_current(paint)
+            || paint.whitespace != self.preferences().show_whitespace
+            || self
+                .projection()
+                .is_none_or(|projection| !paint.projection.shares_text_version(&projection))
+            || rows.is_empty()
+            || rows.len() > openwebide_core::editor::MAX_MEASURE_ROWS
+            || rows.len() > paint.projection.lines().len()
+        {
+            return false;
+        }
+        self.workspace
+            .editor_row_preparation
+            .try_update(|preparation| {
+                let Some(preparation) = preparation.as_mut() else {
+                    return false;
+                };
+                if preparation.syntax_revision
+                    != self.workspace.editor_preparation_revision.get_untracked()
+                {
+                    return false;
+                }
+                if preparation.paint.as_ref().is_none_or(|original| {
+                    !same_paint_scope(original, paint)
+                        || !original.projection.shares_text_version(&paint.projection)
+                }) {
+                    return false;
+                }
+                preparation.prefix = Some(rows);
+                true
+            })
+            .unwrap_or(false)
+    }
+
+    /// Early paint can use completed origin rows without exposing partial extents.
+    pub fn measured_prefix(self) -> Option<crate::state::workspace::EditorRowCache> {
+        self.workspace.content.track();
+        let projection = self.projection()?;
+        self.view_revision();
+        self.layout_epoch();
+        self.font_epoch();
+        let preferences = self.preferences();
+        let syntax_revision = self.workspace.editor_preparation_revision.get();
+        if let Some(auth) = self.auth {
+            auth.generation.track();
+        }
+        self.workspace.editor_row_preparation.with(|preparation| {
+            let preparation = preparation.as_ref()?;
+            let paint = preparation.paint.as_ref()?;
+            if preparation.syntax_revision != syntax_revision
+                || !paint.projection.shares_text_version(&projection)
+                || paint.whitespace != preferences.show_whitespace
+                || !self.row_preparation_current(preparation.ticket)
+                || !self.row_paint_current(paint)
+            {
+                return None;
+            }
+            Some(crate::state::workspace::EditorRowCache {
+                paint: paint.clone(),
+                rows: preparation.prefix.clone()?,
+            })
+        })
     }
 
     /// Retain completed or in-flight source/account-owned measurements only when

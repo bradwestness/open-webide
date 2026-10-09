@@ -193,9 +193,12 @@ pub struct EditorRowCache {
 pub struct EditorRowPreparation {
     pub ticket: u64,
     pub revision: u64,
+    pub syntax_revision: u64,
     pub completed: usize,
     pub total: usize,
     pub paint: Option<EditorRowPaint>,
+    /// Exact completed origin rows for early paint, not complete source extents.
+    pub prefix: Option<openwebide_core::editor::MeasuredRows>,
 }
 
 /// Scroll position for a document's edit view; caret and selection live in Document.

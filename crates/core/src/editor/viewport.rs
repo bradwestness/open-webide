@@ -337,6 +337,25 @@ impl RowMeasurementPlan {
     pub fn completed(&self) -> usize {
         self.completed
     }
+    /// Completed origin rows for early paint, never a complete document extent.
+    /// Inspect and copy at most one measurement batch, including reused rows;
+    /// stop at the first missing height or width rather than bridge an unknown gap.
+    pub fn measured_prefix(&self) -> Option<MeasuredRows> {
+        let pairs = self
+            .heights
+            .iter()
+            .zip(&self.widths)
+            .take(MAX_MEASURE_ROWS)
+            .map_while(|(height, width)| height.zip(*width))
+            .collect::<Vec<_>>();
+        if pairs.is_empty() {
+            return None;
+        }
+        MeasuredRows::layout(
+            pairs.iter().map(|pair| pair.0),
+            pairs.iter().map(|pair| pair.1),
+        )
+    }
     pub fn pending_batch(&mut self, lengths: &[usize]) -> Option<Range<usize>> {
         if lengths.len() != self.heights.len() {
             return None;
@@ -579,6 +598,49 @@ impl EditorViewport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn measured_prefix_is_bounded_exact_and_never_bridges_unknown_rows() {
+        let total = 3 * MAX_MEASURE_ROWS;
+        let heights = (0..total)
+            .map(|row| 13.25 + (row % 7) as f64)
+            .collect::<Vec<_>>();
+        let widths = (0..total).map(|row| 100.0 + row as f64).collect::<Vec<_>>();
+        let complete = MeasuredRows::layout(heights.clone(), widths.clone()).unwrap();
+        let keys = (0..total).collect::<Vec<_>>();
+        let mut changed = keys.clone();
+        changed[2] = total + 1;
+        let plan = RowMeasurementPlan::reuse_layout(&keys, &changed, &complete).unwrap();
+        let prefix = plan.measured_prefix().unwrap();
+        assert_eq!(prefix.len(), 2);
+        assert_eq!(
+            prefix.height().to_bits(),
+            complete.top(2).unwrap().to_bits()
+        );
+        assert!(plan.finish().is_none());
+
+        let mut plan = RowMeasurementPlan::new(total).unwrap();
+        assert!(plan.measured_prefix().is_none());
+        let range = plan.pending_batch(&vec![1; total]).unwrap();
+        assert!(plan.record_layout(range.clone(), &heights[range.clone()], &widths[range]));
+        let prefix = plan.measured_prefix().unwrap();
+        assert_eq!(prefix.len(), MAX_MEASURE_ROWS);
+        for row in 0..MAX_MEASURE_ROWS {
+            assert_eq!(
+                prefix.top(row).unwrap().to_bits(),
+                complete.top(row).unwrap().to_bits()
+            );
+            assert_eq!(prefix.row_width(row), complete.row_width(row));
+        }
+        while let Some(range) = plan.pending_batch(&vec![1; total]) {
+            assert!(plan.record_layout(range.clone(), &heights[range.clone()], &widths[range]));
+            assert_eq!(plan.measured_prefix().unwrap(), prefix);
+        }
+        assert_eq!(plan.finish().unwrap(), complete);
+        let mut heights_only = RowMeasurementPlan::new(1).unwrap();
+        assert!(heights_only.record(0..1, &[20.0]));
+        assert!(heights_only.measured_prefix().is_none());
+    }
+
     #[test]
     fn uniform_height_matches_complete_rows_and_rejects_invalid_dimensions() {
         use super::{DocumentExtent, MeasuredRows};

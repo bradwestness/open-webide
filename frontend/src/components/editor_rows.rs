@@ -500,7 +500,7 @@ pub(super) async fn measure_batches(
     scope: crate::state::workspace::EditorRowPaint,
     mut plan: openwebide_core::editor::RowMeasurementPlan,
     current: impl Fn() -> bool,
-    progress: impl Fn(usize),
+    progress: impl Fn(usize, Option<MeasuredRows>),
     geometry: impl Fn(usize, openwebide_core::editor::MeasuredRowGeometry),
     render: impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
 ) -> Result<Option<MeasuredRows>, ()> {
@@ -562,7 +562,20 @@ pub(super) async fn measure_batches(
         .iter()
         .map(|line| line.source.len())
         .collect::<Vec<_>>();
-    progress(plan.completed());
+    let mut prefix_published = false;
+    let mut report = |plan: &openwebide_core::editor::RowMeasurementPlan| {
+        let prefix = (!prefix_published)
+            .then(|| plan.measured_prefix())
+            .flatten()
+            .filter(|rows| {
+                rows.height() >= f64::from(crate::viewport::editor_scroll(&input).client_height())
+                    || rows.len() == openwebide_core::editor::MAX_MEASURE_ROWS
+                    || plan.completed() == projection.lines().len()
+            });
+        prefix_published |= prefix.is_some();
+        progress(plan.completed(), prefix);
+    };
+    report(&plan);
     let timing = ProbeTiming::installed();
     let mut batches = 0_usize;
     while let Some(range) = plan.pending_batch(&lengths) {
@@ -611,7 +624,7 @@ pub(super) async fn measure_batches(
                     return Err(());
                 }
                 geometry(start, measured);
-                progress(plan.completed());
+                report(&plan);
                 paint.set_inner_html("");
                 continue;
             }
@@ -704,7 +717,7 @@ pub(super) async fn measure_batches(
         if !plan.record_layout(range, &batch, &widths) {
             return Err(());
         }
-        progress(plan.completed());
+        report(&plan);
         // Release the previous batch before allowing another input/render task.
         paint.set_inner_html("");
         batches += 1;

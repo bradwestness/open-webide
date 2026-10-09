@@ -9,6 +9,12 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Start wrapped and nonuniform editor files with bounded native input in both
+  workspace modes. Paint exactly measured origin rows while complete layout
+  prepares, keep partial geometry out of document extents, and preserve source,
+  selection, composition and stale-result ownership. Touch input and unsupported
+  layout still retain their complete-native or complete-layout fallback.
+
 - Start uniform unwrapped files with bounded native input even when long rows
   contain tabs or bidirectional text. Preserve source selection and pending scroll
   ownership while exact layout prepares; restore complete native input on a current
@@ -18,7 +24,7 @@ for what's still ahead.
   retained text runs and validating exact overlap glyphs before publishing complete
   geometry in both workspace modes. Cancel stale chunks without publishing partial
   tables; retain complete layout for unsupported seams and bidirectional text.
-  Initial native input shaping and full responsiveness remain in progress.
+  Unsupported layout and full responsiveness remain in progress.
 
 - Yield between bounded batches of exact cold-row glyph measurements, including
   wrapped and tabbed source. Discard incomplete geometry after source, account,

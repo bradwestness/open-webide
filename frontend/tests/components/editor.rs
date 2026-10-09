@@ -11749,27 +11749,31 @@ async fn cold_wrapped_preparation_keeps_input_visible_and_rejects_superseded_bat
             .editor_row_preparation
             .get_untracked()
             .unwrap();
-        assert_eq!(
+        wait_until("exact prepared origin is painted", || {
             mounted
                 .root
-                .query_selector_all(".editor-source-line")
+                .query_selector(".editor-code.highlight-ready .editor-source-line[data-line='1']")
                 .unwrap()
-                .length(),
-            0
-        );
+                .is_some()
+        })
+        .await;
+        assert!(actions.measured_rows().is_none());
+        assert!(actions.native_geometry_pending());
         assert!(
-            !mounted
-                .element(".editor-code")
-                .class_list()
-                .contains("highlight-ready")
+            mounted
+                .element(".editor-highlight-content")
+                .get_attribute("data-document-height")
+                .is_none(),
+            "the completed prefix cannot publish complete document extents"
         );
         let textarea: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
-        assert_eq!(textarea.value(), source);
+        assert!(textarea.value().len() <= 12 * 1024);
+        assert_editor_native_source(&textarea, mounted.state.workspace, &source);
         assert_ne!(
             web_sys::window()
                 .unwrap()
-                .get_computed_style(&textarea)
+                .get_computed_style(&mounted.element(".editor-highlight"))
                 .unwrap()
                 .unwrap()
                 .get_property_value("color")
@@ -11777,7 +11781,7 @@ async fn cold_wrapped_preparation_keeps_input_visible_and_rejects_superseded_bat
             "rgba(0, 0, 0, 0)"
         );
         let changed = format!("z{source}");
-        input(&mounted, &changed);
+        input(&mounted, &format!("z{}", textarea.value()));
         assert_eq!(actions.source(), changed);
         assert!(mounted.state.workspace.dirty.get_untracked());
         assert!(!actions.row_preparation_current(previous.ticket));
@@ -12761,9 +12765,11 @@ async fn unwrapped_startup_uses_bounded_initial_input_in_both_modes() {
     let unit = "文😀 words ";
     for (mode, case) in [WorkspaceMode::Local, WorkspaceMode::Remote]
         .into_iter()
-        .flat_map(|mode| (0..6).map(move |case| (mode, case)))
+        .flat_map(|mode| (0..7).map(move |case| (mode, case)))
     {
-        let source = if case == 4 {
+        let source = if case == 6 {
+            "row\rwords\t文😀 ".repeat(6000)
+        } else if case == 4 {
             format!("header\r\n{}\r\ntail", "word\t文😀 ".repeat(6000))
         } else if case == 5 {
             format!("header\r\n{}\r\ntail", "אב words 文😀 ".repeat(6000))
@@ -12882,7 +12888,7 @@ async fn unwrapped_startup_uses_bounded_initial_input_in_both_modes() {
             // Unsupported long-row paint still uses complete layout; its exact
             // extents must not be inferred from the bounded native value.
             let full = fullNativeDimensions(&input, &source);
-            let paint_width = fullSourcePaintWidth(&input, &source);
+            let paint_width = fullSourcePaintWidth(&input, &source).max(scroll.client_width());
             assert!(
                 (scroll.scroll_width() - paint_width).abs() <= 2,
                 "{mode:?} long-row case {case}: source width {}, complete paint width {}",
@@ -12913,7 +12919,7 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
     use openwebide_frontend::state_actions::editor::EditorActions;
     use std::{cell::Cell, rc::Rc, sync::Arc};
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
-        for case in 0..16 {
+        for case in 0..19 {
             let source = match case {
                 1 | 10 => "short\n".to_string() + &"a".repeat(70_000),
                 2 | 8 | 14 => "a\t".repeat(35_000),
@@ -12921,6 +12927,8 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                 11 => "short 文😀\r\n".repeat(4000),
                 12 => "short\t文😀e\u{301} words\n".repeat(4000),
                 13 => "short\n".to_owned() + &"אב".repeat(35_000),
+                16 => "row\rwords\t文😀 ".repeat(6000),
+                17 | 18 => "word 文😀 ".repeat(6000),
                 _ => "a".repeat(70_000),
             };
             let slot = Rc::new(Cell::new(None::<EditorActions>));
@@ -12937,7 +12945,7 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                 state
                     .settings
                     .editor_preferences
-                    .update(|preferences| preferences.word_wrap = case == 4);
+                    .update(|preferences| preferences.word_wrap = matches!(case, 4 | 17 | 18));
                 captured.set(Some(EditorActions::new(state.workspace)));
                 view! { <div/> }
             });
@@ -12945,21 +12953,17 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
             let selected = Selection::caret(if case == 10 { 35_006 } else { 0 });
             actions.prepare_edit(selected).unwrap();
             actions.record_scroll(1, "startup.txt", 120.0, 450.0);
-            if case == 4 {
-                assert!(
-                    !actions.begin_initial_native_context(),
-                    "unsupported cold layout: {mode:?}, {case}"
-                );
-                assert!(actions.bound_native_context().is_none());
-                continue;
-            }
             assert!(actions.begin_initial_native_context());
             assert!(actions.native_geometry_pending());
             let rows = actions.projection().unwrap().lines().len();
-            assert_eq!(
-                actions.initial_native_height(19.5, 24.0).unwrap().to_bits(),
-                (f64::from(u32::try_from(rows).unwrap()) * 19.5 + 24.0).to_bits()
-            );
+            if matches!(case, 4 | 16..=18) {
+                assert!(actions.initial_native_height(19.5, 24.0).is_none());
+            } else {
+                assert_eq!(
+                    actions.initial_native_height(19.5, 24.0).unwrap().to_bits(),
+                    (f64::from(u32::try_from(rows).unwrap()) * 19.5 + 24.0).to_bits()
+                );
+            }
             assert!(actions.initial_native_height(f64::NAN, 24.0).is_none());
             assert!(actions.initial_native_height(19.5, -1.0).is_none());
             actions.record_scroll(1, "startup.txt", 0.0, 0.0);
@@ -13041,11 +13045,11 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                 actions.prepare_edit(Selection::caret(0)).unwrap();
                 assert!(actions.begin_initial_native_context());
             }
-            if (8..=9).contains(&case) {
+            if matches!(case, 8 | 9 | 17 | 18) {
                 actions.begin_composition();
             }
             let message = actions.finish_row_preparation(ticket, paint, Err(()));
-            if (8..=9).contains(&case) {
+            if matches!(case, 8 | 9 | 17 | 18) {
                 assert!(message.is_some());
                 assert!(actions.native_geometry_pending());
                 let value = "日😀".to_string() + context.projection().textarea_text();
@@ -13059,7 +13063,7 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                     .unwrap();
                 assert!(actions.native_geometry_pending());
                 assert!(actions.bound_native_context().is_some());
-                if case == 8 {
+                if matches!(case, 8 | 17) {
                     actions.end_composition().unwrap();
                     assert_eq!(
                         mounted.state.workspace.content.get_untracked(),
@@ -13073,13 +13077,13 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                 assert!(actions.bound_native_context().is_none());
                 continue;
             }
-            if matches!(case, 0..=3 | 10..=13) {
+            if matches!(case, 0..=4 | 10..=13 | 16) {
                 assert!(message.is_some());
                 assert!(!actions.native_geometry_pending());
                 assert!(actions.bound_native_context().is_none());
                 assert_eq!(
                     actions.input_projection().unwrap().textarea_text(),
-                    source.replace("\r\n", "\n"),
+                    source.replace("\r\n", "\n").replace('\r', "\n"),
                 );
                 assert_eq!(actions.scroll().top.to_bits(), 120.0_f64.to_bits());
                 assert_eq!(actions.scroll().left.to_bits(), 450.0_f64.to_bits());
@@ -13105,7 +13109,7 @@ fn in_flight_font_metrics_require_current_preparation_ownership_in_both_modes() 
     use openwebide_frontend::state_actions::editor::EditorActions;
     use std::{cell::Cell, rc::Rc, sync::Arc};
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
-        for change in 0..10 {
+        for change in 0..12 {
             let slot = Rc::new(Cell::new(None::<EditorActions>));
             let captured = slot.clone();
             let mounted = mount_test(move |state| {
@@ -13144,6 +13148,11 @@ fn in_flight_font_metrics_require_current_preparation_ownership_in_both_modes() 
             assert!(!actions.retain_row_preparation(ticket.wrapping_add(1), &paint));
             assert!(actions.retain_row_preparation(ticket, &paint));
             assert!(actions.retain_row_preparation(ticket, &paint));
+            let prefix =
+                openwebide_core::editor::MeasuredRows::layout([19.5, 19.5], [40.0, 0.0]).unwrap();
+            assert!(actions.retain_measured_prefix(ticket, &paint, prefix.clone()));
+            assert!(actions.measured_prefix().is_some());
+            assert!(actions.measured_rows().is_none());
             let mut replacement = paint.clone();
             replacement.metrics = "different environment on the same ticket".into();
             assert!(!actions.retain_row_preparation(ticket, &replacement));
@@ -13171,7 +13180,10 @@ fn in_flight_font_metrics_require_current_preparation_ownership_in_both_modes() 
                     assert!(actions.font_measurements_changed(Some(metrics)));
                     assert!(!actions.retain_row_preparation(ticket, &paint));
                     assert!(actions.retain_row_preparation(next, &paint));
+                    assert!(actions.measured_prefix().is_none());
+                    assert!(actions.retain_measured_prefix(next, &paint, prefix.clone()));
                     actions.end_row_preparation(ticket);
+                    assert!(actions.measured_prefix().is_some());
                     assert!(
                         !actions.font_measurements_changed(Some(metrics)),
                         "old completion retains the replacement's provenance"
@@ -13194,9 +13206,25 @@ fn in_flight_font_metrics_require_current_preparation_ownership_in_both_modes() 
                 6 => workspace.active_project.set(Some(2)),
                 7 => workspace.open_file.set(Some("other.txt".into())),
                 8 => workspace.content.set("changed source\n".into()),
-                _ => workspace
+                9 => workspace
                     .editor_fold_revision
                     .update(|revision| *revision += 1),
+                10 => workspace
+                    .editor_preparation_revision
+                    .update(|revision| *revision += 1),
+                _ => mounted
+                    .state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.show_whitespace = true),
+            }
+            assert!(
+                actions.measured_prefix().is_none(),
+                "stale measured prefix: {mode:?}, {change}"
+            );
+            assert!(!actions.retain_measured_prefix(ticket, &paint, prefix));
+            if change >= 10 {
+                continue;
             }
             assert!(
                 actions.font_measurements_changed(Some(metrics)),
@@ -15916,7 +15944,7 @@ export function fullSourcePaintWidth(input, source) {
     content.className = 'editor-highlight-content';
     content.style.transform = 'none';
     content.style.minHeight = '0';
-    const rows = source.replace(/\r\n/g, '\n').split('\n');
+    const rows = source.replace(/\r\n?/g, '\n').split('\n');
     for (let index = 0; index < rows.length; index++) {
         const row = document.createElement('span');
         row.className = 'editor-source-line';
@@ -18311,7 +18339,7 @@ async fn bounded_wrapped_paragraphs_preserve_complete_styled_geometry_in_both_mo
 #[wasm_bindgen_test]
 async fn wrapped_chunk_cancellation_discards_old_geometry_in_both_modes() {
     #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
-    export function interruptWrappedChunk(input, value) {
+    export function interruptWrappedChunk(input, prefix) {
         const original = Range.prototype.getClientRects;
         let armed = true, fired = false, published = false;
         Range.prototype.getClientRects = function() {
@@ -18322,7 +18350,7 @@ async fn wrapped_chunk_cancellation_discards_old_geometry_in_both_modes() {
                 queueMicrotask(() => {
                     fired = true;
                     published = input.parentElement.classList.contains('highlight-ready');
-                    input.value = value;
+                    input.value = prefix + input.value;
                     input.dispatchEvent(new Event('input'));
                 });
             }
@@ -18334,7 +18362,7 @@ async fn wrapped_chunk_cancellation_discards_old_geometry_in_both_modes() {
     extern "C" {
         fn interruptWrappedChunk(
             input: &web_sys::HtmlTextAreaElement,
-            value: &str,
+            prefix: &str,
         ) -> js_sys::Array;
     }
     struct Audit(js_sys::Array);
@@ -18378,7 +18406,7 @@ async fn wrapped_chunk_cancellation_discards_old_geometry_in_both_modes() {
         let actions = EditorActions::new(mounted.state.workspace);
         let input: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
-        let audit = Audit(interruptWrappedChunk(&input, &changed));
+        let audit = Audit(interruptWrappedChunk(&input, "z"));
         let flags = audit.0.get(1).unchecked_into::<js_sys::Function>();
         wait_until("wrapped chunk interrupted", || {
             flags
@@ -18401,6 +18429,8 @@ async fn wrapped_chunk_cancellation_discards_old_geometry_in_both_modes() {
         );
         wait_until("replacement wrapped source owns paint", || {
             actions.source() == changed
+                && actions.measured_rows().is_some()
+                && !actions.native_geometry_pending()
                 && mounted
                     .root
                     .query_selector(".editor-code.highlight-ready")
@@ -18432,5 +18462,123 @@ async fn wrapped_chunk_cancellation_discards_old_geometry_in_both_modes() {
                 .is_none()
         })
         .await;
+    }
+}
+
+#[wasm_bindgen_test]
+async fn wrapped_startup_keeps_near_limit_native_input_bounded_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::MAX_EDITOR_LINE_BYTES};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let loaded = load_all_editor_fonts().await;
+    let prefix = "const VALUE: &str = \"";
+    let suffix = "\";";
+    let unit = "文😀 words ";
+    let source = format!(
+        "{prefix}{}{suffix}",
+        unit.repeat((MAX_EDITOR_LINE_BYTES - prefix.len() - suffix.len()) / unit.len())
+    );
+    assert!(source.len() > 1_000_000);
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
+        let audit = js_sys::Function::new_no_args(r"
+            const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+            const state = {bytes: 0, writes: 0};
+            Object.defineProperty(HTMLTextAreaElement.prototype, 'value', {...descriptor, set(value) {
+                if (this.closest('.editor') && this.hasAttribute('data-editor-path')) {
+                    state.bytes = Math.max(state.bytes, new TextEncoder().encode(value).length);
+                    ++state.writes;
+                }
+                descriptor.set.call(this, value);
+            }});
+            state.restore = () => Object.defineProperty(HTMLTextAreaElement.prototype, 'value', descriptor);
+            return state;
+        ").call0(&wasm_bindgen::JsValue::NULL).unwrap();
+        struct Audit(wasm_bindgen::JsValue);
+        impl Drop for Audit {
+            fn drop(&mut self) {
+                js_sys::Reflect::get(&self.0, &"restore".into())
+                    .unwrap()
+                    .unchecked_into::<js_sys::Function>()
+                    .call0(&wasm_bindgen::JsValue::NULL)
+                    .unwrap();
+            }
+        }
+        let audit = Audit(audit);
+        let mounted = mount_test({
+            let source = source.clone();
+            move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("wrapped-startup.rs".into()));
+                state.workspace.content.set(source.into());
+                EditorActions::new(state.workspace).install_syntax_transport(installed);
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = true);
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+            }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        let input: web_sys::HtmlTextAreaElement =
+            mounted.element(".editor-textarea").unchecked_into();
+        wait_until("wrapped native context precedes complete geometry", || {
+            actions.native_geometry_pending()
+                && actions.bound_native_context().is_some()
+                && actions.measured_rows().is_none()
+        })
+        .await;
+        assert_editor_native_source(&input, mounted.state.workspace, &source);
+        super::support::wait_until_with_timeout(
+            "near-limit wrapped styled readiness",
+            30_000,
+            || {
+                if !transport.pending.borrow().is_empty() {
+                    transport.respond(true);
+                }
+                actions.measured_rows().is_some()
+                    && !actions.native_geometry_pending()
+                    && mounted
+                        .root
+                        .query_selector(".editor-code.highlight-ready .tok-string")
+                        .unwrap()
+                        .is_some()
+            },
+        )
+        .await;
+        let bytes = js_sys::Reflect::get(&audit.0, &"bytes".into())
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!(
+            bytes > 0.0 && bytes <= 12.0 * 1024.0,
+            "{mode:?} installed {bytes} native bytes"
+        );
+        let scope = mounted
+            .state
+            .workspace
+            .editor_row_cache
+            .get_untracked()
+            .unwrap()
+            .paint;
+        assert!(
+            openwebide_frontend::components::bounded_wrapped_matches_complete(
+                &input, &scope, actions
+            )
+            .await,
+            "{mode:?} near-limit complete wrapped geometry"
+        );
+        assert_eq!(actions.source(), source);
+        assert_editor_native_source(&input, mounted.state.workspace, &source);
+    }
+    for font in loaded {
+        removeEditorFont(&font);
     }
 }
