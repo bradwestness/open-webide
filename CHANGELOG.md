@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Retain partial wrapped-paragraph coverage through the shared editor facade with current source, ticket, syntax, file, project, account, font and layout ownership. Reuse immutable anchors and hide coverage during composition; browser publication remains unfinished.
+
 - Add a shared Rust primitive for measured wrapped-paragraph coverage, rejecting uncovered rows and partial endpoint carets. Browser publication remains roadmap work.
 
 - Record exact changed-phase wrapped-editor proof samples in both modes; archive the diagnostic patch separately from production code and retain the outstanding responsiveness work on the roadmap.

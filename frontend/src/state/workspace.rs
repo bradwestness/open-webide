@@ -189,6 +189,14 @@ pub struct EditorRowCache {
     pub rows: openwebide_core::editor::MeasuredRows,
 }
 
+/// Measured origin coverage retains source/style provenance and remains separate
+/// from completed document extents.
+#[derive(Clone, Debug)]
+pub struct EditorParagraphCoverage {
+    pub paint: EditorRowPaint,
+    pub coverage: Arc<openwebide_core::editor::WrappedCoverage>,
+}
+
 #[derive(Clone, Debug)]
 pub struct EditorRowPreparation {
     pub ticket: u64,
@@ -199,6 +207,7 @@ pub struct EditorRowPreparation {
     pub paint: Option<EditorRowPaint>,
     /// Exact completed origin rows for early paint, not complete source extents.
     pub prefix: Option<openwebide_core::editor::MeasuredRows>,
+    pub paragraph_coverage: Option<Arc<openwebide_core::editor::WrappedCoverage>>,
 }
 
 /// Scroll position for a document's edit view; caret and selection live in Document.

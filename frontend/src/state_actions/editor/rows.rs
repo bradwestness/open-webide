@@ -658,11 +658,11 @@ impl EditorActions {
             .unwrap_or(false)
     }
 
-    pub fn retain_measured_prefix(
+    fn retain_origin_measurement(
         self,
         ticket: u64,
         paint: &EditorRowPaint,
-        rows: openwebide_core::editor::MeasuredRows,
+        retain: impl FnOnce(&mut crate::state::workspace::EditorRowPreparation),
     ) -> bool {
         if !self.row_preparation_current(ticket)
             || !self.row_paint_current(paint)
@@ -670,9 +670,6 @@ impl EditorActions {
             || self
                 .projection()
                 .is_none_or(|projection| !paint.projection.shares_text_version(&projection))
-            || rows.is_empty()
-            || rows.len() > openwebide_core::editor::MAX_MEASURE_ROWS
-            || rows.len() > paint.projection.lines().len()
         {
             return false;
         }
@@ -684,23 +681,59 @@ impl EditorActions {
                 };
                 if preparation.syntax_revision
                     != self.workspace.editor_preparation_revision.get_untracked()
+                    || preparation.paint.as_ref().is_none_or(|original| {
+                        !same_paint_scope(original, paint)
+                            || !original.projection.shares_text_version(&paint.projection)
+                    })
                 {
                     return false;
                 }
-                if preparation.paint.as_ref().is_none_or(|original| {
-                    !same_paint_scope(original, paint)
-                        || !original.projection.shares_text_version(&paint.projection)
-                }) {
-                    return false;
-                }
-                preparation.prefix = Some(rows);
+                retain(preparation);
                 true
             })
             .unwrap_or(false)
     }
+    pub fn retain_measured_prefix(
+        self,
+        ticket: u64,
+        paint: &EditorRowPaint,
+        rows: openwebide_core::editor::MeasuredRows,
+    ) -> bool {
+        if rows.is_empty()
+            || rows.len() > openwebide_core::editor::MAX_MEASURE_ROWS
+            || rows.len() > paint.projection.lines().len()
+        {
+            return false;
+        }
+        self.retain_origin_measurement(ticket, paint, |preparation| {
+            preparation.prefix = Some(rows);
+        })
+    }
+    pub fn retain_paragraph_coverage(
+        self,
+        ticket: u64,
+        paint: &EditorRowPaint,
+        row: usize,
+        coverage: Arc<openwebide_core::editor::WrappedCoverage>,
+    ) -> bool {
+        if row != 0
+            || self.is_composing()
+            || !paint.word_wrap
+            || paint.projection.visual_line_index(row).is_none_or(|index| {
+                !index.source_paint_eligible() || coverage.glyph_end() >= index.len()
+            })
+        {
+            return false;
+        }
+        self.retain_origin_measurement(ticket, paint, |preparation| {
+            preparation.paragraph_coverage = Some(coverage);
+        })
+    }
 
-    /// Early paint can use completed origin rows without exposing partial extents.
-    pub fn measured_prefix(self) -> Option<crate::state::workspace::EditorRowCache> {
+    fn with_origin_measurement<T>(
+        self,
+        read: impl FnOnce(&crate::state::workspace::EditorRowPreparation, &EditorRowPaint) -> Option<T>,
+    ) -> Option<T> {
         self.workspace.content.track();
         let projection = self.projection()?;
         self.view_revision();
@@ -722,9 +755,28 @@ impl EditorActions {
             {
                 return None;
             }
+            read(preparation, paint)
+        })
+    }
+    /// Early paint can use completed origin rows without exposing partial extents.
+    pub fn measured_prefix(self) -> Option<crate::state::workspace::EditorRowCache> {
+        self.with_origin_measurement(|preparation, paint| {
             Some(crate::state::workspace::EditorRowCache {
                 paint: paint.clone(),
                 rows: preparation.prefix.clone()?,
+            })
+        })
+    }
+    /// Partial logical-row coverage is never a completed row table or EOF.
+    pub fn paragraph_coverage(self) -> Option<crate::state::workspace::EditorParagraphCoverage> {
+        self.workspace.editor_composition.track();
+        if self.is_composing() {
+            return None;
+        }
+        self.with_origin_measurement(|preparation, paint| {
+            Some(crate::state::workspace::EditorParagraphCoverage {
+                paint: paint.clone(),
+                coverage: preparation.paragraph_coverage.clone()?,
             })
         })
     }

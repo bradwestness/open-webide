@@ -13275,6 +13275,188 @@ fn in_flight_font_metrics_require_current_preparation_ownership_in_both_modes() 
 }
 
 #[wasm_bindgen_test]
+fn partial_paragraph_coverage_requires_current_ownership_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{
+            GlyphRectangle, Indentation, Selection, VisualLineIndex, WrappedParagraphPreparation,
+        },
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+
+    for source in ["word ".repeat(40_000), "word 文😀e\u{301} ".repeat(12_000)] {
+        // A committed independent rectangular layout supplies geometry. This
+        // contract tests ownership; browser full-renderer parity is a separate gate.
+        let index = VisualLineIndex::new(&source).unwrap();
+        let runs = index.text_run_boundaries().collect::<Vec<_>>().into();
+        let mut plan = WrappedParagraphPreparation::new(&source, index.clone(), runs).unwrap();
+        let probe = plan.probe().unwrap();
+        let end = index.index_at_byte(&source, probe.bytes.end).unwrap();
+        let rectangles = plan
+            .targets()
+            .unwrap()
+            .into_iter()
+            .map(|glyph| GlyphRectangle {
+                glyph,
+                left: (glyph % 40) as f64 * 7.0,
+                top: (glyph / 40) as f64 * 15.0 + 2.0,
+                width: 7.0,
+                height: 15.0,
+            })
+            .collect::<Vec<_>>();
+        assert!(plan.record(280.0, (end as f64 / 40.0).ceil() * 15.0, 280.0, &rectangles));
+        let coverage = Arc::new(plan.viewport_coverage(15.0).unwrap());
+        for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+            for change in 0..15 {
+                let slot = Rc::new(Cell::new(None::<EditorActions>));
+                let captured = slot.clone();
+                let content = source.clone();
+                let mounted = mount_test(move |state| {
+                    state.seed_project();
+                    state
+                        .projects
+                        .projects
+                        .update(|projects| projects[0].mode = mode);
+                    state
+                        .settings
+                        .editor_preferences
+                        .update(|preferences| preferences.word_wrap = true);
+                    state.workspace.open_file.set(Some("coverage.txt".into()));
+                    state.workspace.content.set(content.into());
+                    captured.set(Some(EditorActions::new(state.workspace)));
+                    view! { <div/> }
+                });
+                let actions = slot.get().unwrap();
+                actions.prepare_edit(Selection::caret(0)).unwrap();
+                let projection = actions.projection().unwrap();
+                let ticket = actions
+                    .begin_row_preparation(actions.view_revision(), projection.lines().len())
+                    .unwrap();
+                let (paint, _) = actions
+                    .prepare_row_measurements(
+                        "loaded face and CSS metrics".into(),
+                        projection,
+                        (false, Arc::new(Vec::new())),
+                        Arc::from([0]),
+                        Indentation::default(),
+                        false,
+                    )
+                    .unwrap();
+                assert!(!actions.retain_paragraph_coverage(ticket, &paint, 0, coverage.clone()));
+                assert!(actions.retain_row_preparation(ticket, &paint));
+                assert!(!actions.retain_paragraph_coverage(
+                    ticket.wrapping_add(1),
+                    &paint,
+                    0,
+                    coverage.clone()
+                ));
+                assert!(!actions.retain_paragraph_coverage(ticket, &paint, 1, coverage.clone()));
+                assert!(actions.retain_paragraph_coverage(ticket, &paint, 0, coverage.clone()));
+                let retained = actions.paragraph_coverage().unwrap();
+                assert!(Arc::ptr_eq(&retained.coverage, &coverage));
+                assert_eq!(retained.paint.metrics, paint.metrics);
+                assert!(retained.coverage.caret(0).is_some());
+                assert!(retained.coverage.caret(index.len() - 1).is_none());
+                assert!(actions.measured_rows().is_none());
+                assert!(actions.measured_prefix().is_none());
+                for mismatch in 0..5 {
+                    let mut other = paint.clone();
+                    match mismatch {
+                        0 => other.metrics = "different metrics".into(),
+                        1 => other.tokens = Arc::new(Vec::new()),
+                        2 => other.guides = Arc::from([1]),
+                        3 => other.indentation.tab_width += 1,
+                        _ => other.prepared_source = true,
+                    }
+                    assert!(!actions.retain_paragraph_coverage(
+                        ticket,
+                        &other,
+                        0,
+                        coverage.clone()
+                    ));
+                    assert!(Arc::ptr_eq(
+                        &actions.paragraph_coverage().unwrap().coverage,
+                        &coverage
+                    ));
+                }
+                let workspace = mounted.state.workspace;
+                match change {
+                    0 => {
+                        let next = actions
+                            .begin_row_preparation(actions.view_revision(), 1)
+                            .unwrap();
+                        assert!(actions.paragraph_coverage().is_none());
+                        assert!(!actions.retain_paragraph_coverage(
+                            ticket,
+                            &paint,
+                            0,
+                            coverage.clone()
+                        ));
+                        assert!(actions.retain_row_preparation(next, &paint));
+                        assert!(actions.retain_paragraph_coverage(
+                            next,
+                            &paint,
+                            0,
+                            coverage.clone()
+                        ));
+                        actions.end_row_preparation(ticket);
+                        assert!(actions.paragraph_coverage().is_some());
+                        actions.end_row_preparation(next);
+                    }
+                    1 => actions.invalidate_measured_font(),
+                    2 => actions.invalidate_measured_rows(),
+                    3 => {
+                        workspace.begin_editor_read();
+                    }
+                    4 => workspace.pending_epoch.update(|epoch| *epoch += 1),
+                    5 => mounted
+                        .state
+                        .auth
+                        .generation
+                        .update(|generation| *generation += 1),
+                    6 => workspace.active_project.set(Some(2)),
+                    7 => workspace.open_file.set(Some("other.txt".into())),
+                    8 => workspace.content.set("changed source\n".into()),
+                    9 => workspace
+                        .editor_fold_revision
+                        .update(|revision| *revision += 1),
+                    10 => workspace
+                        .editor_preparation_revision
+                        .update(|revision| *revision += 1),
+                    11 => mounted
+                        .state
+                        .settings
+                        .editor_preferences
+                        .update(|preferences| preferences.show_whitespace = true),
+                    12 => mounted
+                        .state
+                        .settings
+                        .editor_preferences
+                        .update(|preferences| preferences.word_wrap = false),
+                    13 => actions.end_row_preparation(ticket),
+                    _ => actions.begin_composition(),
+                }
+                assert!(
+                    actions.paragraph_coverage().is_none(),
+                    "stale coverage: {mode:?}, {change}"
+                );
+                assert!(!actions.retain_paragraph_coverage(ticket, &paint, 0, coverage.clone()));
+                assert!(actions.measured_rows().is_none());
+                assert_eq!(
+                    workspace.content.get_untracked().as_str(),
+                    if change == 8 {
+                        "changed source\n"
+                    } else {
+                        &source
+                    }
+                );
+            }
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn paragraph_limit_geometry_matches_complete_rows_in_both_modes() {
     #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
     export function auditParagraphReadiness() {

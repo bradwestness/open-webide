@@ -372,6 +372,7 @@ impl EditorActions {
                 total,
                 paint: None,
                 prefix: None,
+                paragraph_coverage: None,
             },
         ));
         Some(ticket)

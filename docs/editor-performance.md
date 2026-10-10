@@ -4039,3 +4039,31 @@ Resume with facade ownership and independent browser-renderer validation before
 activating partial paint. The unfinished integration and historical draft stashes
 are preserved locally under the ignored `ai_docs/pre-reboot-drafts/` directory;
 they are investigation material, not changes to apply wholesale.
+
+
+### Partial coverage ownership (2026-10-09)
+
+The shared editor facade now binds partial wrapped coverage to the same origin
+measurement policy as completed prefixes. Geometry stays separate from complete
+row tables, and queries share immutable anchors instead of cloning them. Queries
+return paint provenance so the browser can compare its actual current metrics.
+Composition hides coverage and rejects publication.
+
+The new ownership contract checks ASCII and Unicode sources in both modes across
+15 scope changes (60 combinations), including replacement tickets, font/layout,
+read, source, folding, syntax, whitespace, wrapping, account, project, file,
+completion and composition changes. Five mismatched paint identities cannot
+overwrite retained coverage. Old completion does not erase a replacement ticket.
+The existing 24-case completed-prefix ownership contract still passes.
+
+Both contracts pass in macOS Chrome. The same final compiled WASM passes in the
+existing Linux Chrome image in 0.45 seconds; exact artifact and source hashes,
+image identity and results are in the [ownership evidence](editor-performance/partial-coverage-ownership-linux.jsonl).
+Optimized WASM library/tests Clippy passes with `-D warnings`, and formatting
+checks pass. Browser coverage publication, independent full-renderer parity and
+production latency/PSS evidence remain outstanding; this checkpoint claims no
+new input responsiveness or complete editor-goal verification.
+
+Earlier full CI checkpoint `644ece9` (run 38021534434) is now confirmed successful
+across all five jobs, in addition to the previously confirmed `338c7bd` result.
+The latest checkpoint CI runs remain pending at the time of this verification.
