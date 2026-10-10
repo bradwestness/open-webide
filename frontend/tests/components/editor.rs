@@ -19086,3 +19086,40 @@ async fn paragraph_batches_match_individual_native_ranges_and_failures_in_both_m
         removeEditorFont(&font);
     }
 }
+
+#[wasm_bindgen_test]
+async fn cooperative_dom_enumeration_preserves_order_and_cancels_in_both_modes() {
+    use openwebide_core::WorkspaceMode;
+    use openwebide_frontend::components::cooperative_text_nodes_match_complete_and_cancel;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let source = "e\u{301}😀 words ".repeat(5000);
+        assert!(source.len() > openwebide_core::editor::MAX_MEASURE_BYTES);
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            view! {
+                <style>{include_str!("../../styles.css")}</style>
+                <div>
+                    <div class="editor-source-line" style="font-family:monospace;white-space:pre">
+                        {(0..5000).map(|_| view! {
+                            <span><span>"e"</span><span>"\u{301}😀 words "</span><span></span></span>
+                        }).collect_view()}
+                    </div>
+                    <span>"outside traversal root"</span>
+                </div>
+            }
+        });
+        let row = mounted.element(".editor-source-line");
+        // Include a zero-length native text node, whose endpoint lookup must
+        // retain the complete renderer's exact ordering and UTF-16 offsets.
+        row.append_child(&document().create_text_node("")).unwrap();
+        assert_eq!(row.text_content().unwrap(), source);
+        assert!(
+            cooperative_text_nodes_match_complete_and_cancel(&row, &source).await,
+            "{mode:?}"
+        );
+    }
+}

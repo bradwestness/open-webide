@@ -82,8 +82,72 @@ fn measured_row(value: f64) -> Option<usize> {
 }
 
 struct TextNodes(Vec<(web_sys::Node, u32, u32)>);
+struct TextNodePreparation {
+    pending: Vec<(web_sys::Node, bool)>,
+    result: Vec<(web_sys::Node, u32, u32)>,
+    offset: u32,
+    visited: usize,
+}
+impl TextNodePreparation {
+    fn new(row: &web_sys::Element) -> Self {
+        Self {
+            pending: vec![(row.clone().into(), true)],
+            result: Vec::new(),
+            offset: 0,
+            visited: 0,
+        }
+    }
+    fn advance(&mut self, budget: usize) -> Option<bool> {
+        for _ in 0..budget {
+            let Some((node, root)) = self.pending.pop() else {
+                return Some(true);
+            };
+            self.visited += 1;
+            if self.visited > MAX_VISUAL_CARETS {
+                return None;
+            }
+            // Queue one sibling at a time: a wide parent must not materialize
+            // every child before the traversal's budget or node limit applies.
+            if !root && let Some(sibling) = node.next_sibling() {
+                self.pending.push((sibling, false));
+            }
+            if node.node_type() == web_sys::Node::TEXT_NODE {
+                let length = node.dyn_ref::<web_sys::Text>()?.length();
+                self.result.push((node, self.offset, length));
+                self.offset = self.offset.checked_add(length)?;
+            } else if let Some(child) = node.first_child() {
+                self.pending.push((child, false));
+            }
+        }
+        Some(self.pending.is_empty())
+    }
+}
 impl TextNodes {
     fn new(row: &web_sys::Element) -> Option<Self> {
+        let mut preparation = TextNodePreparation::new(row);
+        while !preparation.advance(MAX_VISUAL_CARETS)? {}
+        Some(Self(preparation.result))
+    }
+    async fn prepare(row: &web_sys::Element, current: &impl Fn() -> bool) -> Option<Self> {
+        let mut preparation = TextNodePreparation::new(row);
+        let mut batches = 0;
+        loop {
+            if !current() || !row.is_connected() {
+                return None;
+            }
+            if preparation.advance(openwebide_core::editor::ROW_GEOMETRY_BATCH)? {
+                return current().then_some(Self(preparation.result));
+            }
+            batches += 1;
+            if batches % openwebide_core::editor::MAX_MEASURE_BATCHES_PER_FRAME == 0 {
+                crate::util::yield_frame().await;
+            } else {
+                crate::util::yield_task().await;
+            }
+        }
+    }
+    #[cfg(feature = "test-support")]
+    fn complete(row: &web_sys::Element) -> Option<Self> {
         let mut pending = vec![web_sys::Node::from(row.clone())];
         let mut result = Vec::new();
         let mut offset = 0_u32;
@@ -384,7 +448,22 @@ pub(super) async fn preparation_geometry(
     ) {
         return None;
     }
-    let mut glyphs = Glyphs::new(row, body, Some(index))?;
+    let nodes = TextNodes::prepare(row, current).await?;
+    // Enumeration can yield. Revalidate source before using its node offsets.
+    let text = row.text_content()?;
+    if !openwebide_core::editor::textarea_value_matches(
+        body,
+        text.strip_suffix('\n').unwrap_or(&text),
+    ) {
+        return None;
+    }
+    let mut glyphs = Glyphs {
+        body,
+        index,
+        nodes,
+        range: document().create_range().ok()?,
+        measured: BTreeMap::new(),
+    };
     let mut targets = glyphs.index.anchor_glyphs().collect::<Vec<_>>();
     targets.dedup();
     let mut plan = openwebide_core::editor::RowGeometryPreparation::new(
@@ -413,6 +492,127 @@ pub(super) async fn preparation_geometry(
         }
     }
     current().then(|| plan.finish()).flatten()
+}
+
+/// Compare lazy DOM enumeration with the original eager traversal and cancel
+/// during an actual yield, including a disconnected root and changed source.
+#[cfg(feature = "test-support")]
+pub async fn cooperative_text_nodes_match_complete_and_cancel(
+    row: &web_sys::Element,
+    body: &str,
+) -> bool {
+    macro_rules! fail {
+        ($reason:literal) => {{
+            web_sys::console::error_1(&$reason.into());
+            return false;
+        }};
+    }
+    let Some(expected) = TextNodes::complete(row) else {
+        fail!("complete text-node traversal unavailable");
+    };
+    if expected.0.len() <= openwebide_core::editor::ROW_GEOMETRY_BATCH {
+        fail!("fixture must span multiple node batches");
+    }
+    let mut first = TextNodePreparation::new(row);
+    if first.advance(1) != Some(false) || first.pending.len() != 1 {
+        fail!("wide root queued more than one child");
+    }
+    let equal = |actual: &TextNodes| {
+        actual.0.len() == expected.0.len()
+            && actual.0.iter().zip(&expected.0).all(|(actual, expected)| {
+                actual.0.is_same_node(Some(&expected.0))
+                    && actual.1 == expected.1
+                    && actual.2 == expected.2
+            })
+    };
+    if !TextNodes::new(row).as_ref().is_some_and(&equal)
+        || !TextNodes::prepare(row, &|| true)
+            .await
+            .as_ref()
+            .is_some_and(equal)
+        || TextNodes::prepare(row, &|| false).await.is_some()
+    {
+        fail!("text-node ordering/offsets or initial cancellation differ");
+    }
+    let Some(index) = VisualLineIndex::new(body) else {
+        fail!("fixture coordinate index unavailable");
+    };
+    if !index.source_paint_eligible() {
+        fail!("fixture must be an admitted long row");
+    }
+    let bounds = row.get_bounding_client_rect();
+    let Some(expected_geometry) = paragraph_geometry(
+        row,
+        body,
+        index.clone(),
+        &bounds,
+        index.anchor_glyphs().collect(),
+    ) else {
+        fail!("complete native geometry unavailable");
+    };
+    let eligible = index.source_paint_eligible();
+    let actual = preparation_geometry(row, body, index, &bounds, false, &|| true).await;
+    if actual.as_ref() != Some(&expected_geometry) {
+        web_sys::console::error_1(
+            &format!(
+                "eligible={eligible} bounds={}/{} actual={actual:?} expected={expected_geometry:?}",
+                bounds.width(),
+                bounds.height()
+            )
+            .into(),
+        );
+        fail!("cooperative native geometry differs");
+    }
+    let current = std::rc::Rc::new(std::cell::Cell::new(true));
+    let cancelled = current.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+            &wasm_bindgen::JsValue::NULL,
+        ))
+        .await;
+        cancelled.set(false);
+    });
+    let checks = std::cell::Cell::new(0);
+    let result = TextNodes::prepare(row, &|| {
+        checks.set(checks.get() + 1);
+        current.get()
+    })
+    .await;
+    if result.is_some() || current.get() || checks.get() < 2 {
+        fail!("text-node cancellation was not observed during yield");
+    }
+    let Ok(clone) = row.clone_node_with_deep(true) else {
+        fail!("could not clone traversal fixture");
+    };
+    let Ok(clone) = clone.dyn_into::<web_sys::Element>() else {
+        fail!("clone is not an element");
+    };
+    if TextNodes::prepare(&clone, &|| true).await.is_some() {
+        fail!("disconnected traversal root was accepted");
+    }
+    let Some(parent) = row.parent_node() else {
+        fail!("traversal fixture parent unavailable");
+    };
+    if parent.append_child(&clone).is_err() {
+        fail!("could not attach mutation fixture");
+    }
+    let bounds = clone.get_bounding_client_rect();
+    let changed = clone.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+            &wasm_bindgen::JsValue::NULL,
+        ))
+        .await;
+        changed.set_text_content(Some("changed source"));
+    });
+    let result = if let Some(index) = VisualLineIndex::new(body) {
+        preparation_geometry(&clone, body, index, &bounds, false, &|| true).await
+    } else {
+        clone.remove();
+        fail!("mutation fixture index unavailable");
+    };
+    clone.remove();
+    result.is_none()
 }
 
 /// Independent complete-renderer oracle and cancellation during an actual yield.

@@ -3811,8 +3811,10 @@ the positive-path assertion and complete-geometry comparisons at all seven width
 in both modes. It passes macOS Chrome and the same compiled WASM in Linux Chrome,
 with both [normal fonts](editor-performance/range-batch-linux-contracts.jsonl)
 and a [DejaVu-only font configuration](editor-performance/range-batch-linux-minimal-fonts.jsonl).
-These two Linux runs also pass the new range contract. Full CI for the repaired
-checkpoint remains a separate gate.
+These two Linux runs also pass the new range contract. All five full CI jobs
+pass for repaired checkpoint `aa6cdea` in [run 38016719224](https://github.com/openwebide/openwebide/actions/runs/38016719224),
+including the complete browser partition and production editor input/pointer checks.
+Repeated CI and the remaining editor completion gates remain required.
 
 For cross-host reproduction, generate web bindings from the built component-test
 WASM with `wasm-bindgen --target web --out-name tests --out-dir DIR COMPONENTS.wasm`.
@@ -3886,3 +3888,38 @@ scales approximately with text bytes. Smaller probes would add dense-overlap and
 scheduling work without eliminating the total shaping cost; these diagnostic
 results do not justify changing the probe cap or accepting approximate geometry.
 This synthetic native primitive check is not a both-mode full-renderer contract.
+
+
+### Cooperative cold text-node enumeration
+
+The Rust browser primitive now walks text nodes lazily, queuing one sibling at a
+time instead of materializing every child of a wide parent before its visit
+budget applies. Synchronous queries share the same traversal and original 65,536
+visited-node limit. Cold row geometry advances it in existing 128-operation
+geometry batches with task/frame yields, cancellation and root-connectivity
+checks. Source is revalidated after enumeration before those UTF-16 offsets can
+produce geometry. The existing `EditorActions` scopes and shared core geometry
+policy remain the entry points for both workspace adapters.
+
+The 70 KiB fragmented-row regression compares every text-node identity, order,
+UTF-16 offset and length with the original eager traversal, including combining
+marks split between nodes, emoji, empty text nodes and an adjacent root sibling.
+It requires admitted long-row geometry to match the complete native renderer,
+observes cancellation during an actual yield, rejects a disconnected root and
+rejects source replacement during enumeration. It passes in both modes on macOS
+Chrome (2.45 s). The existing font/glyph/cancellation contract passes (0.81 s).
+The same compiled WASM passes the [13-contract Linux selection](editor-performance/cooperative-dom-linux-contracts.jsonl),
+including both traversal contracts and the paragraph font/feature/whitespace,
+limits, origin rounding, source reuse and failed-overlap fallbacks (95.36 s).
+Strict optimized WASM library/test Clippy, formatting and production Trunk/PWA
+build pass. These are correctness checks, not large-file latency measurements;
+changed-wrap reflow, synchronous pointer queries, DOM installation and other
+remaining editor gates are still open.
+
+Repeated CI run `38017353270` for checkpoint `2cf0b1b` passes four jobs but fails
+three existing editor probe-count assertions (`measure_highlight_bursts`,
+`localized_wrapped_edits_reuse_exact_row_heights_in_both_modes`, and
+`cold_repeated_wrapped_rows_share_layout_and_preserve_far_edits_in_both_modes`).
+The application code is identical to green checkpoint `aa6cdea`. Font-notification
+and preparation timing need investigation; the strict reuse-count assertions
+remain unchanged. A single green CI run has not satisfied the reliability gate.

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Enumerate cold editor geometry text nodes cooperatively, with lazy sibling traversal, cancellation and source revalidation before measurement. Preserve exact native node ordering and UTF-16 offsets in both workspace modes.
+
 - Require every requested browser component-test filter to match a real WASM test, preventing partial contract selections from reporting success.
 
 - Batch exact native paragraph range reads through the browser adapter, keeping geometry policy in Rust and independent full-renderer checks. Make the measured-prefix regression fixture portable across Linux font configurations.

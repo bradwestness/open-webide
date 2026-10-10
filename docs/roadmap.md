@@ -77,8 +77,11 @@ tracks the remaining work rather than every optimization already shipped.
   finish bidirectional visual-run windows, fine long-row paint and incremental glyph
   measurement. Eligible wrapped paragraphs now use bounded probes with retained
   paint-run clipping and exact overlap validation. Unsupported complete-layout
-  fallbacks, touch native input shaping and DOM-node enumeration still run
-  synchronously. Establish exact browser geometry against the complete renderer;
+  fallbacks and touch native input shaping still run synchronously. Cold row
+  geometry now enumerates text nodes cooperatively with lazy sibling traversal
+  and source revalidation; synchronous pointer/neighborhood queries and complete
+  DOM installation still require bounded preparation. Establish exact browser
+  geometry against the complete renderer;
   retained DOM, canvas widths and approximate Rust advances are insufficient.
 - [ ] **Incremental paragraph updates:** wrapped prefixes and reconnecting
   source/style-proved suffixes now reuse completed probes in yielding batches,
