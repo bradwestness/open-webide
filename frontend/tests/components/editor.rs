@@ -3154,19 +3154,39 @@ async fn measure_highlight_bursts() {
     for lines in [1_000, 10_000] {
         let source = "fn example() { let value = 42; }\n".repeat(lines);
         let initial = source.clone();
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
         let mounted = mount_test(move |state| {
             state.seed_project();
             state.workspace.open_file.set(Some("fixture.rs".into()));
             state.workspace.content.set(initial.into());
+            openwebide_frontend::state_actions::editor::EditorActions::new(state.workspace)
+                .install_syntax_transport(installed);
             view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:700px;height:400px">{editor_view(state)}</div> }
         });
         settle().await;
         frame().await;
         let actions =
             openwebide_frontend::state_actions::editor::EditorActions::new(mounted.state.workspace);
-        wait_until("warm source dimension cache", || {
-            !actions.syntax_is_pending() && actions.measured_rows().is_some()
+        wait_until("initial Rust syntax request", || {
+            !transport.pending.borrow().is_empty()
         })
+        .await;
+        transport.respond(true);
+        wait_until(
+            "warm source dimension cache for current syntax paint",
+            || {
+                if actions.syntax_is_pending() {
+                    return false;
+                }
+                let paint = actions.syntax_paint();
+                actions.measured_rows().is_some_and(|measured| {
+                    measured.syntax.as_ref().is_some_and(|syntax| {
+                        syntax.0 == paint.0 && std::sync::Arc::ptr_eq(&syntax.1, &paint.1)
+                    })
+                })
+            },
+        )
         .await;
         frame().await;
         let textarea: web_sys::HtmlTextAreaElement =
@@ -3205,6 +3225,19 @@ async fn measure_highlight_bursts() {
                 settle().await;
                 latency.push(now() - start);
                 assert_eq!(actions.source(), format!("{source}{text}"));
+            }
+            // Resolve obsolete requests as canceled, then publish real parsed
+            // syntax for the coalesced source through the production facade.
+            loop {
+                wait_until("coalesced Rust syntax request", || {
+                    !transport.pending.borrow().is_empty()
+                })
+                .await;
+                let current = transport.source() == format!("{source}// burst {run} input 9\n");
+                transport.respond(current);
+                if current {
+                    break;
+                }
             }
             wait_until("coalesced current syntax paint", || {
                 !actions.syntax_is_pending()

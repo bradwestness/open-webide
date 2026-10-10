@@ -3945,3 +3945,35 @@ the three existing CI probe-count failures confirms timing remains an open
 verification issue. An attempted highlighted-token warm-up condition timed out
 and was discarded; existing performance assertions and deadlines are unchanged.
 The full editor goal and CI reliability gate remain open.
+
+
+### Prepared-paint burst measurements
+
+The three previously failing Linux component tests now pass together in three
+fresh browser sessions (2.25, 2.27 and 2.23 seconds), using the same compiled WASM
+as the passing macOS Chrome burst check (1.49 seconds).
+[Raw repetition results](editor-performance/burst-prepared-paint-linux-repetitions.jsonl)
+include both-mode localized wrapped edits and repeated-row replay. Strict optimized
+WASM library/test Clippy, formatting and whitespace checks pass.
+
+A current-token identity check alone was insufficient: it still reproduced
+`[2, 1, 1, 1, 1]` burst probes, followed by the localized test counting 131 rows.
+In the worker-disabled component environment, the initial budgeted parser can
+leave plain fallback installed, then complete syntax during the first edit. That
+legitimate style transition remeasures rows and mixes cold preparation into the
+warm-edit benchmark. A failed WASM assertion also leaves its mounted view active,
+which contaminates the following global probe observer.
+
+The burst fixture now injects the existing deferred transport and produces replies
+with the real shared `SyntaxPreparations` parser. It waits for published syntax or
+terminal fallback and dimensions tied to the exact token allocation before
+counting edits. During each burst it rejects obsolete requests and publishes the
+coalesced current source through the production facade. The 1,000/10,000-line
+sources, visible-generation limits, probe limits and deadlines are unchanged.
+No production parser limits, geometry or fallback policy changed; these warm-edit
+results do not establish cold-start latency. The separate font-cache fix preserves
+ordinary-row replay across matching notifications.
+
+All five CI jobs passed for `1b499c4` in run `38018986189`. Full CI for the
+font-cache checkpoint `574d2a5` and this fixture correction remains under
+observation; the complete editor and reliable-CI gates remain open.
