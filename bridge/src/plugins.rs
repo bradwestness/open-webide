@@ -1,4 +1,5 @@
 //! Native Git/object and atomic filesystem primitives for shared plugin policy.
+pub mod invocations;
 use openwebide_core::plugins::{
     MAX_PACKAGE_BYTES, MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, PackageFile, PackageFileKind,
     PluginError, PluginFuture, PluginHost, PluginSource, PreparedPlugin, prepare_plugin,

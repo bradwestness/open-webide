@@ -156,8 +156,9 @@ tracks the remaining work rather than every optimization already shipped.
   terminal contracts; verify focus/layout behavior in the complete browser partition.
   Warm burst checks now wait for published parser/fallback paint and exact token-owned
   dimensions; three Linux repetitions pass the strict burst and both-mode row-reuse
-  assertions, and the 147-test Linux editor component partition passes. Finish and
-  repeat full CI for this correction.
+  assertions, and the expanded 149-test Linux editor component partition passes.
+  The browser setup correction (`3956122`) passed all five CI jobs; repeat complete
+  CI for the merged editor and plugin checkpoints and retain the boundary gates.
   Current checkpoints and measured results are in [performance evidence](editor-performance.md).
 - [ ] **Physical Chrome/Edge PWA input:** verify real input-method commit/cancel,
   Unicode and LF/CRLF undo/redo, multiple-cursor clipboard behavior and touch input
@@ -400,8 +401,12 @@ Extend agent and editor capabilities through versioned plugin packages that user
 and the agent can manage, without requiring changes to the app for each new
 capability.
 
-- Build a public Rust SDK and versioned WASM component contract for executable
-  plugins, with exported handlers and general host capability imports. Publisher
+- Finish executable plugin integration on the public Rust SDK and versioned
+  WASM component contract. The SDK, host runtime and isolated source preparation
+  foundation are merged; invocation transport and authenticated general host
+  capability dispatch remain unfinished. Verify Linux/container build isolation
+  and provision compiler prerequisites before enabling executable installation
+  there; Windows source-build isolation remains unsupported. Publisher
   CI builds artifacts; releases record artifact location, checksum, pinned source
   and host API compatibility. Validate and execute components only on bridge hosts.
   Provide an authoring example and reusable build/validation workflow for custom

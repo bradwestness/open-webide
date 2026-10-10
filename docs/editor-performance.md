@@ -4067,3 +4067,20 @@ new input responsiveness or complete editor-goal verification.
 Earlier full CI checkpoint `644ece9` (run 38021534434) is now confirmed successful
 across all five jobs, in addition to the previously confirmed `338c7bd` result.
 The latest checkpoint CI runs remain pending at the time of this verification.
+
+### Partial wrapped origin publication checkpoint
+
+Eligible origin viewports now publish only native-measured partial coverage while
+complete paragraph geometry continues preparing. Failed crop proofs discard that
+coverage and wait for full geometry; uncovered carets and temporary endpoints are
+rejected. Replacement geometry invalidates affected fragment-cache windows so
+provisional heights cannot survive the complete publication.
+
+All 149 contracts in the Linux editor partition passed in 183.97 seconds,
+including the held-continuation publication regression, independent full-renderer
+oracle and failed-proof fallback in both workspace modes. The 17 wrapped/unwrapped
+macOS browser contracts also passed; cache allocation/recency tests and strict
+WASM lint passed. See [Linux results](editor-performance/partial-coverage-publication-linux.jsonl).
+This checkpoint does not establish production boundary latency/PSS improvements;
+those measurements and the full editor completion gates remain on the roadmap.
+CI for `3956122` completed successfully across all five jobs.
