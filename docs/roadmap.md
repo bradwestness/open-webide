@@ -82,9 +82,12 @@ tracks the remaining work rather than every optimization already shipped.
   retained DOM, canvas widths and approximate Rust advances are insufficient.
 - [ ] **Incremental paragraph updates:** wrapped prefixes and reconnecting
   source/style-proved suffixes now reuse completed probes in yielding batches,
-  with fresh terminal dimensions. Finish nonreconnecting wrapped updates: the
+  with fresh terminal dimensions. Changed incoming prefixes can reconnect cached
+  tails at whole words using their already measured geometry and extents, including
+  hanging glyph ranges. Finish nonreconnecting wrapped updates: the
   near-limit beginning-edit trace matches source/run boundaries but rejects changed
-  incoming wrapping phases through first-row overflow and dense overlap. Extend
+  incoming wrapping phases through first-row overflow and dense overlap; the latest
+  repeated measurements still require 70 fresh probes and 1.1–1.2 seconds. Extend
   shifted suffix reuse to changed long-token and plain-run boundaries; avoid repeated prefix
   segmentation for over-limit styled run tables. Eligible styled measurement paths
   now prepare run tables in yielding batches, including uncapped unwrapped

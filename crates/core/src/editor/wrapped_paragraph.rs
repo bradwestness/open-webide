@@ -27,6 +27,8 @@ pub struct WrappedParagraphPreparation<'a> {
     scroll_width: f64,
     height: Option<f64>,
     complete: bool,
+    #[cfg(any(test, feature = "test-support"))]
+    reconciled_prefixes: usize,
 }
 impl<'a> WrappedParagraphPreparation<'a> {
     pub fn new(body: &'a str, index: VisualLineIndex, runs: Arc<[usize]>) -> Option<Self> {
@@ -65,6 +67,8 @@ impl<'a> WrappedParagraphPreparation<'a> {
             scroll_width: 0.0,
             height: None,
             complete: false,
+            #[cfg(any(test, feature = "test-support"))]
+            reconciled_prefixes: 0,
         };
         result.probe = result.probe_at(0, 0.0)?;
         result.next = result.continuation(&result.probe)?;
@@ -383,6 +387,100 @@ impl<'a> WrappedParagraphPreparation<'a> {
         }
         reused
     }
+    #[cfg(feature = "test-support")]
+    pub fn reconciled_prefixes(&self) -> usize {
+        self.reconciled_prefixes
+    }
+    /// Replace only the already measured incoming prefix. Reuse the remaining
+    /// layout after a complete word starts the same visual row in both layouts
+    /// and every later overlap glyph proves the same vertical translation.
+    fn reconcile_prefix(
+        &self,
+        record: &ParagraphMeasurement,
+        rectangles: &mut [GlyphRectangle],
+    ) -> Option<f64> {
+        let first = *rectangles.first()?;
+        let expected_first = *self.expected.first()?;
+        if first.glyph != expected_first.glyph
+            || (first.left - record.origin).abs() > TOLERANCE
+            || (expected_first.left - self.probe.origin).abs() > TOLERANCE
+        {
+            return None;
+        }
+        let shift = expected_first.top - first.top;
+        let lookup = |glyph| {
+            rectangles
+                .binary_search_by_key(&glyph, |rect| rect.glyph)
+                .ok()
+                .map(|at| rectangles[at])
+        };
+        let mut reconnect = None;
+        for (at, expected) in self.expected.iter().enumerate().skip(1) {
+            let previous = self.expected[at - 1];
+            let old = lookup(expected.glyph)?;
+            let old_previous = lookup(previous.glyph)?;
+            if expected.glyph != previous.glyph + 1
+                || expected.left != 0.0
+                || old.left != 0.0
+                || previous.top >= expected.top
+                || old_previous.top >= old.top
+                || previous.left + previous.width <= 0.0
+                || old_previous.left + old_previous.width <= 0.0
+                || self.expected.last()?.top <= expected.top
+            {
+                continue;
+            }
+            let (byte, _) = self.index.at(self.body, expected.glyph)?;
+            if self.body.as_bytes().get(byte.checked_sub(1)?) != Some(&b' ') {
+                continue;
+            }
+            let delta = expected.top - shift - old.top;
+            if self.expected[at..].iter().all(|expected| {
+                lookup(expected.glyph).is_some_and(|old| {
+                    (old.left - expected.left).abs() <= TOLERANCE
+                        && (old.top + delta + shift - expected.top).abs() <= TOLERANCE
+                        && (old.width - expected.width).abs() <= TOLERANCE
+                        && (old.height - expected.height).abs() <= TOLERANCE
+                })
+            }) {
+                reconnect = Some((expected.glyph, delta));
+                break;
+            }
+        }
+        let (glyph, delta) = reconnect?;
+        // Every requested prefix target must have an exact measured replacement.
+        // Its extents were already measured by the preceding fresh probe; glyph
+        // ranges may hang beyond the row box without increasing scroll width.
+        for rect in rectangles.iter().filter(|rect| rect.glyph < glyph) {
+            let at = self
+                .expected
+                .binary_search_by_key(&rect.glyph, |rect| rect.glyph)
+                .ok()?;
+            let expected = self.expected[at];
+            if !expected.valid() {
+                return None;
+            }
+        }
+        let height = record.height + delta;
+        if !height.is_finite() || height <= 0.0 {
+            return None;
+        }
+        for rect in rectangles {
+            if rect.glyph < glyph {
+                let at = self
+                    .expected
+                    .binary_search_by_key(&rect.glyph, |rect| rect.glyph)
+                    .ok()?;
+                *rect = GlyphRectangle {
+                    top: self.expected[at].top - shift,
+                    ..self.expected[at]
+                };
+            } else {
+                rect.top += delta;
+            }
+        }
+        Some(height)
+    }
     fn replay_record(
         &mut self,
         old_body: &str,
@@ -465,6 +563,9 @@ impl<'a> WrappedParagraphPreparation<'a> {
                 ..record.rectangles[at]
             });
         }
+        let mut height = record.height;
+        #[cfg(any(test, feature = "test-support"))]
+        let mut reconciled_prefix = false;
         if record.origin.to_bits() != probe.origin.to_bits() {
             // A changed gap must not reuse an overflow width that belonged to
             // the old first row. Nonoverflowing rows retain the exact row box;
@@ -472,33 +573,41 @@ impl<'a> WrappedParagraphPreparation<'a> {
             if record.scroll_width != Some(record.width.ceil()) || probe.origin > record.width {
                 return false;
             }
-            let Some(first) = rectangles.first().copied() else {
-                return false;
-            };
-            let Some(expected) = self
-                .expected
-                .first()
-                .filter(|expected| expected.glyph == first.glyph)
-            else {
-                return false;
-            };
-            // A changed incoming gap can translate only the first visual row.
-            // Require dense proof past its line break; the ordinary overlap gate
-            // must reconnect every glyph before any cached continuation is used.
-            if !self.expected.iter().any(|expected| {
-                rectangles
-                    .binary_search_by_key(&expected.glyph, |rect| rect.glyph)
-                    .ok()
-                    .is_some_and(|at| rectangles[at].top > first.top)
-            }) {
-                return false;
-            }
-            let delta = expected.left - first.left;
-            for rect in &mut rectangles {
-                if rect.top.to_bits() == first.top.to_bits() {
-                    rect.left += delta;
-                    if rect.left + rect.width > record.width {
-                        return false;
+            if let Some(reconciled) = self.reconcile_prefix(record, &mut rectangles) {
+                height = reconciled;
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    reconciled_prefix = true;
+                }
+            } else {
+                let Some(first) = rectangles.first().copied() else {
+                    return false;
+                };
+                let Some(expected) = self
+                    .expected
+                    .first()
+                    .filter(|expected| expected.glyph == first.glyph)
+                else {
+                    return false;
+                };
+                // A changed incoming gap can translate only the first visual row.
+                // Require dense proof past its line break; the ordinary overlap gate
+                // must reconnect every glyph before any cached continuation is used.
+                if !self.expected.iter().any(|expected| {
+                    rectangles
+                        .binary_search_by_key(&expected.glyph, |rect| rect.glyph)
+                        .ok()
+                        .is_some_and(|at| rectangles[at].top > first.top)
+                }) {
+                    return false;
+                }
+                let delta = expected.left - first.left;
+                for rect in &mut rectangles {
+                    if rect.top.to_bits() == first.top.to_bits() {
+                        rect.left += delta;
+                        if rect.left + rect.width > record.width {
+                            return false;
+                        }
                     }
                 }
             }
@@ -508,7 +617,12 @@ impl<'a> WrappedParagraphPreparation<'a> {
         let Some(scroll_width) = record.scroll_width else {
             return false;
         };
-        self.record(record.width, record.height, scroll_width, &rectangles)
+        let valid = self.record(record.width, height, scroll_width, &rectangles);
+        #[cfg(any(test, feature = "test-support"))]
+        if valid && reconciled_prefix {
+            self.reconciled_prefixes += 1;
+        }
+        valid
     }
     pub fn finish(self) -> Option<(f64, WrappedGeometry)> {
         self.finish_with_measurements()
@@ -739,6 +853,97 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn measured_prefix_reconnection_replaces_geometry_without_guessing_line_advances() {
+        let body = "word ".repeat(40_000);
+        let (_, previous) = complete(&body);
+        for case in 0..4 {
+            let index = VisualLineIndex::new(&body).unwrap();
+            let mut plan =
+                WrappedParagraphPreparation::new(&body, index, previous.runs.clone()).unwrap();
+            let (height, rectangles) = layout(&plan);
+            assert!(plan.record(280.0, height, 280.0, &rectangles));
+            let record = &previous.records[1];
+            let start = plan.probe.glyph_start;
+            let first = record
+                .rectangles
+                .iter()
+                .find(|rect| rect.glyph == start)
+                .unwrap();
+            let reconnect = record
+                .rectangles
+                .iter()
+                .find(|rect| rect.glyph > start && rect.left == 0.0)
+                .unwrap()
+                .glyph;
+            assert_eq!(reconnect, start + 5);
+            plan.probe.origin = record.origin - 7.0;
+            for expected in &mut plan.expected {
+                if expected.glyph < reconnect - 1 {
+                    expected.left -= 7.0;
+                } else if expected.glyph == reconnect - 1 {
+                    expected.left = 0.0;
+                    expected.top += 15.0;
+                } else {
+                    expected.top += 15.0;
+                }
+            }
+            let shift = plan.expected[0].top - first.top;
+            let targets = plan.targets().unwrap();
+            let mut rectangles = targets
+                .iter()
+                .map(|glyph| {
+                    *record
+                        .rectangles
+                        .iter()
+                        .find(|rect| rect.glyph == *glyph)
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            match case {
+                1 => {
+                    plan.expected.remove(1);
+                }
+                2 => plan.expected.last_mut().unwrap().left += 1.0,
+                3 => plan.expected[0].width = f64::NAN,
+                _ => {}
+            }
+            let original = rectangles.clone();
+            let reconciled = plan.reconcile_prefix(record, &mut rectangles);
+            if case == 0 {
+                assert_eq!(reconciled, Some(record.height + 15.0));
+                for (old, new) in original.iter().zip(&rectangles) {
+                    if new.glyph < reconnect {
+                        let expected = plan
+                            .expected
+                            .iter()
+                            .find(|rect| rect.glyph == new.glyph)
+                            .unwrap();
+                        assert_eq!(new.left.to_bits(), expected.left.to_bits());
+                        assert_eq!(new.top.to_bits(), (expected.top - shift).to_bits());
+                    } else {
+                        assert_eq!(new.top.to_bits(), (old.top + 15.0).to_bits());
+                        assert_eq!(new.left.to_bits(), old.left.to_bits());
+                    }
+                }
+                assert!(plan.replay_record(&body, &previous, record, false));
+                assert_eq!(
+                    plan.records.last().unwrap().height.to_bits(),
+                    (record.height + 15.0).to_bits()
+                );
+            } else {
+                assert!(
+                    reconciled.is_none(),
+                    "invalid measured-prefix proof case={case}"
+                );
+                assert_eq!(
+                    rectangles, original,
+                    "rejected proofs leave local geometry intact"
+                );
+            }
+        }
+    }
+
     #[test]
     fn wrapped_overlap_failures_and_incomplete_jobs_cannot_publish() {
         let body = "word ".repeat(40_000);

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse wrapped paragraph tails after a freshly measured incoming prefix reconnects at a complete word, preserving exact overlap and dimensions, source/style ownership, cancellation and full-layout fallback in both workspace modes.
+
 - Yield while preparing uncapped styled run tables for unwrapped paragraph measurements, preserving the complete fallback after the retained cache limit is reached and rejecting canceled editor scopes.
 
 - Prepare eligible styled paragraph run boundaries cooperatively before wrapped and unwrapped measurements, keeping the exact Unicode segmentation and run cap and rejecting canceled editor scopes before publication.

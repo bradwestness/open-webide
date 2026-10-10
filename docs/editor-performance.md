@@ -3743,3 +3743,45 @@ changes wrapping beyond the accepted first-row translation. Removing a rejection
 would discard the exact geometry contract. The next layout work must support
 that changed wrapping phase with measured, source/style-proved geometry rather
 than concentrate only on segmentation or relax overlap tolerances.
+
+### Fresh incoming-prefix reconnection
+
+The shared Rust wrapped-paragraph plan can replace a cached incoming prefix with
+its already measured current geometry, then retain the cached tail after a common
+complete word starts a visual row and every subsequent overlap glyph proves the
+same measured vertical translation. Original source, run-boundary and glyph
+mapping checks remain in place. Cached overflow-sensitive records still require
+fresh layout; tolerances, limits and fresh terminal measurements are unchanged.
+The ordinary record gate validates the reconciled probe before it can publish.
+
+Fresh glyph ranges may hang beyond a row box without widening its scroll extent.
+The prefix keeps the extents already captured by the preceding fresh probe rather
+than inferring width from those ranges. Missing prefix coverage, invalid rectangles
+or nonreconnecting overlap retain the existing fresh-measurement path. Test-only
+counters require the new path to execute in each workspace mode; they add no
+production state or UI.
+
+Optimized Chrome passes the positive-path/full-renderer comparison at seven widths
+in both modes (5.44 s), the complete 16-test wrapped partition including font,
+feature, whitespace, edits and cancellation contracts (59.75 s), and failed-overlap
+complete fallback (0.39 s). Test times exclude compilation/browser startup. All
+590 core tests, strict core and optimized WASM frontend library/test Clippy,
+formatting and the production Trunk/PWA build pass. Temporary diagnosis code was
+removed before final verification. The preceding checkpoints `5dfff38` and
+`40bbcd9` each passed all five full CI jobs (runs `38008817667` and `38009617391`);
+this new implementation still needs its own full CI result.
+
+The production candidate (`openwebide-frontend-f0c38b80f3d1c716.js`, built from
+`40bbcd9` plus this change) was measured twice per adapter and edit position with
+the same existing Linux image, frozen backend, 4 CPUs, 10 GiB memory and 1 GiB
+shared memory. No local builds or browser tests ran during measurement. The
+[beginning traces](editor-performance/measured-prefix-beginning-linux.jsonl) and
+[end traces](editor-performance/measured-prefix-end-linux.jsonl) preserve actual
+1,048,567-byte String styling, exact source carets, complete source after input,
+complete 547,721 × 264 extents and untruncated traces with Linux Chrome PSS.
+Beginning edits still need 70 fresh probes and 1136.0–1192.2 ms; end edits retain
+two fresh probes and take 113.5–123.0 ms. Chrome PSS is 695,425–701,608 KiB across
+the samples. This extends proved reuse but does not resolve the principal
+near-limit beginning-edit stall or establish a latency/memory improvement. The
+remaining responsiveness, physical PWA input, folder recovery and accessibility
+gates stay open.

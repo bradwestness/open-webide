@@ -18891,3 +18891,108 @@ async fn wrapped_startup_keeps_near_limit_native_input_bounded_in_both_modes() {
         removeEditorFont(&font);
     }
 }
+
+#[wasm_bindgen_test]
+async fn measured_wrapped_prefix_reconnection_matches_complete_geometry_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::{
+        components::{bounded_wrapped_matches_complete, take_paragraph_prefix_reconciliations},
+        state_actions::editor::EditorActions,
+    };
+    let loaded = load_all_editor_fonts().await;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let mut reconciled = 0;
+        for width in [300, 320, 340, 360, 380, 400, 420] {
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let original = format!(
+                "const VALUE: &str = \"{}antidisestablishmentarianism antidisestablishmentarianism {}\";",
+                "word 文😀e\u{301} != -> café ".repeat(550),
+                "word 文😀e\u{301} != -> café ".repeat(8000)
+            );
+            let source = original.clone();
+            let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+            let capture = slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("measured-prefix.rs".into()));
+                let actions = EditorActions::new(state.workspace);
+                capture.set(Some(actions));
+                actions.install_syntax_transport(installed);
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = true);
+                state.workspace.content.set(source.into());
+                view! { <style>{include_str!("../../styles.css")}</style><div style=format!("display:flex;width:{width}px;height:320px")>{editor_view(state)}</div> }
+            });
+            let actions = slot.get().unwrap();
+            let ready = |expected: &str| {
+                if !transport.pending.borrow().is_empty() {
+                    transport.respond(true);
+                }
+                mounted
+                    .state
+                    .workspace
+                    .editor_paragraph_cache
+                    .with_untracked(|cache| {
+                        cache.as_ref().is_some_and(|cache| {
+                            !cache.rows.is_empty()
+                                && cache.paint.prepared_source
+                                && cache.paint.projection.line_body(0) == Some(expected)
+                        })
+                    })
+                    && actions.measured_rows().is_some()
+                    && !actions.native_geometry_pending()
+            };
+            super::support::wait_until_with_timeout(
+                "original measured-prefix layout",
+                30_000,
+                || ready(&original),
+            )
+            .await;
+            take_paragraph_prefix_reconciliations();
+            // A prefix edit shifts the String's original run boundaries intact;
+            // varied words carry the changed phase into the measured overlap.
+            let changed = format!("z{original}");
+            actions
+                .native_input(changed.clone(), Selection::caret(1), "insertText", 1.0)
+                .unwrap();
+            super::support::wait_until_with_timeout(
+                "changed measured-prefix layout",
+                30_000,
+                || ready(&changed),
+            )
+            .await;
+            reconciled += take_paragraph_prefix_reconciliations();
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            let scope = mounted
+                .state
+                .workspace
+                .editor_paragraph_cache
+                .get_untracked()
+                .unwrap()
+                .paint;
+            assert!(
+                bounded_wrapped_matches_complete(&input, &scope, actions).await,
+                "{mode:?} width={width}: exact measured prefix, suffix anchors and complete extents"
+            );
+            assert_eq!(actions.source(), changed);
+        }
+        assert!(
+            reconciled > 0,
+            "{mode:?}: measured prefix path must execute"
+        );
+    }
+    for font in loaded {
+        removeEditorFont(&font);
+    }
+}

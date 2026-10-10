@@ -831,6 +831,11 @@ pub fn take_paragraph_suffix_probes() -> usize {
 }
 
 #[cfg(feature = "test-support")]
+pub fn take_paragraph_prefix_reconciliations() -> usize {
+    super::editor_rows::take_paragraph_prefix_reconciliations()
+}
+
+#[cfg(feature = "test-support")]
 pub async fn bounded_wrapped_matches_complete(
     input: &web_sys::HtmlTextAreaElement,
     scope: &crate::state::workspace::EditorRowPaint,

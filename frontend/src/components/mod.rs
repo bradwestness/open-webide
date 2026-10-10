@@ -42,7 +42,7 @@ pub use editor::Editor;
 pub use editor::{
     bounded_paragraph_matches_complete, bounded_wrapped_matches_complete, highlight_count,
     retained_paragraph_matches_complete, take_highlight_segment_bytes, take_highlight_source_bytes,
-    take_paragraph_suffix_probes, viewport_highlight_count,
+    take_paragraph_prefix_reconciliations, take_paragraph_suffix_probes, viewport_highlight_count,
 };
 #[cfg(feature = "test-support")]
 pub use editor_geometry::cooperative_geometry_matches_complete_and_cancels;

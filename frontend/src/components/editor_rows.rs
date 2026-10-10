@@ -137,6 +137,13 @@ pub(super) fn take_paragraph_suffix_probes() -> usize {
     SUFFIX_PROBES.replace(0)
 }
 
+#[cfg(feature = "test-support")]
+thread_local! { static PREFIX_RECONCILIATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(feature = "test-support")]
+pub(super) fn take_paragraph_prefix_reconciliations() -> usize {
+    PREFIX_RECONCILIATIONS.replace(0)
+}
+
 async fn measure_paragraph(
     paint: &web_sys::Element,
     scope: &crate::state::workspace::EditorRowPaint,
@@ -256,7 +263,12 @@ async fn measure_wrapped_paragraph(
             return Ok(None);
         }
         if let Some(suffix) = suffix.as_ref() {
+            #[cfg(feature = "test-support")]
+            let before = plan.reconciled_prefixes();
             let reused = actions.resume_paragraph_suffix_batch(suffix, &mut plan);
+            #[cfg(feature = "test-support")]
+            PREFIX_RECONCILIATIONS
+                .set(PREFIX_RECONCILIATIONS.get() + plan.reconciled_prefixes() - before);
             #[cfg(feature = "test-support")]
             SUFFIX_PROBES.set(SUFFIX_PROBES.get() + reused);
             if reused > 0 {
