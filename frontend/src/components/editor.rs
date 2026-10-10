@@ -1332,6 +1332,7 @@ fn HighlightOverlay(
     let presentation_scope = Memo::new(move |_| actions.presentation_scope());
     let presented_scope = StoredValue::new(None);
     let painted_whitespace = StoredValue::new(false);
+    let painted_complete_rows = StoredValue::new(false);
     let painted_syntax =
         StoredValue::new(None::<(bool, std::sync::Arc<openwebide_core::highlight::TokenRows>)>);
     let layout_callback = StoredValue::new_local(Closure::<dyn FnMut(bool, bool)>::new(
@@ -1378,12 +1379,13 @@ fn HighlightOverlay(
             }
         });
     });
-    let tokens = Memo::new(move |_| {
+    let prepared_paint = Memo::new(move |_| {
         content.track();
         actions.presentation_scope();
         actions.preparation_revision();
         actions.syntax_paint()
     });
+    let tokens = Memo::new(move |_| EditorActions::render_paint(prepared_paint.get()));
     let guides = Memo::new(move |_| {
         content.track();
         actions.presentation_scope();
@@ -1392,9 +1394,9 @@ fn HighlightOverlay(
     });
     let retain_style = Callback::new(move |()| {
         painted_syntax.with_value(|syntax| {
-            syntax
-                .as_ref()
-                .is_some_and(|syntax| actions.retain_pending_paint(syntax.0, !syntax.1.is_empty()))
+            syntax.as_ref().is_some_and(|syntax| {
+                actions.retain_pending_paint(syntax.0, painted_complete_rows.get_value())
+            })
         }) && presented_scope.get_value() == presentation_scope.get_untracked()
     });
     let fragment_cache =
@@ -1405,6 +1407,8 @@ fn HighlightOverlay(
         layout_revision.track();
         actions.view_revision();
         actions.preferences();
+        // Preparation readiness can advance without changing neutral geometry.
+        prepared_paint.track();
         let prepared_tokens = tokens.get();
         if retain_style.run(()) || !actions.full_row_paint_ready() {
             batch_key.set_value(None);
@@ -1753,6 +1757,7 @@ fn HighlightOverlay(
         }
         painted_whitespace.set_value(show_whitespace.get_untracked());
         painted_syntax.set_value(Some(tokens.get_untracked()));
+        painted_complete_rows.set_value(!prepared_paint.get_untracked().1.is_empty());
         rendered_scope.set(actions.projection_revision());
         rendered.set(html);
         presented_scope.set_value(presentation_scope.get_untracked());
@@ -1901,7 +1906,7 @@ fn HighlightOverlay(
                 || painted_syntax.with_value(|paint| {
                     paint
                         .as_ref()
-                        .is_none_or(|(prepared, tokens)| !prepared && tokens.is_empty())
+                        .is_none_or(|(prepared, _)| !prepared && !painted_complete_rows.get_value())
                 }))
             && textarea_ref.get_untracked().is_some_and(|input| {
                 current_editor_target(actions, &input)
@@ -1912,7 +1917,7 @@ fn HighlightOverlay(
                     && crate::viewport::editor_scroll(&input).client_width() > 0
                     && crate::viewport::editor_scroll(&input).client_height() > 0
             })
-            && tokens.with_untracked(|(prepared, tokens)| {
+            && prepared_paint.with_untracked(|(prepared, tokens)| {
                 actions.initial_viewport_paint_ready(&visible.get_untracked(), (*prepared, tokens))
             });
         if initial {

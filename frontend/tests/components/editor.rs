@@ -3208,7 +3208,9 @@ async fn measure_highlight_bursts() {
                 if actions.syntax_is_pending() {
                     return false;
                 }
-                let paint = actions.syntax_paint();
+                let paint = openwebide_frontend::state_actions::editor::EditorActions::render_paint(
+                    actions.syntax_paint(),
+                );
                 actions.measured_rows().is_some_and(|measured| {
                     measured.syntax.as_ref().is_some_and(|syntax| {
                         syntax.0 == paint.0 && std::sync::Arc::ptr_eq(&syntax.1, &paint.1)
@@ -8508,6 +8510,8 @@ async fn cooperative_terminal_plain_paint_preserves_source_and_rejects_stale_sco
                 actions.syntax_paint().1.is_empty(),
                 "pending fallback borrows source instead of lexing synchronously"
             );
+            let pending_render = EditorActions::render_paint(actions.syntax_paint());
+            assert!(!pending_render.0 && pending_render.1.is_empty());
             wait_until("cooperative fallback publishes complete plain rows", || {
                 !actions.syntax_is_pending()
                     && mounted
@@ -8528,6 +8532,11 @@ async fn cooperative_terminal_plain_paint_preserves_source_and_rejects_stale_sco
             .await;
             let painted = actions.syntax_paint();
             assert!(!painted.0);
+            let completed_render = EditorActions::render_paint(painted.clone());
+            assert!(
+                std::sync::Arc::ptr_eq(&pending_render.1, &completed_render.1),
+                "plain completion must preserve neutral geometry identity"
+            );
             assert_eq!(
                 *painted.1,
                 openwebide_core::highlight::share_token_rows(highlight_lines(

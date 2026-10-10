@@ -246,6 +246,20 @@ impl EditorActions {
         }
     }
 
+    /// Neutral rows always borrow the immutable projection. Completing a plain
+    /// token table changes preparation readiness, not row styling or geometry.
+    pub fn render_paint(
+        paint: (bool, std::sync::Arc<openwebide_core::highlight::TokenRows>),
+    ) -> (bool, std::sync::Arc<openwebide_core::highlight::TokenRows>) {
+        static NEUTRAL: std::sync::LazyLock<std::sync::Arc<openwebide_core::highlight::TokenRows>> =
+            std::sync::LazyLock::new(|| std::sync::Arc::new(Vec::new()));
+        if paint.0 {
+            paint
+        } else {
+            (false, NEUTRAL.clone())
+        }
+    }
+
     pub fn install_syntax_worker(self) {
         self.install_fallback_paint();
         if !crate::editor_worker::enabled() {

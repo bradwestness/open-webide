@@ -4715,3 +4715,40 @@ hosted x64 startup failure. The preceding checkpoint `87df822` passed all five
 CI jobs ([receipt](editor-performance/grouped-ci-87df822.json)) before this
 lifecycle change. Current hosted verification and repeated reliability checks
 remain required; responsiveness, memory and physical PWA gates remain open.
+
+
+## Neutral rendering identity
+
+The shared editor facade now supplies one neutral rendering identity for plain
+fallback rows, which borrow text from the current immutable projection. Completing
+the fallback token table no longer changes geometry identity when the row styling
+is unchanged. Grammar token identities remain distinct. The component separately
+retains complete-row readiness and uses preparation state for initial immediate
+paint, preserving pending-source retention and file-switch paint cancellation.
+Source, project, account, font and projection ownership checks still apply.
+
+The full 173-test editor browser suite passes on two-CPU Linux arm64, including
+both font matrices, burst coalescing, localized wrapped-row reuse, bounded native
+input, source retention and file-switch cancellation
+([record](editor-performance/neutral-render-identity-browser.jsonl)). The warm-cache
+contract compares the rendering identity that owns measured geometry; its readiness
+requirement and all paint/probe count limits remain unchanged. The existing
+fallback contract checks identity before and after completion in both modes.
+All 128 native frontend tests, strict optimized frontend WASM lint and the
+production build pass.
+
+The preceding `3017d5a` checkpoint passed all five hosted CI jobs
+([receipt](editor-performance/grouped-ci-3017d5a.json)), following the green
+`87df822` checkpoint. This cache change still needs current hosted CI; repeated
+release/PWA verification and the broader responsiveness/memory gates remain open.
+
+Sixteen fresh production samples cover near-byte-limit and 1-MiB Unicode long-line
+files, both modes, wrapping on/off and two repetitions per combination
+([record](editor-performance/neutral-render-identity-production.jsonl)). Peak/final
+Chrome PSS checks pass in every sample. Near-byte-limit input takes 148–177 ms;
+long-line input takes 674–713 ms, with roughly 740–860 MiB peak Chrome PSS across
+these samples. These are scrolled native-window measurements; complete-source
+after-input verification is explicitly false. They do not establish a latency or
+memory improvement and still fail the broader responsiveness gate. Repeated
+parser rejection waits, styled boundaries, beginning edits and physical PWA/input
+verification remain required.

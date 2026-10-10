@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Keep neutral editor geometry identity stable when plain fallback preparation completes, while preserving separate preparation readiness and source ownership.
+
 - Retry initial editor input binding when document preparation finishes after mounting, without restarting released geometry fallbacks.
 
 - Report editor parser work-budget exhaustion as a capacity fallback, distinguishing it from cancellation while preserving file content and grammar recovery.
