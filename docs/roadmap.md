@@ -127,7 +127,9 @@ tracks the remaining work rather than every optimization already shipped.
   and validation. Bound cache-missing fallback scans, whole-row capacity growth,
   scratch allocation and remaining final publication work. Synchronous document
   indexes still shift/splice in place; immutable retained tables must remain exact.
-  Edits now retain preceding rows with proved unchanged complete newline endings;
+  Edits now retain preceding rows with proved unchanged complete newline endings
+  and following rows when the replacement preserves their line boundary or moves
+  them to the document start;
   changed long rows still rebuild their coordinate and visual indexes.
   Row admission summaries, UTF-16 totals and native checkpoints now share the
   visual character pass; remaining synchronous construction still needs bounded

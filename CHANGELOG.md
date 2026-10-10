@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Retain the following row's exact coordinates when an edit preserves its line boundary or moves it to the document start, avoiding rescanning an untouched long line. Rebuild joined rows normally.
+
 - Collect row admission, UTF-16 totals and native checkpoints during the visual index's character pass, avoiding repeated source-row scans.
 - Inventory compiled editor tests and verify complete, disjoint browser groups for CI, preserving individual readiness limits and separate font matrices.
 

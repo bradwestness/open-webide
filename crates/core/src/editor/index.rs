@@ -95,6 +95,7 @@ impl LineIndex {
     pub fn update(&mut self, old_len: usize, new: &str, changed: Range<usize>, new_end: usize) {
         let old_rows = self.rows.len();
         let changed_start = changed.start;
+        let changed_end = changed.end;
         let mut edit = LineEdit::new(&self.rows, old_len, new.len(), changed, new_end);
         // The conservative envelope includes the preceding logical row. Its
         // complete LF/CRLF ending is unchanged when it precedes the replacement,
@@ -105,6 +106,7 @@ impl LineIndex {
             edit.rows.start += 1;
             edit.bytes.start = prefix.end;
         }
+        edit.retain_suffix(&self.rows, changed_end, new_end, new);
         let (start_row, end_row) = (edit.rows.start, edit.rows.end);
         let (start, end) = (edit.bytes.start, edit.bytes.end);
         let mut replacement = Self::new(&new[start..end]);
@@ -396,6 +398,49 @@ impl LineIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edits_ending_at_row_boundaries_retain_only_separate_suffix_coordinates() {
+        let body = "文😀e\u{301}\t words ".repeat(6000);
+        for ending in ["\n", "\r\n"] {
+            for tail in ["", ending, "\nlast"] {
+                let prefix = format!("head{ending}");
+                let source = format!("{prefix}{body}{tail}");
+                for (start, replacement, retain) in [
+                    (0, "new\n", true),
+                    (0, "new\r\n", true),
+                    (4, "\n", true),
+                    (prefix.len(), "new\n", true),
+                    (0, "", true),
+                    (4, "", false),
+                    (0, "new\r", false),
+                    (prefix.len(), "new", false),
+                ] {
+                    let mut index = LineIndex::new(&source);
+                    let snapshot = index.clone();
+                    let retained = index.coordinates[1].visual().unwrap();
+                    let mut next = source.clone();
+                    next.replace_range(start..prefix.len(), replacement);
+                    index.update(
+                        source.len(),
+                        &next,
+                        start..prefix.len(),
+                        start + replacement.len(),
+                    );
+                    assert_eq!(index, LineIndex::new(&next));
+                    assert_eq!(snapshot, LineIndex::new(&source));
+                    let row = row_at(&index.rows, start + replacement.len());
+                    assert_eq!(
+                        index.coordinates[row]
+                            .visual()
+                            .unwrap()
+                            .shared_with(&retained),
+                        retain
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn edits_after_complete_long_rows_retain_exact_coordinates() {
