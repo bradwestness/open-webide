@@ -196,7 +196,7 @@ impl EditorActions {
     pub fn prepare_save(
         self,
         rules: &openwebide_core::editor::EditorRules,
-    ) -> Result<Option<String>, EditError> {
+    ) -> Result<Option<EditorText>, EditError> {
         let Some(key) = self.key() else {
             return Ok(None);
         };
@@ -215,7 +215,7 @@ impl EditorActions {
             self.workspace.content.set(text.clone());
             self.publish_dirty(key);
         }
-        result.map(|text| text.map(Into::into))
+        result
     }
 
     pub fn begin_composition(self) {
@@ -2036,6 +2036,19 @@ mod source_tests {
             assert_eq!(buffer.content, source);
             assert_eq!(snapshot.content, source);
             assert_eq!(edited, "x文😀\r\nbody\n");
+            let written = actions
+                .prepare_save(&actions.rules_untracked())
+                .unwrap()
+                .unwrap();
+            let prepared = workspace.editor_documents.with_untracked(|documents| {
+                documents
+                    .get(&(1, "source.rs".into()))
+                    .unwrap()
+                    .shared_text()
+            });
+            assert!(Arc::ptr_eq(&written.shared(), &prepared));
+            assert!(Arc::ptr_eq(&written.shared(), &actions.source().shared()));
+            assert_eq!(source, "文😀\r\nbody\n");
         });
     }
 }

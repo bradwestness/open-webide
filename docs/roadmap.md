@@ -138,7 +138,9 @@ tracks the remaining work rather than every optimization already shipped.
   viewing. Immutable editor sources now share cached admission decisions, using
   completed document summaries or cooperative rejection results. Finish remaining
   synchronous document callers, recovery validation/copies, metadata capacity
-  growth, external saved-version allocation and final publication costs. Prepared
+  growth, external borrowed-version allocation and final publication costs. Shared
+  save preparation and acknowledgements now retain the immutable written source,
+  preserving late-write ownership without duplicating its bytes. Prepared
   documents now share their immutable source with the saved baseline; standalone
   edits detach the baseline only when necessary to preserve in-place source edits.
   Clean recovery snapshots now capture source directly without building indexes;
@@ -243,10 +245,17 @@ tracks the remaining work rather than every optimization already shipped.
   Linux arm64 with unchanged readiness deadlines and paint/probe limits
   ([record](editor-performance/rejected-source-browser.jsonl)); current hosted
   verification, repeated reliability and the broader gates remain open.
+  The rejected-source checkpoint `43f66c9` passed all five hosted CI jobs
+  ([receipt](editor-performance/grouped-ci-43f66c9.json)).
   Prepared-source baseline sharing passes all 469 native core tests, 128 native
   frontend tests and 174 editor browser tests with both font matrices
   ([record](editor-performance/shared-saved-source-browser.jsonl)). Current hosted
   verification is still required for this allocation change.
+  Immutable save payload/acknowledgement sharing additionally passes 470 native
+  core tests, 128 native frontend tests and 30 selected browser checks, including
+  both-adapter save ownership and recovery failures
+  ([record](editor-performance/immutable-save-source-browser.jsonl)); verify the
+  complete hosted suite for this save change.
   Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving

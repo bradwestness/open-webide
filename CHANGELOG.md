@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Retain immutable editor source through save preparation and acknowledgement, avoiding full-file copies while preserving newer drafts and composition cancellation.
+
 - Share prepared editor source with its saved baseline instead of duplicating the full file during publication. Preserve in-place edits when only the baseline retains the source, immutable snapshots, late save acknowledgements and composition cancellation.
 
 - Paint edits to parser-rejected documents while grammar analysis retries, preserving source ownership and grammar recovery. Restart unfinished wrapped geometry when syntax preparation advances, so rejected-source edits cannot stall after a worker reply.

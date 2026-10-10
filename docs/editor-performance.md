@@ -4856,3 +4856,38 @@ remains multi-second, and no latency improvement is established. The byte-limit
 beginning edits additionally verify complete source, so their positions differ
 from the preceding scrolled-window cohort. Full responsiveness, memory, unsupported
 shaping and physical PWA release gates remain open.
+
+
+## Immutable source through asynchronous saves
+
+`EditorActions::prepare_save` now returns the same `EditorText` source retained by
+the normalized document and workspace buffer. The shared workspace save workflow
+borrows its bytes for `Workspace::write`, then acknowledges its immutable source
+allocation through `Document::mark_saved_source`. Previously converting the result
+to `String` copied the full source, and acknowledging a late write could allocate
+a second saved-version copy. Local filesystem and remote HTTP primitives retain
+the same contracts; no UI or mode-specific save policy was added.
+
+Acknowledgement records the version actually written, including when newer edits
+have detached the current source. Existing account, workspace-root, bridge, project
+and file-switch ownership checks remain unchanged. Borrowed external disk versions
+still use the exact-byte `mark_saved_version` path. Source identity regressions
+cover prepared save payloads, late acknowledgements, undo and composition
+cancellation. This is an allocation/lifetime change; it makes no new whole-app
+latency or process-memory claim. Full responsiveness and physical-device gates
+remain open.
+
+The preceding rejected-source checkpoint `43f66c9` passed all five hosted CI jobs
+([receipt](editor-performance/grouped-ci-43f66c9.json)). The newer baseline-sharing
+checkpoint and current save change still require their own hosted verification.
+
+All 470 native core tests, 128 native frontend tests, strict native-core lint
+(including tests) and optimized frontend WASM lint pass. Thirty selected browser
+checks pass on two-CPU Linux arm64, including six editor save/recovery contracts
+and the source-allocation regression
+([record](editor-performance/immutable-save-source-browser.jsonl)). The save
+ownership contract holds writes across root/file/account/bridge/project changes,
+write failure and newer typing in both local filesystem and remote HTTP adapters.
+Formatting and recovery-conflict checks retain their original assertions and
+three-second readiness deadline. This selected run does not replace full hosted
+CI, production timing or physical-device verification.

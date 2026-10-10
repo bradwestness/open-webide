@@ -990,7 +990,7 @@ impl WorkspaceActions {
                         }
                         workspace.editor_documents.update(|documents| {
                             if let Some(document) = documents.get_mut(&(project_id, path.clone())) {
-                                document.mark_saved_version(&content);
+                                document.mark_saved_source(content.shared());
                             }
                         });
                         workspace.editor_buffers.update(|buffers| {

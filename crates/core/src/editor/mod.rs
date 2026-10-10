@@ -548,6 +548,11 @@ impl Document {
         let saved = self.saved_version(text);
         self.mark_saved_snapshot(saved);
     }
+    /// Acknowledge the immutable source actually written by an asynchronous
+    /// save. Retain its allocation even if newer typing replaced the document.
+    pub fn mark_saved_source(&mut self, source: std::sync::Arc<String>) {
+        self.mark_saved_snapshot(source);
+    }
     fn saved_version(&self, text: &str) -> std::sync::Arc<String> {
         if std::ptr::eq(self.text.as_str(), text) {
             self.text.clone()
@@ -1625,11 +1630,11 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&source, &document.saved));
         assert_eq!(document.recovery().saved, *source);
         let written = document.shared_text();
-        document.mark_saved_version(&written);
+        document.mark_saved_source(written.clone());
         assert!(std::sync::Arc::ptr_eq(&written, &document.saved));
         assert!(!document.is_dirty());
         document.insert_native_text("b", None).unwrap();
-        document.mark_saved_version(&written);
+        document.mark_saved_source(written.clone());
         assert!(document.is_dirty());
         assert!(std::sync::Arc::ptr_eq(&written, &document.saved));
         assert!(document.undo());
@@ -1638,6 +1643,29 @@ mod tests {
         assert!(document.is_dirty());
         assert_eq!(document.text(), source.as_str());
         assert_eq!(document.recovery().saved, *written);
+    }
+
+    #[test]
+    fn written_source_acknowledgements_survive_composition_cancellation_without_copying() {
+        let mut document = Document::new("before");
+        document.begin_composition(Some(1));
+        document
+            .native_edit(
+                Some(Edit::replace(0..0, "preview ")),
+                Selection::caret(8),
+                NativeInputKind::Insert,
+                None,
+            )
+            .unwrap();
+        let written = document.shared_text();
+        document.mark_saved_source(written.clone());
+        assert!(std::sync::Arc::ptr_eq(&written, &document.saved));
+        assert!(!document.is_dirty());
+        assert!(document.cancel_composition());
+        assert_eq!(document.text(), "before");
+        assert!(document.is_dirty());
+        assert!(std::sync::Arc::ptr_eq(&written, &document.saved));
+        assert_eq!(document.recovery().saved, "preview before");
     }
 
     #[test]
