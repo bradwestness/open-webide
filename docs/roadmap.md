@@ -71,7 +71,11 @@ tracks the remaining work rather than every optimization already shipped.
   complete document extents prepare. Finish production startup and memory costs
   across admitted boundary workloads; finish touch pointer selection and
   source-owned caret/selection while preserving composition mappings and complete-native fallback
-  when bounded geometry cannot be proved.
+  when bounded geometry cannot be proved. Basic direct and queued keyboard
+  motion now uses editor admission instead of the separate 2 MiB structure
+  budget; measured neighborhoods retain source and validate only measured rows.
+  Complete projection/native normalization, long word/context traversal and
+  remaining synchronous selection publication still require bounded preparation.
 - [ ] **Tabbed, wrapped and bidirectional layout:** extend bounded preparation
   beyond eligible source-monotonic wrapped paragraphs with complete-word seams;
   finish bidirectional visual-run windows, fine long-row paint and incremental glyph
@@ -282,8 +286,10 @@ tracks the remaining work rather than every optimization already shipped.
   horizontal-fragment and geometry readiness failures. Their cause and any
   contamination from the first failed test remain unproven. Timeout diagnostics
   now distinguish parser status, pending work and painted state without changing
-  deadlines or assertions. Later recovery allocation changes still require their
-  own complete hosted verification.
+  deadlines or assertions. The source-sharing checkpoint `ba33f5d` subsequently
+  passed all five jobs ([receipt](editor-performance/grouped-ci-ba33f5d.json));
+  this does not establish the earlier failure's cause. Later changes still
+  require their own complete hosted verification.
   Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving

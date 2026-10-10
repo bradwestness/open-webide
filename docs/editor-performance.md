@@ -5003,8 +5003,8 @@ case paints the input viewport in 230–266 ms and completes geometry in
 1.12–1.18 seconds; wrapped line-limit input takes 245–249 ms. Peak renderer PSS
 ranges from approximately 684 to 823 MiB. These remain responsiveness and memory
 work, despite successful source/caret checks. Byte-limit beginning-of-source
-samples retain the earlier nonzero vertical scroll position; physical scroll
-alignment needs investigation. Full-source undo publication, transport encoding,
+samples at this checkpoint retained the earlier nonzero vertical scroll
+position; the later keyboard-motion section records its correction. Full-source undo publication, transport encoding,
 cold/fallback geometry and physical PWA/IME/permission verification remain open.
 
 
@@ -5035,3 +5035,63 @@ contracts include cooperative hydration cancellation, stale account/project guar
 disk conflicts, save failure/retry and source identity through both real adapters.
 This is targeted verification of the changed path, not another complete editor
 inventory or a hosted CI result; those wider gates remain open.
+
+
+## Keyboard motion across admitted files
+
+Boundary-size production measurements exposed a correctness gap: navigation used
+the 2 MiB structure-analysis budget even for an admitted 8 MiB editor document.
+The recorded beginning caret could already be zero before Ctrl+Home, masking the
+rejected key while the viewport remained at the earlier scroll position. The
+smaller virtualized-row fixture passes before the change; the larger admitted
+fixture fails to reveal the document-end caret, and the shared core regression
+fails with `SelectionError::TooLarge`.
+
+Direct and queued basic motion now use the document's indexed editor admission.
+Logical row descriptors come from cached source-owned projection/index metadata;
+horizontal and boundary motion no longer computes an unused display column.
+Direct grapheme cursors avoid segmenting the complete prefix on every arrow key.
+Measured neighborhoods retain the immutable source allocation, validate grapheme
+positions only in requested logical rows and use prepared sparse coordinates for
+long rows. The browser's warm and cold adapters use the same shared constructor.
+Fold, source, composition, queue order and measurement identity checks remain.
+
+New core contracts cover admitted files above the structure budget, large folded
+views, queued sparse neighborhoods and exact source allocation identity. Complete
+Unicode segmentation independently checks direct motion at every character boundary
+in representative combining, emoji, regional-indicator and Indic fixtures.
+Sparse layout validation is checked against complete segmentation for large Unicode
+rows, CRLF interiors and a large indivisible grapheme; a dense admitted caret list
+crosses the existing sparse-query batch limit without dropping positions.
+The new browser contract covers both workspace modes and wrapping settings,
+virtualized origin/end rows, extended selection and queued page movement.
+
+This does not complete all responsiveness work: initial projection/native CRLF
+normalization, long word/context traversal, synchronous selection publication,
+unsupported geometry/touch fallbacks and physical-device verification remain open.
+Structural selection commands retain their separate analysis budget. Current
+full hosted verification is still required.
+
+All 479 native core tests, 128 native frontend tests, native/core lint, optimized
+frontend WASM lint including tests and backend WASI lint pass. The complete frozen
+editor inventory passes all 176 browser checks in six disjoint two-CPU Linux arm64
+runs with unchanged readiness, runner and probe limits
+([verification and before/after identities](editor-performance/admitted-keyboard-motion-browser.json)).
+The admitted large-file browser regression passes in both modes with wrapping
+on/off, including source-end/origin viewport reveal, directional selection and
+queued page motion. The preceding source-sharing checkpoint `ba33f5d` passed all
+five hosted jobs ([receipt](editor-performance/grouped-ci-ba33f5d.json)); current
+motion changes still require their own complete and repeated CI verification.
+
+The uninstrumented production build passes eight byte-boundary beginning-input
+samples: two repetitions per workspace mode with wrapping on/off
+([complete samples and manifest](editor-performance/admitted-keyboard-motion-production.jsonl)).
+Every sample retains the complete source, proves caret offset zero and has input
+scroll coordinates `(top: 2, left: 0)`, replacing the preceding cohort's remote
+viewport position far down the file. Cold viewport paint still takes
+1.43–1.54 seconds, input viewport paint 152–171 ms and peak renderer PSS
+approximately 775–825 MiB. These are correctness/remaining-cost measurements,
+not an isolated memory-improvement claim. The backend remains the unchanged
+historical control; local database recovery fixtures do not verify physical folder
+permissions. This checkpoint fixes navigation and removes repeated-prefix layout
+validation/source copies; the broader responsiveness/device gates remain open.

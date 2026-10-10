@@ -1424,7 +1424,7 @@ fn measurement_context<'a>(
 fn measured_layout(
     actions: EditorActions,
     input: &web_sys::HtmlTextAreaElement,
-    source: &str,
+    source: &crate::state::workspace::EditorText,
     projection: openwebide_core::editor::FoldProjection,
     global: Option<&VisualMetrics>,
     row_element: impl Fn(usize) -> Option<web_sys::Element>,
@@ -1456,7 +1456,7 @@ fn measured_layout(
     {
         return None;
     }
-    VisualLayout::neighborhood(source, projection, identity, &lines, carets).ok()
+    VisualLayout::neighborhood_source(source.shared(), projection, identity, &lines, carets).ok()
 }
 
 /// Cold measurement uses the same exact row sampler as warm paint, with bounded
@@ -1524,7 +1524,7 @@ pub(super) fn neighborhood_layout(
     {
         return None;
     }
-    VisualLayout::neighborhood(&source, projection, identity, &lines, carets).ok()
+    VisualLayout::neighborhood_source(source.shared(), projection, identity, &lines, carets).ok()
 }
 
 /// Current painted coverage already contains exact browser caret geometry. Do

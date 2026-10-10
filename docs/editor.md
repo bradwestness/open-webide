@@ -127,8 +127,12 @@ and neighboring logical lines using the same caret sampler as prepared paint.
 Explicit neighbor links preserve wrapped movement without estimating unmeasured
 heights; stable line-relative IDs are mapped separately to screen coordinates. File/account/source/fold changes cancel stale
 requests; unavailable layout cancels after eight frames with an error. Full paint
-viewport rendering remains a follow-up. Multiple selection movement and
-structural selection commands are bounded to files up to 2 MiB; Escape still
+viewport preparation remains a follow-up. Basic single/multiple-cursor movement
+and queued page/arrow navigation work throughout admitted editor files (up to
+8 MiB, 100,000 display lines and 1 MiB per line). They reuse indexed logical rows;
+measured neighborhoods share the document source and validate grapheme positions
+only in measured rows, using prepared sparse coordinates for long rows. Structural
+selection commands retain their separate 2 MiB analysis budget; Escape still
 returns to the primary cursor in larger files.
 
 ## Indentation

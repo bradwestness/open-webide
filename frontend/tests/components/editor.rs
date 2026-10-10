@@ -34,6 +34,99 @@ fn editor_key(
 }
 
 #[wasm_bindgen_test]
+async fn document_boundary_navigation_reveals_unpainted_rows_and_preserves_selection_in_both_modes()
+{
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let row = format!("文😀 café {}\r\n", "words ".repeat(32));
+    let original = row.repeat(2 * 1024 * 1024 / row.len() + 1000);
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for word_wrap in [false, true] {
+            let source = original.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = word_wrap);
+                state.workspace.open_file.set(Some("navigation.txt".into()));
+                state.workspace.content.set(source.into());
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+            });
+            let actions = EditorActions::new(mounted.state.workspace);
+            let input: web_sys::HtmlTextAreaElement =
+                mounted.element(".editor-textarea").unchecked_into();
+            let scroll = mounted.element(".editor-scroll-surface");
+            wait_until("complete navigation row extents", || {
+                actions.measured_rows().is_some()
+                    && scroll.scroll_height() > scroll.client_height() * 10
+            })
+            .await;
+            scroll.set_scroll_top(f64::from(scroll.scroll_height()) * 0.7);
+            scroll
+                .dispatch_event(&web_sys::Event::new("scroll").unwrap())
+                .unwrap();
+            wait_until("origin row is outside virtualized paint", || {
+                scroll.scroll_top() > 1000.0
+                    && mounted
+                        .root
+                        .query_selector(
+                            ".editor-highlight-content .editor-source-line[data-line='1']",
+                        )
+                        .unwrap()
+                        .is_none()
+            })
+            .await;
+            input.focus().unwrap();
+            assert!(editor_key(&input, "End", true, false).default_prevented());
+            wait_until("document end reveals its source caret", || {
+                actions.selection(&original) == Some(Selection::caret(original.len()))
+                    && scroll.scroll_top() + f64::from(scroll.client_height())
+                        >= f64::from(scroll.scroll_height()) - 40.0
+            })
+            .await;
+            assert!(editor_key(&input, "Home", true, true).default_prevented());
+            wait_until("extended document start reveals its source caret", || {
+                actions.selection(&original)
+                    == Some(Selection {
+                        anchor: original.len(),
+                        head: 0,
+                    })
+                    && scroll.scroll_top() < 40.0
+            })
+            .await;
+            assert!(editor_key(&input, "Home", true, false).default_prevented());
+            assert!(editor_key(&input, "PageDown", false, false).default_prevented());
+            wait_until(
+                "large document page motion drains and reveals its caret",
+                || {
+                    actions.queued_motion_ticket().is_none()
+                        && actions.selection(&original).is_some_and(|selection| {
+                            selection.head > 0 && selection.anchor == selection.head
+                        })
+                        && scroll.scroll_top() > 0.0
+                },
+            )
+            .await;
+            assert!(editor_key(&input, "Home", true, false).default_prevented());
+            wait_until(
+                "large document page motion can return to the origin",
+                || {
+                    actions.selection(&original) == Some(Selection::caret(0))
+                        && scroll.scroll_top() < 40.0
+                },
+            )
+            .await;
+            assert_eq!(actions.source(), original);
+        }
+    }
+}
+
+#[wasm_bindgen_test]
 async fn parser_reindent_preserves_literals_and_embedded_boundaries_in_both_modes() {
     use openwebide_core::{
         WorkspaceMode,

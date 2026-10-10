@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Allow keyboard navigation throughout admitted editor files, including files above the 2 MiB syntax-analysis budget. Reuse logical row indexes and source allocations for direct and queued wrapped movement, with grapheme-safe sparse caret validation.
+
 - Share immutable editor source through recovery capture, queued record clones and hydration preparation, preserving the existing encoded storage format and independent saved/draft versions.
 - Reuse complete source-owned editor indexes for final recovery admission and fold validation, retaining capacity limits, metadata checks and error precedence.
 
