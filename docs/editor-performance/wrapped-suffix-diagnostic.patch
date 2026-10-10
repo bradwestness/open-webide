@@ -1,0 +1,256 @@
+diff --git a/crates/core/src/editor/wrapped_paragraph.rs b/crates/core/src/editor/wrapped_paragraph.rs
+index 81fad81..fd7cf2b 100644
+--- a/crates/core/src/editor/wrapped_paragraph.rs
++++ b/crates/core/src/editor/wrapped_paragraph.rs
+@@ -27,6 +27,7 @@ pub struct WrappedParagraphPreparation<'a> {
+     scroll_width: f64,
+     height: Option<f64>,
+     complete: bool,
++    last_replay_failure: Option<&'static str>,
+ }
+ impl<'a> WrappedParagraphPreparation<'a> {
+     pub fn new(body: &'a str, index: VisualLineIndex, runs: Arc<[usize]>) -> Option<Self> {
+@@ -65,6 +66,7 @@ impl<'a> WrappedParagraphPreparation<'a> {
+             scroll_width: 0.0,
+             height: None,
+             complete: false,
++            last_replay_failure: None,
+         };
+         result.probe = result.probe_at(0, 0.0)?;
+         result.next = result.continuation(&result.probe)?;
+@@ -351,7 +353,13 @@ impl<'a> WrappedParagraphPreparation<'a> {
+         style_start: usize,
+         limit: usize,
+     ) -> usize {
++        self.last_replay_failure = None;
+         if !old.wrapped || self.expected.is_empty() {
++            self.last_replay_failure = Some(if old.wrapped {
++                "wrapped-replay-empty-overlap"
++            } else {
++                "wrapped-replay-unwrapped-cache"
++            });
+             return 0;
+         }
+         let mut reused = 0;
+@@ -360,6 +368,11 @@ impl<'a> WrappedParagraphPreparation<'a> {
+                 break;
+             };
+             if probe.bytes.start < style_start || probe.bytes.end == self.body.len() {
++                self.last_replay_failure = Some(if probe.bytes.start < style_start {
++                    "wrapped-replay-before-suffix"
++                } else {
++                    "wrapped-replay-terminal"
++                });
+                 break;
+             }
+             let Some(start) = old_body
+@@ -374,6 +387,7 @@ impl<'a> WrappedParagraphPreparation<'a> {
+                 .ok()
+                 .map(|at| &old.records[at])
+             else {
++                self.last_replay_failure = Some("wrapped-replay-missing-probe");
+                 break;
+             };
+             if !self.replay_record(old_body, old, record, true) {
+@@ -383,6 +397,9 @@ impl<'a> WrappedParagraphPreparation<'a> {
+         }
+         reused
+     }
++    pub fn last_replay_failure(&self) -> Option<&'static str> {
++        self.last_replay_failure
++    }
+     fn replay_record(
+         &mut self,
+         old_body: &str,
+@@ -390,6 +407,12 @@ impl<'a> WrappedParagraphPreparation<'a> {
+         record: &ParagraphMeasurement,
+         shifted: bool,
+     ) -> bool {
++        macro_rules! reject {
++            ($reason:literal) => {{
++                self.last_replay_failure = Some(concat!("wrapped-replay-", $reason));
++                return false;
++            }};
++        }
+         let probe = &self.probe;
+         let old_byte = |byte: usize| {
+             if shifted {
+@@ -401,16 +424,16 @@ impl<'a> WrappedParagraphPreparation<'a> {
+             }
+         };
+         if old_byte(probe.bytes.end) != Some(record.bytes.end) {
+-            return false;
++            reject!("probe-end");
+         }
+         if old_body.get(record.bytes.clone()) != self.body.get(probe.bytes.clone()) {
+-            return false;
++            reject!("source");
+         }
+         if self
+             .width
+             .is_some_and(|width| width.to_bits() != record.width.to_bits())
+         {
+-            return false;
++            reject!("width");
+         }
+         let run_slice = |runs: &[usize], bytes: &Range<usize>| {
+             runs.partition_point(|byte| *byte <= bytes.start)
+@@ -424,26 +447,26 @@ impl<'a> WrappedParagraphPreparation<'a> {
+                 .zip(new_runs)
+                 .any(|(old, new)| old_byte(*new) != Some(*old))
+         {
+-            return false;
++            reject!("runs");
+         }
+         let Some(targets) = self.targets() else {
+-            return false;
++            reject!("targets");
+         };
+         let Some(positions) = self.index.positions(self.body, &targets) else {
+-            return false;
++            reject!("positions");
+         };
+         let Some(old_start) = old.index.index_at_byte(old_body, record.bytes.start) else {
+-            return false;
++            reject!("old-start");
+         };
+         let Some(old_targets) = targets
+             .iter()
+             .map(|glyph| old_start.checked_add(glyph.checked_sub(probe.glyph_start)?))
+             .collect::<Option<Vec<_>>>()
+         else {
+-            return false;
++            reject!("old-targets");
+         };
+         let Some(old_positions) = old.index.positions(old_body, &old_targets) else {
+-            return false;
++            reject!("old-positions");
+         };
+         let mut rectangles = Vec::with_capacity(targets.len());
+         for ((glyph, old_glyph), ((byte, _), (old_position, _))) in targets
+@@ -452,13 +475,13 @@ impl<'a> WrappedParagraphPreparation<'a> {
+             .zip(positions.into_iter().zip(old_positions))
+         {
+             if old_byte(byte) != Some(old_position) {
+-                return false;
++                reject!("mapped-source");
+             }
+             let Ok(at) = record
+                 .rectangles
+                 .binary_search_by_key(&old_glyph, |rect| rect.glyph)
+             else {
+-                return false;
++                reject!("missing-glyph");
+             };
+             rectangles.push(GlyphRectangle {
+                 glyph,
+@@ -470,17 +493,17 @@ impl<'a> WrappedParagraphPreparation<'a> {
+             // the old first row. Nonoverflowing rows retain the exact row box;
+             // overflow-sensitive probes require fresh browser dimensions.
+             if record.scroll_width != Some(record.width.ceil()) || probe.origin > record.width {
+-                return false;
++                reject!("overflow");
+             }
+             let Some(first) = rectangles.first().copied() else {
+-                return false;
++                reject!("first");
+             };
+             let Some(expected) = self
+                 .expected
+                 .first()
+                 .filter(|expected| expected.glyph == first.glyph)
+             else {
+-                return false;
++                reject!("expected");
+             };
+             // A changed incoming gap can translate only the first visual row.
+             // Require dense proof past its line break; the ordinary overlap gate
+@@ -491,14 +514,14 @@ impl<'a> WrappedParagraphPreparation<'a> {
+                     .ok()
+                     .is_some_and(|at| rectangles[at].top > first.top)
+             }) {
+-                return false;
++                reject!("line-break");
+             }
+             let delta = expected.left - first.left;
+             for rect in &mut rectangles {
+                 if rect.top.to_bits() == first.top.to_bits() {
+                     rect.left += delta;
+                     if rect.left + rect.width > record.width {
+-                        return false;
++                        reject!("translated-overflow");
+                     }
+                 }
+             }
+@@ -506,9 +529,13 @@ impl<'a> WrappedParagraphPreparation<'a> {
+         // The same record gate used for fresh browser probes validates every
+         // dense overlap, including existing subpixel layout quantization.
+         let Some(scroll_width) = record.scroll_width else {
+-            return false;
++            reject!("scroll-width");
+         };
+-        self.record(record.width, record.height, scroll_width, &rectangles)
++        let valid = self.record(record.width, record.height, scroll_width, &rectangles);
++        if !valid {
++            self.last_replay_failure = Some("wrapped-replay-overlap");
++        }
++        valid
+     }
+     pub fn finish(self) -> Option<(f64, WrappedGeometry)> {
+         self.finish_with_measurements()
+diff --git a/frontend/src/components/editor_rows.rs b/frontend/src/components/editor_rows.rs
+index 4161df9..5fe278b 100644
+--- a/frontend/src/components/editor_rows.rs
++++ b/frontend/src/components/editor_rows.rs
+@@ -255,10 +255,20 @@ async fn measure_wrapped_paragraph(
+         if !current() {
+             return Ok(None);
+         }
++        if suffix.is_none()
++            && let Some(trace) = &timing
++        {
++            trace.report(paint, "wrapped-replay-no-suffix", 0.0, probe.bytes.start);
++        }
+         if let Some(suffix) = suffix.as_ref() {
+             let reused = actions.resume_paragraph_suffix_batch(suffix, &mut plan);
+             #[cfg(feature = "test-support")]
+             SUFFIX_PROBES.set(SUFFIX_PROBES.get() + reused);
++            if let Some(trace) = &timing
++                && let Some(reason) = plan.last_replay_failure()
++            {
++                trace.report(paint, reason, 0.0, probe.bytes.start);
++            }
+             if reused > 0 {
+                 crate::util::yield_task().await;
+                 continue;
+diff --git a/tools/measure-editor-view.py b/tools/measure-editor-view.py
+index 0b9e518..f0e25fb 100644
+--- a/tools/measure-editor-view.py
++++ b/tools/measure-editor-view.py
+@@ -184,10 +184,16 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
+                         return scroll && getComputedStyle(scroll).position === 'absolute' ? scroll : input;
+                     };
+                     window.editorViewMeasurement = {maxFrameMs: 0, inputAt: 0,
+-                        longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0, phase: "cold", probes: [], batches: [], workers: [], fonts: [], nativeEvents: [], traceTruncated: false};
++                        longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0, phase: "cold", probes: [], batches: [], replays: [], workers: [], fonts: [], nativeEvents: [], traceTruncated: false};
+                     if (__TRACE__) {
+                         const batches = new WeakMap();
+                         window.__openwebideEditorProbeTiming = (paint, phase, elapsedMs, units) => {
++                            if (phase.startsWith("wrapped-replay-")) {
++                                if (editorViewMeasurement.replays.length < 256)
++                                    editorViewMeasurement.replays.push({at:performance.now(),phase:editorViewMeasurement.phase,reason:phase,sourceStart:units});
++                                else editorViewMeasurement.traceTruncated = true;
++                                return;
++                            }
+                             let record = batches.get(paint);
+                             if (phase === "render" || phase === "paragraph-render") {
+                                 record = null;
+@@ -449,7 +455,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
+                     "afterInputWasmCommittedBytes": tasks["wasmBytes"],
+                     "longTasks": tasks["longTasks"], "longTaskMs": tasks["longTaskMs"],
+                     "maxLongTaskMs": tasks["maxLongTaskMs"], "maxFrameIncludingInputMs": tasks["maxFrameMs"],
+-                    **({"layoutProbes": tasks["probes"], "preparationBatches": tasks["batches"], "workerEvents": tasks["workers"], "fontEvents": tasks["fonts"], "nativeEvents": tasks["nativeEvents"], "traceTruncated": tasks["traceTruncated"]} if trace else {})}
++                    **({"layoutProbes": tasks["probes"], "preparationBatches": tasks["batches"], "replayFailures": tasks["replays"], "workerEvents": tasks["workers"], "fontEvents": tasks["fonts"], "nativeEvents": tasks["nativeEvents"], "traceTruncated": tasks["traceTruncated"]} if trace else {})}
+         except (AssertionError, TimeoutError, RuntimeError) as error:
+             observed = samples.finish() if samples else {}
+             samples = None

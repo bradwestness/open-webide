@@ -3715,3 +3715,31 @@ preparation and capped-rescan avoidance (0.05 s), failed-overlap complete fallba
 (4.24 s). These times are test execution, excluding compilation and browser
 startup. Strict optimized WASM frontend library/test Clippy, formatting and the
 production Trunk/PWA build pass. Full CI for this new checkpoint remains required.
+
+### Near-limit wrapped suffix rejection diagnosis
+
+A temporary opt-in trace adjacent to the existing core rejection gates identifies
+why the beginning edit still measures 70 fresh probes. The diagnostic bundle
+(`openwebide-frontend-1b473f491ddb72d9.js`) uses checkpoint `5dfff38` plus this
+[diagnostic patch](editor-performance/wrapped-suffix-diagnostic.patch). The patch
+is archived for reproduction and is not applied to the shipped editor. It adds
+rejection labels without changing validation, limits, geometry or fallback rules.
+Four core wrapped geometry/replay/failure contracts pass with the trace applied.
+
+The existing Linux image, frozen backend, 4 CPUs, 10 GiB memory and 1 GiB shared
+memory match the preceding samples. No builds or other browser checks ran during
+measurement. Both adapters preserve actual 1,048,567-byte String styling, source
+caret zero, complete source after input and complete 547,721 × 264 extents.
+The [raw trace](editor-performance/wrapped-suffix-rejections-linux.jsonl) has one
+repetition per adapter and no truncated records; it diagnoses failure rather
+than establishing latency or memory improvement. Input paint takes 1130.6 ms
+locally and 1157.9 ms remotely.
+
+Both adapters report the same input rejection counts: 59 translated-first-row
+overflows and eight dense-overlap failures, plus the initial empty-overlap and
+fresh-terminal cases. No source, run-boundary or missing-probe rejection occurs.
+The source and original run boundaries reconnect, but the new incoming gap
+changes wrapping beyond the accepted first-row translation. Removing a rejection
+would discard the exact geometry contract. The next layout work must support
+that changed wrapping phase with measured, source/style-proved geometry rather
+than concentrate only on segmentation or relax overlap tolerances.
