@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Decode recovery source directly from borrowed JSON base64 fields, removing temporary encoded-string copies while retaining owned UTF-8, size limits and the existing storage format.
+
 - Allow keyboard navigation throughout admitted editor files, including files above the 2 MiB syntax-analysis budget. Reuse logical row indexes and source allocations for direct and queued wrapped movement, with grapheme-safe sparse caret validation.
 
 - Share immutable editor source through recovery capture, queued record clones and hydration preparation, preserving the existing encoded storage format and independent saved/draft versions.

@@ -160,9 +160,10 @@ tracks the remaining work rather than every optimization already shipped.
   Recovery capture, record clones and hydration preparation now share immutable
   saved/draft sources; clean buffers without a document share their existing source.
   Final recovery admission and fold row counts now reuse complete source-owned
-  indexes. Recovery transport encode/decode allocations, full-source undo
-  publication, initial metadata validation and final normalization costs still
-  require work.
+  indexes. Canonical JSON decoding now borrows encoded field bytes before
+  creating the owned decoded source. Encoding, complete JSON/network buffers,
+  full-source undo publication, initial metadata validation and final
+  normalization costs still require work.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   parser context/selection-list extraction and final paint publication. Finish
@@ -288,8 +289,11 @@ tracks the remaining work rather than every optimization already shipped.
   now distinguish parser status, pending work and painted state without changing
   deadlines or assertions. The source-sharing checkpoint `ba33f5d` subsequently
   passed all five jobs ([receipt](editor-performance/grouped-ci-ba33f5d.json));
-  this does not establish the earlier failure's cause. Later changes still
-  require their own complete hosted verification.
+  this does not establish the earlier failure's cause. The final-index validation
+  checkpoint `2301c26` also passed all five jobs
+  ([receipt](editor-performance/grouped-ci-2301c26.json)). These are two complete
+  green checkpoints after the earlier failure; current motion/decoding changes
+  still require their own complete hosted verification.
   Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving

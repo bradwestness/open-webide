@@ -612,28 +612,54 @@ pub struct EditorRecoveryRecord {
 mod encoded_text {
     use super::MAX_DOCUMENT_BYTES;
     use base64::{Engine, engine::general_purpose::STANDARD};
-    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+    use serde::{
+        Deserializer, Serializer,
+        de::{Error, Visitor},
+    };
     pub fn serialize<S: Serializer>(value: &str, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&STANDARD.encode(value.as_bytes()))
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<std::sync::Arc<String>, D::Error> {
-        let value = String::deserialize(deserializer)?;
-        if value.len() > MAX_DOCUMENT_BYTES.div_ceil(3) * 4 {
-            return Err(D::Error::custom(
-                "Recovered text exceeds document size limit",
-            ));
+        deserializer.deserialize_str(EncodedText)
+    }
+
+    struct EncodedText;
+    impl<'de> Visitor<'de> for EncodedText {
+        type Value = std::sync::Arc<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("base64-encoded UTF-8 editor text")
         }
-        let bytes = STANDARD.decode(value).map_err(D::Error::custom)?;
-        if bytes.len() > MAX_DOCUMENT_BYTES {
-            return Err(D::Error::custom(
-                "Recovered text exceeds document size limit",
-            ));
+
+        fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
+            if value.len() > MAX_DOCUMENT_BYTES.div_ceil(3) * 4 {
+                return Err(E::custom("Recovered text exceeds document size limit"));
+            }
+            let bytes = STANDARD.decode(value).map_err(E::custom)?;
+            if bytes.len() > MAX_DOCUMENT_BYTES {
+                return Err(E::custom("Recovered text exceeds document size limit"));
+            }
+            String::from_utf8(bytes)
+                .map(std::sync::Arc::new)
+                .map_err(E::custom)
         }
-        String::from_utf8(bytes)
-            .map(std::sync::Arc::new)
-            .map_err(D::Error::custom)
+
+        #[cfg(test)]
+        fn visit_borrowed_str<E: Error>(self, value: &'de str) -> Result<Self::Value, E> {
+            BORROWED_FIELDS.with(|fields| {
+                fields
+                    .borrow_mut()
+                    .push((value.as_ptr() as usize, value.len()));
+            });
+            self.visit_str(value)
+        }
+    }
+
+    #[cfg(test)]
+    std::thread_local! {
+        pub(super) static BORROWED_FIELDS: std::cell::RefCell<Vec<(usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 }
 
@@ -641,6 +667,69 @@ mod encoded_text {
 mod tests {
     use super::super::NativeInputKind;
     use super::*;
+
+    #[test]
+    fn recovery_decode_borrows_encoded_json_fields_and_owns_decoded_sources() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let saved = "\0文😀\"\\\r\n".repeat(8192);
+        let draft = format!("{saved}changed");
+        let recovery = DocumentRecovery {
+            text: draft.clone().into(),
+            saved: saved.clone().into(),
+            selections: vec![Selection::caret(draft.len())],
+            collapsed: vec![],
+        };
+        let json = serde_json::to_string(&recovery).unwrap();
+        let expected: Vec<_> = [("text", &draft), ("saved", &saved)]
+            .into_iter()
+            .map(|(field, source)| {
+                let marker = format!("\"{field}\":\"");
+                let start = json.find(&marker).unwrap() + marker.len();
+                let encoded = STANDARD.encode(source);
+                assert_eq!(&json[start..start + encoded.len()], encoded);
+                (json.as_ptr() as usize + start, encoded.len())
+            })
+            .collect();
+        encoded_text::BORROWED_FIELDS.with(|fields| fields.borrow_mut().clear());
+        let decoded: DocumentRecovery = serde_json::from_slice(json.as_bytes()).unwrap();
+        encoded_text::BORROWED_FIELDS.with(|fields| assert_eq!(*fields.borrow(), expected));
+        assert_eq!(decoded, recovery);
+        assert!(!std::sync::Arc::ptr_eq(&decoded.text, &recovery.text));
+        assert!(!std::sync::Arc::ptr_eq(&decoded.saved, &recovery.saved));
+        drop(json);
+        drop(recovery);
+        assert_eq!(decoded.text.as_str(), draft);
+        assert_eq!(decoded.saved.as_str(), saved);
+        decoded.validate().unwrap();
+    }
+
+    #[test]
+    fn recovery_decode_accepts_owned_and_escaped_fields_and_rejects_wrong_types() {
+        let recovery = DocumentRecovery::clean("文😀\0\r\n");
+        let value = serde_json::to_value(&recovery).unwrap();
+        assert_eq!(
+            serde_json::from_value::<DocumentRecovery>(value.clone()).unwrap(),
+            recovery
+        );
+        let json = serde_json::to_string(&recovery).unwrap();
+        let escaped = json.replace("\"text\":\"5", "\"text\":\"\\u0035");
+        assert_ne!(escaped, json);
+        assert_eq!(
+            serde_json::from_str::<DocumentRecovery>(&escaped).unwrap(),
+            recovery
+        );
+        for text in [
+            serde_json::Value::Null,
+            serde_json::json!(true),
+            serde_json::json!(42),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let mut invalid = value.clone();
+            invalid["text"] = text;
+            assert!(serde_json::from_value::<DocumentRecovery>(invalid).is_err());
+        }
+    }
 
     #[test]
     fn recovery_capture_clone_and_restore_share_immutable_sources_and_keep_wire_format() {

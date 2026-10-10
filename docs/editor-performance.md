@@ -5095,3 +5095,40 @@ not an isolated memory-improvement claim. The backend remains the unchanged
 historical control; local database recovery fixtures do not verify physical folder
 permissions. This checkpoint fixes navigation and removes repeated-prefix layout
 validation/source copies; the broader responsiveness/device gates remain open.
+
+
+## Recovery decoding without encoded-field copies
+
+The shared recovery codec now asks the JSON reader for a string view and decodes
+that view directly into the owned UTF-8 source. Canonical base64 fields contain
+no JSON escapes, so slice/string readers can lend the original input bytes instead
+of allocating an intermediate encoded `String`. Readers which already own a
+value, and escaped JSON fields, remain supported through the same visitor.
+Encoded-length and decoded-length limits, base64 validation and invalid UTF-8
+rejection remain in the shared codec; the serialized/storage format is unchanged.
+HTTP persistence in both workspace modes and database recovery use this codec.
+
+The allocation contract records the exact borrowed field addresses and lengths
+inside the real JSON input, verifies source/control/Unicode equality and checks
+that decoded sources remain independently owned after the input and original
+payload are dropped. Compatibility checks include owned JSON values, escaped
+fields and wrong field types; existing malformed base64, UTF-8, metadata and
+capacity contracts remain in place. Test-only tracing records addresses/lengths,
+with no production tracing or retained source pointers.
+
+All 481 core, 213 backend/storage and 128 native frontend tests pass, as do strict
+native, optimized frontend WASM including tests and backend WASI lint. The 15
+recovery-related component contracts and all 20 editor library browser contracts
+pass on two-CPU Linux arm64 with unchanged deadlines
+([verification](editor-performance/borrowed-recovery-decoding.json)). This targeted
+verification covers both real workspace adapters, cancellation, stale ownership,
+disk conflict and save/retry behavior; it is not a complete editor inventory or a
+whole-app memory/latency measurement. Encoding, JSON/network buffers, decoded
+source ownership, initial metadata checks and remaining publication costs still
+require work.
+
+The preceding `2301c26` final-index validation checkpoint passed all five hosted
+jobs ([receipt](editor-performance/grouped-ci-2301c26.json)), following the fully
+green `ba33f5d` source-sharing checkpoint. These runs do not establish the earlier
+parser-fallback failure's cause. Current motion/decoding checkpoints still require
+their own complete hosted and repeated verification.
