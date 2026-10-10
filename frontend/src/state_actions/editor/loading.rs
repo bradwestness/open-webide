@@ -178,7 +178,7 @@ impl EditorActions {
             return Ok(None);
         }
         recovery.validate()?;
-        let saved_source = std::sync::Arc::new(recovery.saved.clone());
+        let saved_source = recovery.saved.clone();
         let Some(saved) = prepare_document(&saved_source, &current)
             .await
             .map_err(|admission| {
@@ -190,7 +190,7 @@ impl EditorActions {
         let draft = if recovery.text == recovery.saved {
             saved.clone()
         } else {
-            let source = std::sync::Arc::new(recovery.text.clone());
+            let source = recovery.text.clone();
             let Some(draft) = prepare_document(&source, &current)
                 .await
                 .map_err(|admission| {
@@ -263,8 +263,8 @@ mod tests {
                         files: vec![EditorRecoveryFile {
                             path: "incoming.txt".into(),
                             document: Some(DocumentRecovery {
-                                text: format!("{incoming}tail"),
-                                saved: saved.clone(),
+                                text: format!("{incoming}tail").into(),
+                                saved: saved.clone().into(),
                                 selections: vec![Selection::caret(0)],
                                 collapsed: vec![],
                             }),
@@ -321,6 +321,10 @@ mod tests {
                                 &document.shared_text(),
                                 &workspace.content.get_untracked().shared()
                             ));
+                            let captured = document.recovery();
+                            let payload = recovery.files[0].document.as_ref().unwrap();
+                            assert!(std::sync::Arc::ptr_eq(&captured.text, &payload.text));
+                            assert!(std::sync::Arc::ptr_eq(&captured.saved, &payload.saved));
                             assert!(document.is_dirty());
                             assert!(document.undo());
                             assert_eq!(document.text(), saved);

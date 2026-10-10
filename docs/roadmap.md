@@ -153,8 +153,10 @@ tracks the remaining work rather than every optimization already shipped.
   Recovered undo steps now retain the prepared saved/draft sources instead of
   duplicating both full files; ordinary typing history keeps owned replacement
   spans ([complete editor contracts](editor-performance/shared-recovery-history-browser.jsonl)).
-  Recovery payload copies, full-source undo publication and final hydration
-  validation costs still require work.
+  Recovery capture, record clones and hydration preparation now share immutable
+  saved/draft sources; clean buffers without a document share their existing source.
+  Recovery transport encode/decode allocations, full-source undo publication and
+  final hydration validation costs still require work.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   parser context/selection-list extraction and final paint publication. Finish
@@ -268,6 +270,18 @@ tracks the remaining work rather than every optimization already shipped.
   ([record](editor-performance/immutable-save-source-browser.jsonl)); its
   `dc49196` checkpoint passed all five hosted CI jobs
   ([receipt](editor-performance/grouped-ci-dc49196.json)).
+  The late-save dirty-state checkpoint `0ec8cbe` and direct disk-comparison
+  checkpoint `988f700` also passed all five hosted jobs
+  ([first receipt](editor-performance/grouped-ci-0ec8cbe.json),
+  [second receipt](editor-performance/grouped-ci-988f700.json)). The recovered
+  undo-source checkpoint `72b7a3e` subsequently failed the editor browser job
+  ([receipt](editor-performance/grouped-ci-72b7a3e.json)): the first failure was
+  the typed parser-budget fallback readiness assertion, followed by cursor-probe,
+  horizontal-fragment and geometry readiness failures. Their cause and any
+  contamination from the first failed test remain unproven. Timeout diagnostics
+  now distinguish parser status, pending work and painted state without changing
+  deadlines or assertions. Later recovery allocation changes still require their
+  own complete hosted verification.
   Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving

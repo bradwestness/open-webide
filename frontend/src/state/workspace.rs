@@ -696,7 +696,9 @@ impl WorkspaceState {
                     if text.editor_limit().is_some() {
                         return Ok(None);
                     }
-                    return Ok(Some(openwebide_core::editor::DocumentRecovery::clean(text)));
+                    return Ok(Some(
+                        openwebide_core::editor::DocumentRecovery::clean_source(text.shared()),
+                    ));
                 }
                 Ok(documents.get(&key).map(Document::recovery))
             })?;
@@ -1614,9 +1616,12 @@ mod tests {
             workspace.content.set("another project".into());
             let inactive = workspace.editor_recovery(&project, false).unwrap();
             assert_eq!(inactive, active);
-            assert_eq!(inactive.files[0].document.as_ref().unwrap().saved, "base");
             assert_eq!(
-                inactive.files[0].document.as_ref().unwrap().text,
+                inactive.files[0].document.as_ref().unwrap().saved.as_str(),
+                "base"
+            );
+            assert_eq!(
+                inactive.files[0].document.as_ref().unwrap().text.as_str(),
                 "draft base"
             );
             for index in 0..openwebide_core::editor::MAX_RECOVERY_FILES {

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share immutable editor source through recovery capture, queued record clones and hydration preparation, preserving the existing encoded storage format and independent saved/draft versions.
+
 - Retain prepared saved/draft sources in the recovered editor's undo step instead of copying both full files into history. Ordinary edits still retain only their replacement spans, with unchanged history budgets and undo/redo behavior.
 
 - Compare recovered editor files with disk directly from committed document sources, avoiding draft/baseline persistence copies during verification. Share source allocations when accepting completed writes and preparing clean disk reloads.

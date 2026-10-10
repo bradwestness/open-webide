@@ -6269,7 +6269,7 @@ async fn recovery_document_format_restores_committed_browser_edits_in_both_modes
         assert_eq!(restored.text(), "α\r\n");
         assert!(!restored.is_dirty());
         assert!(restored.redo());
-        assert_eq!(restored.text(), snapshot.text);
+        assert_eq!(restored.text(), snapshot.text.as_str());
     }
 }
 
@@ -6329,6 +6329,18 @@ async fn workspace_recovery_collects_active_and_hidden_drafts_without_compositio
             .editor_recovery(&project, false)
             .unwrap();
         assert_eq!(candidate.selected.as_deref(), Some("two.rs"));
+        mounted
+            .state
+            .workspace
+            .editor_documents
+            .with_untracked(|documents| {
+                for file in &candidate.files {
+                    let live = documents[&(1, file.path.clone())].recovery();
+                    let captured = file.document.as_ref().unwrap();
+                    assert!(std::sync::Arc::ptr_eq(&live.text, &captured.text));
+                    assert!(std::sync::Arc::ptr_eq(&live.saved, &captured.saved));
+                }
+            });
         assert_eq!(
             candidate
                 .files
@@ -6337,10 +6349,22 @@ async fn workspace_recovery_collects_active_and_hidden_drafts_without_compositio
                 .collect::<Vec<_>>(),
             vec!["one.rs", "two.rs"]
         );
-        assert_eq!(candidate.files[0].document.as_ref().unwrap().text, "one!");
-        assert_eq!(candidate.files[0].document.as_ref().unwrap().saved, "one");
-        assert_eq!(candidate.files[1].document.as_ref().unwrap().text, "two!");
-        assert_eq!(candidate.files[1].document.as_ref().unwrap().saved, "two");
+        assert_eq!(
+            candidate.files[0].document.as_ref().unwrap().text.as_str(),
+            "one!"
+        );
+        assert_eq!(
+            candidate.files[0].document.as_ref().unwrap().saved.as_str(),
+            "one"
+        );
+        assert_eq!(
+            candidate.files[1].document.as_ref().unwrap().text.as_str(),
+            "two!"
+        );
+        assert_eq!(
+            candidate.files[1].document.as_ref().unwrap().saved.as_str(),
+            "two"
+        );
         let backend = mounted.state.api.with_value(Clone::clone);
         let record = EditorRecoveryRecord {
             revision: 0,
@@ -6605,7 +6629,7 @@ async fn recovery_disk_publication_shares_clean_and_completed_write_sources_in_b
                 .with_untracked(|documents| {
                     let document = &documents[&(1, "guard.rs".into())];
                     assert!(!document.is_dirty());
-                    assert_eq!(document.recovery().saved, expected);
+                    assert_eq!(document.recovery().saved.as_str(), expected);
                     assert!(std::sync::Arc::ptr_eq(&source, &document.shared_text()));
                     assert_eq!(document.can_undo(), completed_write);
                 });
@@ -6741,7 +6765,12 @@ async fn automatic_editor_recovery_restores_and_saves_drafts_in_both_modes() {
                 .get(&1)
                 .is_some_and(|record| {
                     record.revision > 7
-                        && record.state.files[0].document.as_ref().unwrap().text
+                        && record.state.files[0]
+                            .document
+                            .as_ref()
+                            .unwrap()
+                            .text
+                            .as_str()
                             == "latest draft 😀\r\n  tail  "
                 })
         })
@@ -6783,7 +6812,8 @@ async fn automatic_editor_recovery_restores_and_saves_drafts_in_both_modes() {
                 .state
                 .workspace
                 .editor_documents
-                .with_untracked(|documents| documents[&(1, "src/a.rs".into())].recovery().saved),
+                .with_untracked(|documents| documents[&(1, "src/a.rs".into())].recovery().saved)
+                .as_str(),
             "😀\r\n  tail  "
         );
         drop(second);
@@ -6866,7 +6896,15 @@ async fn editor_recovery_coalesces_slow_writes_and_preserves_errors_and_revision
             .editor_recovery_records
             .borrow()
             .get(&1)
-            .is_some_and(|record| record.state.files[0].document.as_ref().unwrap().text == "newest")
+            .is_some_and(|record| {
+                record.state.files[0]
+                    .document
+                    .as_ref()
+                    .unwrap()
+                    .text
+                    .as_str()
+                    == "newest"
+            })
     })
     .await;
     let (send, receive) = futures::channel::oneshot::channel();
@@ -6905,6 +6943,7 @@ async fn editor_recovery_coalesces_slow_writes_and_preserves_errors_and_revision
             .as_ref()
             .unwrap()
             .text
+            .as_str()
             == "offline draft"
     })
     .await;
@@ -6941,7 +6980,8 @@ async fn editor_recovery_coalesces_slow_writes_and_preserves_errors_and_revision
             .document
             .as_ref()
             .unwrap()
-            .text,
+            .text
+            .as_str(),
         "offline draft"
     );
     mounted.click_text("Keep this window");
@@ -6961,6 +7001,7 @@ async fn editor_recovery_coalesces_slow_writes_and_preserves_errors_and_revision
             .as_ref()
             .unwrap()
             .text
+            .as_str()
             == "window draft"
     })
     .await;
@@ -9696,21 +9737,28 @@ async fn parser_budget_rejection_preserves_source_and_recovers_in_both_modes() {
         })
         .await;
         transport.respond(true);
+        let fallback_started = js_sys::Date::now();
+        let reported_fallback = std::cell::Cell::new(false);
         wait_until("typed parser budget fallback", || {
-            mounted
+            let status = mounted
                 .state
                 .workspace
                 .editor_preparation
-                .with_untracked(|prepared| {
-                    prepared
-                        .as_ref()
-                        .is_some_and(|prepared| prepared.status == SyntaxStatus::TooLarge)
-                })
-                && !actions.syntax_is_pending()
-                && mounted
-                    .element(".editor-code")
-                    .class_list()
-                    .contains("highlight-ready")
+                .with_untracked(|prepared| prepared.as_ref().map(|prepared| prepared.status));
+            let pending = actions.syntax_is_pending();
+            let painted = mounted.element(".editor-code").class_list().contains("highlight-ready");
+            let ready = status == Some(SyntaxStatus::TooLarge) && !pending && painted;
+            if !ready && js_sys::Date::now() - fallback_started >= 3000.0
+                && !reported_fallback.replace(true)
+            {
+                wasm_bindgen_test::console_log!(
+                    "parser fallback timeout: mode={mode:?} status={status:?} pending={pending} painted={painted} requests={} queued={} native_bound={:?} editor_roots={}",
+                    transport.calls.get(), transport.pending.borrow().len(),
+                    mounted.element(".editor-textarea").get_attribute("data-editor-native-bound"),
+                    web_sys::window().unwrap().document().unwrap().query_selector_all(".editor-code").unwrap().length()
+                );
+            }
+            ready
         })
         .await;
         assert_eq!(actions.source(), source);

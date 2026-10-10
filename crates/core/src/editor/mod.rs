@@ -1524,7 +1524,7 @@ mod tests {
             .unwrap();
         assert_eq!(preview, document.text.as_ptr());
         assert_eq!(preview_index, std::sync::Arc::as_ptr(&document.line_index));
-        assert_eq!(document.recovery().text, source);
+        assert_eq!(document.recovery().text.as_str(), source);
         assert!(document.cancel_composition());
         assert!(std::sync::Arc::ptr_eq(&text, &document.text));
         assert!(std::sync::Arc::ptr_eq(&index, &document.line_index));
@@ -1682,7 +1682,7 @@ mod tests {
         assert!(document.is_dirty());
         assert!(!std::sync::Arc::ptr_eq(&source, &document.text));
         assert!(std::sync::Arc::ptr_eq(&source, &document.saved));
-        assert_eq!(document.recovery().saved, *source);
+        assert_eq!(document.recovery().saved.as_str(), *source);
         let written = document.shared_text();
         document.mark_saved_source(written.clone());
         assert!(std::sync::Arc::ptr_eq(&written, &document.saved));
@@ -1696,7 +1696,7 @@ mod tests {
         assert!(document.undo());
         assert!(document.is_dirty());
         assert_eq!(document.text(), source.as_str());
-        assert_eq!(document.recovery().saved, *written);
+        assert_eq!(document.recovery().saved.as_str(), *written);
     }
 
     #[test]
@@ -1719,7 +1719,7 @@ mod tests {
         assert_eq!(document.text(), "before");
         assert!(document.is_dirty());
         assert!(std::sync::Arc::ptr_eq(&written, &document.saved));
-        assert_eq!(document.recovery().saved, "preview before");
+        assert_eq!(document.recovery().saved.as_str(), "preview before");
     }
 
     #[test]
@@ -1734,7 +1734,7 @@ mod tests {
         assert!(!document.is_dirty());
         assert!(!snapshot.is_dirty());
         assert!(!std::sync::Arc::ptr_eq(&document.saved, &snapshot.saved));
-        assert_eq!(snapshot.recovery().saved, "文\r\n😀");
+        assert_eq!(snapshot.recovery().saved.as_str(), "文\r\n😀");
         let saved = document.saved.clone();
         document.mark_saved();
         document.mark_saved_version("a文\r\n😀");
@@ -1784,8 +1784,8 @@ mod tests {
         ));
         assert!(!document.is_dirty());
         let recovery = document.recovery();
-        assert_eq!(recovery.text, "文\r\n😀");
-        assert_eq!(recovery.saved, "a文\r\n😀");
+        assert_eq!(recovery.text.as_str(), "文\r\n😀");
+        assert_eq!(recovery.saved.as_str(), "a文\r\n😀");
         assert!(document.cancel_composition());
         assert!(std::sync::Arc::ptr_eq(&saved, &document.saved));
         assert_eq!(document.text(), "文\r\n😀");

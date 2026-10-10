@@ -18,9 +18,9 @@ pub const fn recovery_body_limit() -> usize {
 #[serde(deny_unknown_fields)]
 pub struct DocumentRecovery {
     #[serde(with = "encoded_text")]
-    pub text: String,
+    pub text: std::sync::Arc<String>,
     #[serde(with = "encoded_text")]
-    pub saved: String,
+    pub saved: std::sync::Arc<String>,
     pub selections: Vec<Selection>,
     pub collapsed: Vec<FoldRange>,
 }
@@ -44,8 +44,8 @@ impl Document {
             .as_ref()
             .map_or(self, |composition| composition.committed_document());
         DocumentRecovery {
-            text: document.text().to_owned(),
-            saved: document.saved.to_string(),
+            text: document.shared_text(),
+            saved: document.saved.clone(),
             selections: document.selections.clone(),
             collapsed: document
                 .folds
@@ -72,9 +72,14 @@ impl DocumentRecovery {
     /// Capture a clean source that has no live editor document. Recovery needs
     /// source and baseline, not coordinate indexes or an undo history.
     pub fn clean(source: &str) -> Self {
+        Self::clean_source(std::sync::Arc::new(source.to_owned()))
+    }
+
+    /// Capture an immutable clean source without copying its bytes.
+    pub fn clean_source(source: std::sync::Arc<String>) -> Self {
         Self {
-            text: source.to_owned(),
-            saved: source.to_owned(),
+            text: source.clone(),
+            saved: source,
             selections: vec![Selection::caret(0)],
             collapsed: Vec::new(),
         }
@@ -134,12 +139,12 @@ impl DocumentRecovery {
 
     /// The recovered draft is one undoable change against its original disk text.
     pub fn restore(&self) -> Result<Document, String> {
-        self.validate()?;
-        let saved = Document::for_editor(self.saved.clone()).map_err(|error| error.to_string())?;
+        self.validate_editor()?;
+        let saved = Document::from_shared_text(self.saved.clone());
         let draft = if self.text == self.saved {
             saved.clone()
         } else {
-            Document::for_editor(self.text.clone()).map_err(|error| error.to_string())?
+            Document::from_shared_text(self.text.clone())
         };
         self.restore_prepared(saved, draft)
     }
@@ -238,8 +243,8 @@ mod prepared_tests {
         let saved_source = baseline.shared_text();
         let draft_source = draft.shared_text();
         let recovery = DocumentRecovery {
-            text: draft.text().into(),
-            saved: baseline.text().into(),
+            text: draft.shared_text(),
+            saved: baseline.shared_text(),
             selections: vec![Selection::caret(draft.text().len())],
             collapsed: Vec::new(),
         };
@@ -269,17 +274,17 @@ mod prepared_tests {
             restored.history[1].transactions[0].forward[0].text,
             super::super::HistoryText::Owned(_)
         ));
-        assert_eq!(draft_source.as_str(), recovery.text);
-        assert_eq!(saved_source.as_str(), recovery.saved);
-        assert_eq!(snapshot.text(), recovery.text);
+        assert_eq!(draft_source.as_str(), recovery.text.as_str());
+        assert_eq!(saved_source.as_str(), recovery.saved.as_str());
+        assert_eq!(snapshot.text(), recovery.text.as_str());
         assert!(restored.undo());
-        assert_eq!(restored.text(), recovery.text);
+        assert_eq!(restored.text(), recovery.text.as_str());
         for document in [&mut restored, &mut snapshot] {
             assert!(document.undo());
-            assert_eq!(document.text(), recovery.saved);
+            assert_eq!(document.text(), recovery.saved.as_str());
             assert!(!document.is_dirty());
             assert!(document.redo());
-            assert_eq!(document.text(), recovery.text);
+            assert_eq!(document.text(), recovery.text.as_str());
             assert_eq!(document.selections(), recovery.selections);
             assert!(document.is_dirty());
         }
@@ -306,19 +311,22 @@ mod prepared_tests {
                 vec![]
             };
             let recovery = DocumentRecovery {
-                text,
-                saved,
+                text: text.into(),
+                saved: saved.into(),
                 selections,
                 collapsed,
             };
-            let baseline = Document::for_editor(recovery.saved.clone()).unwrap();
-            let draft = Document::for_editor(recovery.text.clone()).unwrap();
+            let baseline = Document::for_editor(recovery.saved.as_str()).unwrap();
+            let draft = Document::for_editor(recovery.text.as_str()).unwrap();
             let index = draft.line_index.clone();
             let mut expected = baseline.clone();
             if recovery.text != recovery.saved {
                 expected
                     .apply(
-                        vec![Edit::replace(0..recovery.saved.len(), &recovery.text)],
+                        vec![Edit::replace(
+                            0..recovery.saved.len(),
+                            recovery.text.as_str(),
+                        )],
                         recovery.selections.clone(),
                         None,
                     )
@@ -344,7 +352,7 @@ mod prepared_tests {
             assert_eq!(prepared.fold_state().ranges(), recovery.collapsed);
             assert_eq!(prepared.undo(), expected.undo());
             assert_eq!(prepared.fold_state(), expected.fold_state());
-            assert_eq!(prepared.text(), recovery.saved);
+            assert_eq!(prepared.text(), recovery.saved.as_str());
             assert!(!prepared.is_dirty());
             assert_eq!(prepared.redo(), expected.redo());
             assert_eq!(prepared.fold_state(), expected.fold_state());
@@ -517,7 +525,9 @@ mod encoded_text {
     pub fn serialize<S: Serializer>(value: &str, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&STANDARD.encode(value.as_bytes()))
     }
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<std::sync::Arc<String>, D::Error> {
         let value = String::deserialize(deserializer)?;
         if value.len() > MAX_DOCUMENT_BYTES.div_ceil(3) * 4 {
             return Err(D::Error::custom(
@@ -530,7 +540,9 @@ mod encoded_text {
                 "Recovered text exceeds document size limit",
             ));
         }
-        String::from_utf8(bytes).map_err(D::Error::custom)
+        String::from_utf8(bytes)
+            .map(std::sync::Arc::new)
+            .map_err(D::Error::custom)
     }
 }
 
@@ -538,6 +550,45 @@ mod encoded_text {
 mod tests {
     use super::super::NativeInputKind;
     use super::*;
+
+    #[test]
+    fn recovery_capture_clone_and_restore_share_immutable_sources_and_keep_wire_format() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let mut document = Document::new("base 😀\r\n");
+        let baseline = document.shared_text();
+        document.replace_selections("文", None).unwrap();
+        let source = document.shared_text();
+        let captured = document.recovery();
+        assert!(std::sync::Arc::ptr_eq(&captured.text, &source));
+        assert!(std::sync::Arc::ptr_eq(&captured.saved, &baseline));
+        let retained = captured.clone();
+        assert!(std::sync::Arc::ptr_eq(&retained.text, &captured.text));
+        assert!(std::sync::Arc::ptr_eq(&retained.saved, &captured.saved));
+        let restored = retained.restore().unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &restored.shared_text(),
+            &retained.text
+        ));
+        assert!(std::sync::Arc::ptr_eq(&restored.saved, &retained.saved));
+        let serialized = serde_json::to_value(&captured).unwrap();
+        assert_eq!(
+            serialized,
+            serde_json::json!({
+                "text": STANDARD.encode(source.as_bytes()),
+                "saved": STANDARD.encode(baseline.as_bytes()),
+                "selections": captured.selections,
+                "collapsed": [],
+            })
+        );
+        let decoded: DocumentRecovery = serde_json::from_value(serialized).unwrap();
+        assert_eq!(decoded, captured);
+        document.replace_selections("new", None).unwrap();
+        assert_eq!(retained.text.as_str(), "文base 😀\r\n");
+        assert_eq!(retained.saved.as_str(), "base 😀\r\n");
+        let clean = DocumentRecovery::clean_source(source.clone());
+        assert!(std::sync::Arc::ptr_eq(&clean.text, &source));
+        assert!(std::sync::Arc::ptr_eq(&clean.saved, &source));
+    }
 
     #[test]
     fn live_disk_classification_matches_persisted_policy_and_preserves_sources() {
@@ -610,7 +661,7 @@ mod tests {
             assert_eq!(state, expected);
             assert_eq!(restored.recovery(), recovery);
             assert!(restored.undo());
-            assert_eq!(restored.text(), recovery.saved);
+            assert_eq!(restored.text(), recovery.saved.as_str());
         }
         let (mut restored, state) = recovery.reconcile_disk(Some(&recovery.text)).unwrap();
         assert_eq!(state, RecoveryDiskState::AlreadySaved);
@@ -671,10 +722,10 @@ mod tests {
         assert!(restored.is_dirty());
         assert!(restored.folds.collapsed_at(0).is_some());
         assert!(restored.undo());
-        assert_eq!(restored.text(), snapshot.saved);
+        assert_eq!(restored.text(), snapshot.saved.as_str());
         assert!(!restored.is_dirty());
         assert!(restored.redo());
-        assert_eq!(restored.text(), snapshot.text);
+        assert_eq!(restored.text(), snapshot.text.as_str());
     }
 
     #[test]
@@ -693,8 +744,8 @@ mod tests {
             .unwrap();
         assert_eq!(document.recovery(), before);
         document.mark_saved_version("written");
-        assert_eq!(document.recovery().saved, "written");
-        assert_eq!(document.recovery().text, "xbase");
+        assert_eq!(document.recovery().saved.as_str(), "written");
+        assert_eq!(document.recovery().text.as_str(), "xbase");
     }
 
     #[test]

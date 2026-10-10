@@ -4955,5 +4955,54 @@ matrices, with unchanged readiness and runner deadlines.
 
 This removes the recovery-specific source copies; it is not a whole-app memory
 or latency claim. Edits can still detach a source retained by immutable history.
-Recovery payload capture/preparation copies, admission validation, full-source
-undo publication and physical-device gates remain unfinished.
+At this checkpoint, recovery payload capture/preparation copies, admission
+validation, full-source undo publication and physical-device gates remained
+unfinished; the following section records the subsequent payload-sharing work.
+
+
+## Immutable recovery payloads
+
+Recovery capture, queued record clones and hydration preparation now retain the
+same immutable saved and draft sources as the document. Clean buffers without a
+document retain their existing source for both fields. Decoding wraps the owned
+UTF-8 result without another full-source copy. The encoded JSON/storage format,
+capacity checks, committed composition boundary, stale-scope guards and independent
+saved/draft versions remain unchanged. Recovery transport still encodes and decodes
+complete source strings; admission and final metadata validation remain work.
+
+The core allocation contract checks pointer identity through capture, cloning and
+restoration, exact encoded JSON compatibility, and later independent edits. Both
+workspace adapters check source identity during recovery capture and cooperative
+hydration. All 473 core, 213 backend/storage and 128 native frontend tests pass,
+as do native, WASI and optimized frontend WASM lint. The complete frozen editor
+inventory passes all 175 browser checks in six disjoint runs with unchanged limits
+([verification](editor-performance/shared-recovery-payload-verification.json)).
+A subsequent test-only change adds timeout diagnostics to the parser fallback
+contract; its exact 51-test hosted selection passes locally on two-CPU Linux arm64
+([diagnostic verification](editor-performance/shared-recovery-payload-diagnostic.json)).
+This is not proof of a hosted x64 fix. The preceding `72b7a3e` checkpoint failed
+its frontend browser job after a parser-budget fallback readiness timeout; later
+probe/geometry failures may be related, but the evidence does not establish that
+([CI receipt](editor-performance/grouped-ci-72b7a3e.json)). The preceding `0ec8cbe`
+and `988f700` checkpoints passed all five jobs. Repeated current CI remains required.
+
+The uninstrumented production frontend completed 32 beginning-of-source samples:
+byte and line admission boundaries, plain and grammar-highlighted long lines,
+both modes, wrapping enabled/disabled, two repetitions each
+([complete samples and manifest](editor-performance/shared-recovery-payload-production.jsonl),
+[ranges](editor-performance/shared-recovery-payload-production-summary.json)).
+Every sample verified exact complete source after input and caret offset zero
+before input, with complete renderer PSS snapshots. The backend is the unchanged
+historical control artifact, and local cases use database recovery fixtures;
+these measurements do not verify physical directory permissions. Multiple earlier
+allocation changes separate this cohort from the earlier control, so these are
+pipeline measurements, not an isolated causal comparison of payload sharing.
+
+Cold viewport paint ranges from 1.11 to 4.44 seconds. The wrapped styled long-line
+case paints the input viewport in 230–266 ms and completes geometry in
+1.12–1.18 seconds; wrapped line-limit input takes 245–249 ms. Peak renderer PSS
+ranges from approximately 684 to 823 MiB. These remain responsiveness and memory
+work, despite successful source/caret checks. Byte-limit beginning-of-source
+samples retain the earlier nonzero vertical scroll position; physical scroll
+alignment needs investigation. Full-source undo publication, transport encoding,
+cold/fallback geometry and physical PWA/IME/permission verification remain open.
