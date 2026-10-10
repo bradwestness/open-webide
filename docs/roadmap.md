@@ -189,7 +189,12 @@ tracks the remaining work rather than every optimization already shipped.
   platform, browser and release-app checks reliably.
   CI run `38045611820` failed wrapped startup readiness, highlight burst generations,
   localized wrapped-row reuse and file-switch cancellation assertions; diagnose
-  these failures and verify the fixes in the full partition.
+  these failures and verify the fixes in the full partition. The identical
+  50-test group at `0bd6bbd` passes on macOS and Linux with four and two CPUs
+  ([records](editor-performance/current-ci-group-browser.jsonl)). All 171 current
+  editor tests, including both font matrices, also pass in the checked Linux
+  runner ([record](editor-performance/current-complete-editor-browser.jsonl));
+  full current CI and repeated complete editor verification remain required.
   Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving
