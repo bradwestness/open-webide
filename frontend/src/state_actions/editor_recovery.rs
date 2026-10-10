@@ -620,34 +620,50 @@ fn check_files(ctx: RecoveryContext, id: i64) {
             let key = (id, path.clone());
             // Always reconcile the latest committed document, never an old draft
             // captured before the disk read. Edits during verification are retained.
-            let recovery = ctx.workspace.editor_documents.with_untracked(|documents| {
-                documents
-                    .get(&key)
-                    .map(openwebide_core::editor::Document::recovery)
+            let result = ctx.workspace.editor_documents.with_untracked(|documents| {
+                documents.get(&key).map(|document| {
+                    result.and_then(|disk| {
+                        document
+                            .recovery_disk_state(disk.as_deref())
+                            .map(|state| (state, disk))
+                    })
+                })
             });
-            let Some(recovery) = recovery else {
+            let Some(result) = result else {
                 ctx.workspace.editor_recovery_checks.update(|checks| {
                     checks.remove(&key);
                 });
                 continue;
             };
-            let result = result.and_then(|disk| {
-                recovery
-                    .disk_state(disk.as_deref())
-                    .map(|state| (state, disk))
-            });
             match result {
                 Ok((state, disk)) => {
                     match state {
                         RecoveryDiskState::Current => {}
                         RecoveryDiskState::AlreadySaved => {
-                            ctx.workspace.editor_documents.update(|documents| {
-                                if let Some(document) = documents.get_mut(&key) {
-                                    document
-                                        .mark_saved_version(disk.as_deref().unwrap_or_default());
-                                }
-                            });
-                            update_buffer(ctx.workspace, id, &path, &recovery.text, false);
+                            let disk = disk.unwrap_or_default();
+                            let source = ctx
+                                .workspace
+                                .editor_documents
+                                .try_update(|documents| {
+                                    let document = documents.get_mut(&key)?;
+                                    let source = if document.matches_text(&disk) {
+                                        document.shared_text()
+                                    } else {
+                                        std::sync::Arc::new(disk)
+                                    };
+                                    document.mark_saved_source(source.clone());
+                                    Some(source)
+                                })
+                                .flatten();
+                            if let Some(source) = source {
+                                update_buffer_source(
+                                    ctx.workspace,
+                                    id,
+                                    &path,
+                                    source.into(),
+                                    false,
+                                );
+                            }
                         }
                         RecoveryDiskState::Reloaded => {
                             let retained =
@@ -672,7 +688,7 @@ fn check_files(ctx: RecoveryContext, id: i64) {
                                         },
                                     ) == Some(true)
                             };
-                            let source = std::sync::Arc::new(disk.as_ref().unwrap().clone());
+                            let source = std::sync::Arc::new(disk.unwrap());
                             let prepared =
                                 super::editor::EditorActions::prepare_source(&source, owned).await;
                             if !owned() {
@@ -729,10 +745,6 @@ fn check_files(ctx: RecoveryContext, id: i64) {
             }
         }
     });
-}
-
-fn update_buffer(workspace: WorkspaceState, id: i64, path: &str, content: &str, dirty: bool) {
-    update_buffer_source(workspace, id, path, content.into(), dirty);
 }
 
 fn update_buffer_source(
@@ -815,14 +827,13 @@ pub async fn verify_recovered_save(
     {
         return Ok(());
     }
-    let recovery = workspace.editor_documents.with_untracked(|documents| {
-        documents
-            .get(&key)
-            .map(openwebide_core::editor::Document::recovery)
-    });
     let result = disk.and_then(|disk| {
-        let recovery = recovery.ok_or("The recovered document's baseline is not ready")?;
-        recovery.disk_state(disk.as_deref())
+        workspace.editor_documents.with_untracked(|documents| {
+            documents
+                .get(&key)
+                .ok_or_else(|| "The recovered document's baseline is not ready".to_string())?
+                .recovery_disk_state(disk.as_deref())
+        })
     });
     let issue = match result {
         Ok(RecoveryDiskState::Current | RecoveryDiskState::AlreadySaved) => return Ok(()),

@@ -4911,3 +4911,23 @@ optimized frontend WASM lint including tests pass
 ([failure/pass record](editor-performance/late-save-reload-browser.jsonl)).
 This is a shared-state correction, not a performance measurement or physical
 folder-permission verification; those roadmap gates remain open.
+
+## Disk verification without persistence snapshots
+
+The shared document now classifies fresh disk reads directly from its committed
+source and baseline, using the same comparison and admission policy as persisted
+recovery records. Composition previews remain excluded. Both automatic recovery
+verification and the pre-save check use this path, avoiding two full-source copies
+and persistence metadata capture on each verification. Completed writes reuse the
+document source for saved acknowledgement and buffer publication; clean reloads
+move the owned disk read into cooperative preparation instead of cloning it.
+
+All 471 native core tests, 128 native frontend tests, native core lint including
+tests, optimized frontend WASM lint including tests and 21 selected browser checks
+pass ([record](editor-performance/live-disk-recovery-browser.jsonl)). The new
+both-adapter contract checks clean reload and already-completed writes, shared
+document/buffer/active source allocations, saved baselines and undo behavior.
+The core contract compares live and persisted decisions across clean/dirty state,
+composition, late saved baselines, missing files and capacity rejection.
+Admission scans, persistence serialization, whole-app timing/memory and physical
+permission/input verification remain separate unfinished gates.

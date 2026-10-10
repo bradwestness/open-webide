@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Compare recovered editor files with disk directly from committed document sources, avoiding draft/baseline persistence copies during verification. Share source allocations when accepting completed writes and preparing clean disk reloads.
+
 - Reconcile editor dirty state after a late save finishes over a newer disk reload, preserving the newer content as a draft in the active editor and retained project snapshot.
 
 - Retain immutable editor source through save preparation and acknowledgement, avoiding full-file copies while preserving newer drafts and composition cancellation.

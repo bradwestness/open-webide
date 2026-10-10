@@ -26,6 +26,17 @@ pub struct DocumentRecovery {
 }
 
 impl Document {
+    /// Compare committed source and baseline without materializing a persistence
+    /// record. Live documents already maintain valid selection/fold metadata.
+    pub fn recovery_disk_state(&self, disk: Option<&str>) -> Result<RecoveryDiskState, String> {
+        let document = self
+            .composition
+            .as_ref()
+            .map_or(self, |composition| composition.committed_document());
+        validate_sources(document.text(), &document.saved)?;
+        classify_disk(document.text(), &document.saved, disk)
+    }
+
     /// IME previews are transient; persistence captures the last committed state.
     pub fn recovery(&self) -> DocumentRecovery {
         let document = self
@@ -113,31 +124,12 @@ impl DocumentRecovery {
     /// Save verification and hydration use the same reconciliation decisions.
     pub fn disk_state(&self, disk: Option<&str>) -> Result<RecoveryDiskState, String> {
         self.validate_editor()?;
-        match disk {
-            None => Ok(RecoveryDiskState::Missing),
-            Some(text) if text == self.saved => Ok(RecoveryDiskState::Current),
-            Some(text) if text == self.text => Ok(RecoveryDiskState::AlreadySaved),
-            Some(text) if self.text == self.saved => {
-                if text.len() > MAX_DOCUMENT_BYTES {
-                    return Err("Disk document exceeds the editor's size limit".into());
-                }
-                if let Some(limit) = super::editor_limit(text) {
-                    return Err(super::EditError::Capacity(limit).to_string());
-                }
-                Ok(RecoveryDiskState::Reloaded)
-            }
-            Some(_) => Ok(RecoveryDiskState::Conflict),
-        }
+        classify_disk(&self.text, &self.saved, disk)
     }
 
     fn validate_editor(&self) -> Result<(), String> {
         self.validate()?;
-        for source in [&self.saved, &self.text] {
-            if let Some(limit) = super::editor_limit(source) {
-                return Err(super::EditError::Capacity(limit).to_string());
-            }
-        }
-        Ok(())
+        validate_sources(&self.text, &self.saved)
     }
 
     /// The recovered draft is one undoable change against its original disk text.
@@ -196,6 +188,36 @@ impl DocumentRecovery {
             .set_ranges(self.collapsed.clone(), lines);
         document.fold_state_mut().collapse_all();
         Ok(document)
+    }
+}
+
+fn validate_sources(text: &str, saved: &str) -> Result<(), String> {
+    if text.len() > MAX_DOCUMENT_BYTES || saved.len() > MAX_DOCUMENT_BYTES {
+        return Err("Recovered document exceeds the editor's size limit".into());
+    }
+    for source in [saved, text] {
+        if let Some(limit) = super::editor_limit(source) {
+            return Err(super::EditError::Capacity(limit).to_string());
+        }
+    }
+    Ok(())
+}
+
+fn classify_disk(text: &str, saved: &str, disk: Option<&str>) -> Result<RecoveryDiskState, String> {
+    match disk {
+        None => Ok(RecoveryDiskState::Missing),
+        Some(source) if source == saved => Ok(RecoveryDiskState::Current),
+        Some(source) if source == text => Ok(RecoveryDiskState::AlreadySaved),
+        Some(source) if text == saved => {
+            if source.len() > MAX_DOCUMENT_BYTES {
+                return Err("Disk document exceeds the editor's size limit".into());
+            }
+            if let Some(limit) = super::editor_limit(source) {
+                return Err(super::EditError::Capacity(limit).to_string());
+            }
+            Ok(RecoveryDiskState::Reloaded)
+        }
+        Some(_) => Ok(RecoveryDiskState::Conflict),
     }
 }
 
@@ -456,6 +478,63 @@ mod encoded_text {
 mod tests {
     use super::super::NativeInputKind;
     use super::*;
+
+    #[test]
+    fn live_disk_classification_matches_persisted_policy_and_preserves_sources() {
+        for dirty in [false, true] {
+            let mut document = Document::new("base 😀\r\n");
+            if dirty {
+                document.replace_selections("文", None).unwrap();
+            }
+            let committed = document.recovery();
+            document.begin_composition(None);
+            document
+                .native_input(
+                    "preview",
+                    Selection::caret(7),
+                    NativeInputKind::Insert,
+                    None,
+                )
+                .unwrap();
+            let source = document.shared_text();
+            let baseline = document.saved.clone();
+            for disk in [
+                None,
+                Some(committed.saved.as_str()),
+                Some(committed.text.as_str()),
+                Some("external 😀\r\n"),
+                Some("preview"),
+            ] {
+                assert_eq!(
+                    document.recovery_disk_state(disk),
+                    committed.disk_state(disk)
+                );
+                assert!(std::sync::Arc::ptr_eq(&source, &document.shared_text()));
+                assert!(std::sync::Arc::ptr_eq(&baseline, &document.saved));
+            }
+            document.mark_saved_version("late write");
+            let committed = document.recovery();
+            for disk in [None, Some("late write"), Some(committed.text.as_str())] {
+                assert_eq!(
+                    document.recovery_disk_state(disk),
+                    committed.disk_state(disk)
+                );
+            }
+        }
+        let clean = Document::new("base");
+        let oversized_row = "x".repeat(super::super::MAX_EDITOR_LINE_BYTES + 1);
+        assert_eq!(
+            clean.recovery_disk_state(Some(&oversized_row)),
+            clean.recovery().disk_state(Some(&oversized_row))
+        );
+        assert!(clean.recovery_disk_state(Some(&oversized_row)).is_err());
+        let oversized_baseline = Document::new(oversized_row);
+        assert_eq!(
+            oversized_baseline.recovery_disk_state(None),
+            oversized_baseline.recovery().disk_state(None)
+        );
+        assert!(oversized_baseline.recovery_disk_state(None).is_err());
+    }
 
     #[test]
     fn disk_reconciliation_preserves_conflicting_drafts_and_detects_completed_writes() {

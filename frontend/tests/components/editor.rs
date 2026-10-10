@@ -6510,6 +6510,122 @@ async fn recovery_hydration_and_disk_reconciliation_use_both_real_workspace_adap
     }
 }
 
+#[wasm_bindgen_test]
+async fn recovery_disk_publication_shares_clean_and_completed_write_sources_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{
+            Document, EditorRecovery, EditorRecoveryFile, EditorRecoveryRecord, EditorRecoveryRoot,
+            RecoveryScroll,
+        },
+    };
+    use openwebide_frontend::workspace::Workspace;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for completed_write in [false, true] {
+            let folder = if mode == WorkspaceMode::Local {
+                Some(editorConfigFolder().await.unwrap())
+            } else {
+                None
+            };
+            let mut document = Document::new("base 😀\r\n");
+            if completed_write {
+                document.replace_selections("draft ", None).unwrap();
+            }
+            let disk = if completed_write {
+                document.text().to_owned()
+            } else {
+                "external 文\r\n".into()
+            };
+            if let Some(folder) = &folder {
+                Workspace::Local {
+                    handle: editorConfigHandle(folder).unchecked_into(),
+                }
+                .write("guard.rs", &disk)
+                .await
+                .unwrap();
+            }
+            let handle = folder.as_ref().map(editorConfigHandle);
+            let expected = disk.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                sign_in_recovery(&state);
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                if let Some(handle) = handle {
+                    state.projects.local_handles.update(|handles| {
+                        handles.insert(1, handle.unchecked_into());
+                    });
+                }
+                state
+                    .fake
+                    .files
+                    .borrow_mut()
+                    .insert((1, "guard.rs".into()), disk);
+                state.fake.editor_recovery_records.borrow_mut().insert(
+                    1,
+                    EditorRecoveryRecord {
+                        revision: 7,
+                        state: EditorRecovery {
+                            format: 1,
+                            root: Some(EditorRecoveryRoot::for_project(
+                                &state.projects.project(1).unwrap(),
+                            )),
+                            selected: Some("guard.rs".into()),
+                            files: vec![EditorRecoveryFile {
+                                path: "guard.rs".into(),
+                                document: Some(document.recovery()),
+                                scroll: RecoveryScroll::default(),
+                                read_only: false,
+                            }],
+                        },
+                    },
+                );
+                super::support::recovery_editor_view(state)
+            });
+            wait_until(
+                "disk reconciliation publishes a clean shared source",
+                || {
+                    mounted.state.workspace.content.get_untracked() == expected
+                        && !mounted.state.workspace.dirty.get_untracked()
+                        && mounted
+                            .state
+                            .workspace
+                            .editor_recovery_checks
+                            .with_untracked(std::collections::HashMap::is_empty)
+                },
+            )
+            .await;
+            let source = mounted.state.workspace.content.get_untracked().shared();
+            mounted
+                .state
+                .workspace
+                .editor_documents
+                .with_untracked(|documents| {
+                    let document = &documents[&(1, "guard.rs".into())];
+                    assert!(!document.is_dirty());
+                    assert_eq!(document.recovery().saved, expected);
+                    assert!(std::sync::Arc::ptr_eq(&source, &document.shared_text()));
+                    assert_eq!(document.can_undo(), completed_write);
+                });
+            mounted
+                .state
+                .workspace
+                .editor_buffers
+                .with_untracked(|buffers| {
+                    let buffer = &buffers[&(1, "guard.rs".into())];
+                    assert!(!buffer.dirty);
+                    assert!(std::sync::Arc::ptr_eq(&source, &buffer.content.shared()));
+                });
+            drop(mounted);
+            if let Some(folder) = folder {
+                editorConfigCleanup(&folder).await.unwrap();
+            }
+        }
+    }
+}
+
 fn sign_in_recovery(state: &super::support::TestState) {
     state.auth.set_user(openwebide_core::User {
         id: openwebide_core::UserId::new(1),

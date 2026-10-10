@@ -145,6 +145,11 @@ tracks the remaining work rather than every optimization already shipped.
   edits detach the baseline only when necessary to preserve in-place source edits.
   Clean recovery snapshots now capture source directly without building indexes;
   recovery validation counts lines only when saved folds require it.
+  Live recovery disk checks now compare committed document sources without
+  materializing persistence records, and clean disk reload preparation moves the
+  owned read source
+  ([both-adapter contracts](editor-performance/live-disk-recovery-browser.jsonl)).
+  Admission scans and persistence serialization remain work.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   parser context/selection-list extraction and final paint publication. Finish
