@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Batch editor viewport sizing reads before scroll-extent writes, preserving source-owned dimensions and native-input fallback during resizing.
+
 - Record scoped main-thread task timing and optional CPU profiles for editor boundary measurements, with profiler overhead labeled separately.
 
 - Prepare paragraph paint-boundary validation and exact glyph anchors cooperatively in shared Rust, with complete-only publication and cancellation across editor ownership changes.

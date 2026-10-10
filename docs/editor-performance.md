@@ -4259,3 +4259,33 @@ partial-coverage failure semantics. The corrected fixture passes on macOS in
 deadline; see [full output](editor-performance/complete-source-slice-failure-linux.jsonl).
 Strict optimized WASM library/test lint and formatting checks pass. A new full
 CI run remains required; the editor and CI reliability gates stay open.
+
+### Batched viewport sizing reads
+
+The browser viewport primitive now reads the client width/height together before
+changing input dimensions, reads any required native fallback extents before
+changing either source extent, and retains the existing resize-observer settling
+and source/account/view ownership checks. Complete source dimensions still avoid
+native dimension reads; bounded native windows still retain prior source extents
+while replacement geometry prepares. The feature facade and both workspace
+adapters remain unchanged.
+
+The existing both-mode extent contract now compares shrinking and growing
+viewports with an independent complete native renderer, with wrapping enabled
+and disabled, exact source checks and its unchanged three-second waits. It
+passes on macOS in 1.20 seconds. The same Linux editor partition passes all 149
+tests in 176.34 seconds, retaining the two existing font-matrix exclusions and
+300-second deadline; see [full output](editor-performance/batched-scroll-refresh-linux.jsonl).
+Strict optimized WASM library/test lint and the production Trunk/PWA build pass.
+
+[Four fresh production repeats](editor-performance/batched-scroll-production-linux.jsonl)
+pass source/caret, actual near-1-MiB String styling, complete geometry, scrolling
+and Linux PSS checks in both modes. Cold styled viewport paint is 1.52–1.61
+seconds and complete cold geometry is 2.51–2.57 seconds. Input viewport paint is
+248–257 ms and complete input geometry is 1.20–1.22 seconds. Peak Chrome PSS is
+683,929–744,991 KiB. Cold source-publication tasks still take 136–150 ms and input
+tasks 60–72 ms. These observations do not establish a material latency/memory
+improvement or completion of source/controller responsiveness work. The same
+frozen backend, local recovery-handle limitation and measurement image/resource
+constraints apply; exact artifacts are recorded in the evidence header. Full CI,
+physical-device input and the remaining editor implementation gates remain open.

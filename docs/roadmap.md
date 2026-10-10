@@ -132,7 +132,9 @@ tracks the remaining work rather than every optimization already shipped.
   and transport serialization, message decoding, diff shaping and native-text
   materialization. Browser request source publication and oversized-message fallback
   still run synchronously. Current production traces locate 140–147 ms tasks
-  during first source publication and 64–75 ms tasks after native edits; these
+  during first source publication and 64–75 ms tasks after native edits. Batched
+  viewport sizing retains the geometry contracts, but new production repeats
+  still show 136–150 ms cold tasks and 60–72 ms input tasks; these
   source/controller costs remain responsiveness targets. Bound remaining
   initial capacity allocation, folded/bounded projection assembly, retained
   row/coordinate copies, changed indentation-guide copies and storage suffix

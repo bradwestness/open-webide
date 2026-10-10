@@ -893,7 +893,7 @@ async fn prepared_source_extents_ignore_native_dimensions_and_reject_stale_scope
                 state.workspace.open_file.set(Some("extents.txt".into()));
                 state.workspace.content.set(initial.into());
                 mounted_actions.set(Some(EditorActions::new(state.workspace)));
-                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:240px">{editor_view(state)}</div> }
+                view! { <style>{include_str!("../../styles.css")}</style><div class="extent-test-frame" style="display:flex;width:420px;height:240px">{editor_view(state)}</div> }
             });
             frame().await;
             let actions = actions_slot.get().unwrap();
@@ -1001,6 +1001,35 @@ async fn prepared_source_extents_ignore_native_dimensions_and_reject_stale_scope
             assert!(scroll.scroll_width() < native_width || wrap);
             assert!(scroll.scroll_height() < native_height || !wrap);
             assert_eq!(actions.source(), replacement);
+            // Exercise both shrinking and growing client areas, including the
+            // scrollbar transitions. Compare against an independent complete
+            // input after the resize observer has published current geometry.
+            for (width, height) in [(300, 300), (600, 500), (420, 240)] {
+                mounted
+                    .element(".extent-test-frame")
+                    .set_attribute(
+                        "style",
+                        &format!("display:flex;width:{width}px;height:{height}px"),
+                    )
+                    .unwrap();
+                wait_until("resized source dimensions match complete renderer", || {
+                    let full = fullNativeDimensions(&textarea, &replacement);
+                    let current = mounted.element(".editor-scroll-extent");
+                    let trailing = if !wrap && full[0] > textarea.client_width() {
+                        16
+                    } else {
+                        0
+                    };
+                    current.get_attribute("data-editor-scope")
+                        == textarea.get_attribute("data-editor-scope")
+                        && (scroll.scroll_width() - (full[0] + trailing)).abs() <= 2
+                        && (scroll.scroll_height() - full[1]).abs() <= 2
+                        && (textarea.client_width() - scroll.client_width()).abs() <= 1
+                        && (textarea.client_height() - scroll.client_height()).abs() <= 1
+                })
+                .await;
+                assert_editor_native_source(&textarea, mounted.state.workspace, &replacement);
+            }
             mounted
                 .state
                 .auth
