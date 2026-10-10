@@ -300,6 +300,42 @@ impl EditorActions {
         };
         openwebide_core::editor::WrappedParagraphPreparation::new(body, index, runs)
     }
+    pub async fn prepare_wrapped_paragraph_cooperatively<'a>(
+        self,
+        paint: &'a EditorRowPaint,
+        row: usize,
+    ) -> Option<openwebide_core::editor::WrappedParagraphPreparation<'a>> {
+        if !self.prepare_styled_paint_runs(paint, row).await || !self.row_paint_current(paint) {
+            return None;
+        }
+        let body = paint.projection.line_body(row)?;
+        let index = paint.projection.visual_line_index(row)?;
+        let runs = if paint_row(paint, row)?.plain.is_some() {
+            index.text_run_boundaries().collect()
+        } else {
+            self.cached_styled_paint_runs(paint, row)?
+        };
+        let preparation =
+            openwebide_core::editor::ParagraphAnchorPreparation::wrapped(body, index, runs)?;
+        openwebide_core::editor::WrappedParagraphPreparation::with_prepared_anchors(
+            self.prepare_paragraph_anchors(paint, preparation).await?,
+        )
+    }
+    async fn prepare_paragraph_anchors<'a>(
+        self,
+        paint: &EditorRowPaint,
+        mut preparation: openwebide_core::editor::ParagraphAnchorPreparation<'a>,
+    ) -> Option<openwebide_core::editor::PreparedParagraphAnchors<'a>> {
+        loop {
+            if !self.row_paint_current(paint) {
+                return None;
+            }
+            if preparation.advance(openwebide_core::editor::PAINT_RUN_BATCH_UNITS) {
+                return preparation.finish();
+            }
+            crate::util::yield_task().await;
+        }
+    }
     pub fn paragraph_measurements(
         paint: &EditorRowPaint,
         row: usize,
@@ -1209,30 +1245,36 @@ impl EditorActions {
             return None;
         }
         let (body, index, style) = unwrapped_paragraph_row(paint, row)?;
-        if style.plain.is_some() {
-            return Self::paragraph_measurements(paint, row);
-        }
-        let runs = match self.retained_styled_paint_runs(paint, row) {
-            Some(Some(runs)) => runs,
-            _ => {
-                // Build once even when the complete table exceeds retention.
-                // A negative cache entry limits retention, not the ephemeral plan.
-                let runs = self
-                    .prepare_row_runs(paint, row, body, &style, usize::MAX)
-                    .await
-                    .ok()??;
-                if cacheable_styled_row(paint, row).is_some() {
-                    self.retain_styled_paint_runs(
-                        paint,
-                        row,
-                        (runs.len() <= MAX_RETAINED_PAINT_RUNS).then(|| runs.clone()),
-                    );
+        let runs = if let Some(plain) = style.plain {
+            if plain != body {
+                return None;
+            }
+            index.text_run_boundaries().collect()
+        } else {
+            match self.retained_styled_paint_runs(paint, row) {
+                Some(Some(runs)) => runs,
+                _ => {
+                    // Build once even when the complete table exceeds retention.
+                    // A negative cache entry limits retention, not the ephemeral plan.
+                    let runs = self
+                        .prepare_row_runs(paint, row, body, &style, usize::MAX)
+                        .await
+                        .ok()??;
+                    if cacheable_styled_row(paint, row).is_some() {
+                        self.retain_styled_paint_runs(
+                            paint,
+                            row,
+                            (runs.len() <= MAX_RETAINED_PAINT_RUNS).then(|| runs.clone()),
+                        );
+                    }
+                    runs
                 }
-                runs
             }
         };
-        openwebide_core::editor::ParagraphMeasurementPlan::with_shared_run_boundaries(
-            body, index, runs,
+        let preparation =
+            openwebide_core::editor::ParagraphAnchorPreparation::unwrapped(body, index, runs)?;
+        openwebide_core::editor::ParagraphMeasurementPlan::with_prepared_anchors(
+            self.prepare_paragraph_anchors(paint, preparation).await?,
         )
     }
     fn cached_styled_paint_runs(self, paint: &EditorRowPaint, row: usize) -> Option<Arc<[usize]>> {
@@ -1543,6 +1585,92 @@ mod tests {
                     );
                     assert_eq!(PAINT_RUN_PREPARATIONS.get(), 1);
                 }
+            }
+        }
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn paragraph_anchor_setup_yields_without_rescanning_and_rejects_stale_owners() {
+        use std::{
+            future::Future,
+            task::{Context, Poll, Waker},
+        };
+        for wrapped in [false, true] {
+            for stale in [
+                "complete", "source", "read", "project", "account", "dispose",
+            ] {
+                let owner = Owner::new();
+                let (workspace, auth, actions, paint) = owner.with(|| {
+                    let auth = crate::state::auth::AuthState::new();
+                    provide_context(auth);
+                    let workspace = crate::state::workspace::WorkspaceState::new();
+                    workspace.active_project.set(Some(1));
+                    workspace.open_file.set(Some("anchors.rs".into()));
+                    let body = "word 文😀e\u{301} ".repeat(6000);
+                    workspace.content.set(body.clone().into());
+                    let actions = EditorActions::new(workspace);
+                    let paint = actions
+                        .row_paint_snapshot(
+                            "anchor metrics".into(),
+                            FoldProjection::new(&body, &Default::default()),
+                            (
+                                true,
+                                Arc::new(vec![
+                                    vec![Token {
+                                        kind: TokenKind::String,
+                                        text: body,
+                                    }]
+                                    .into(),
+                                ]),
+                            ),
+                            Arc::from([]),
+                            Indentation::default(),
+                            false,
+                        )
+                        .unwrap();
+                    (workspace, auth, actions, paint)
+                });
+                assert!(actions.prepare_styled_paint_runs(&paint, 0).await);
+                take_paint_run_segment_bytes();
+                let mut preparation = Box::pin(async {
+                    if wrapped {
+                        actions
+                            .prepare_wrapped_paragraph_cooperatively(&paint, 0)
+                            .await
+                            .is_some()
+                    } else {
+                        actions
+                            .prepare_paragraph_measurements_cooperatively(&paint, 0)
+                            .await
+                            .is_some()
+                    }
+                });
+                assert!(matches!(
+                    preparation
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop())),
+                    Poll::Pending
+                ));
+                assert_eq!(
+                    take_paint_run_segment_bytes(),
+                    0,
+                    "cached runs must not be segmented again"
+                );
+                assert!(
+                    workspace.editor_row_cache.get_untracked().is_none(),
+                    "partial anchors cannot publish row geometry"
+                );
+                match stale {
+                    "source" => workspace.pending_epoch.update(|epoch| *epoch += 1),
+                    "read" => workspace
+                        .editor_read_revision
+                        .update(|revision| *revision += 1),
+                    "project" => workspace.active_project.set(Some(2)),
+                    "account" => auth.generation.update(|generation| *generation += 1),
+                    "dispose" => owner.cleanup(),
+                    _ => {}
+                }
+                assert_eq!(preparation.await, stale == "complete", "{wrapped}/{stale}");
             }
         }
     }

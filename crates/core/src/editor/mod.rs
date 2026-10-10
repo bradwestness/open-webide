@@ -22,6 +22,8 @@ mod motion_queue;
 pub use motion_queue::{MotionQueue, MotionRequest};
 mod paint_runs;
 pub use paint_runs::{PAINT_RUN_BATCH_UNITS, PaintRunPreparation};
+mod paragraph_anchors;
+pub use paragraph_anchors::{ParagraphAnchorPreparation, PreparedParagraphAnchors};
 mod paragraph;
 mod wrapped_paragraph;
 pub use wrapped_paragraph::WrappedParagraphPreparation;

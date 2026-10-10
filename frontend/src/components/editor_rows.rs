@@ -243,12 +243,18 @@ async fn measure_wrapped_paragraph(
     coverage: &impl Fn(openwebide_core::editor::WrappedCoverage),
     render: &impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
 ) -> Result<Option<(f64, openwebide_core::editor::WrappedGeometry)>, ()> {
-    if !current() || !actions.prepare_styled_paint_runs(scope, logical).await || !current() {
+    if !current() {
         return Ok(None);
     }
-    let Some(mut plan) = actions.prepare_wrapped_paragraph(scope, logical) else {
+    let Some(mut plan) = actions
+        .prepare_wrapped_paragraph_cooperatively(scope, logical)
+        .await
+    else {
         return Ok(None);
     };
+    if !current() {
+        return Ok(None);
+    }
     if let Some(prefix) = actions.paragraph_prefix(scope, logical) {
         while current() && actions.resume_paragraph_prefix_batch(&prefix, &mut plan) > 0 {
             crate::util::yield_task().await;

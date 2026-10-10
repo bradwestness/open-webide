@@ -4161,3 +4161,56 @@ All 149 Linux editor-partition contracts also pass with the existing font-matrix
 exclusions and unchanged deadline; see
 [one-pass Linux evidence](editor-performance/one-pass-unwrapped-runs-linux.jsonl).
 Full CI for the new checkpoint remains required.
+
+
+### Cooperative paragraph anchor setup
+
+Paragraph paint-run order/character-boundary validation and exact source-anchor
+mapping now advance in batches through `ParagraphAnchorPreparation` in the shared
+Rust core. An opaque complete result authorizes the existing wrapped or unwrapped
+plan; a partial, invalid or mismatched-layout result cannot authorize probes.
+Original synchronous constructors drain the same preparation policy, preserving
+complete-renderer fallback and caller contracts. Small tables retain original
+paint-run anchors, including omission of interior Unicode cluster boundaries;
+over-budget tables retain the original sparse checkpoint policy.
+
+Both browser measurement paths call the shared editor facade, which revalidates
+source/read/project/account ownership around every yield. Cached segmentation is
+not repeated during anchor setup. The DOM adapter receives the complete plan and
+checks its current metrics/target before measuring; no adapter implements a second
+validation or mapping policy. Plain boundary collection, bounded sparse-table
+finalization and unrelated full-source fallbacks remain separate remaining costs.
+
+Twenty-four native paragraph contracts pass, including an independent complete
+Unicode-coordinate oracle at multiple budgets and rejection of partial, invalid
+and wrong-layout setup. Native core Clippy passes with warnings denied. The new
+facade regression suspends after segmentation is cached and checks completion
+and source/read/project/account/disposal cancellation for both paragraph layouts.
+Browser, Linux partition and new checkpoint CI results are tracked below. This
+change makes no measured latency/PSS claim and does not complete the editor goal.
+
+All ten shared row-preparation regressions pass in macOS Chrome (0.13 seconds),
+including cached-setup cancellation. Twelve paragraph component contracts pass
+in 63.16 seconds, including the complete-renderer and font/feature/whitespace
+matrices in both workspace modes. All 149 Linux editor-partition contracts pass
+in 171.90 seconds with the existing exclusions and deadline;
+[artifact-bound evidence](editor-performance/cooperative-paragraph-anchors-linux.jsonl)
+records the compiled binding hash. Strict optimized WASM lint passes.
+
+CI run `38029031142` for the previous viewport checkpoint passed four jobs but
+failed first in `source_slice_measurement_failure_restores_full_source_in_both_modes`.
+Its three-second full-source fallback wait timed out; later tests also failed and
+the partition reached its overall deadline. The fixture now restores the Range
+hook before its failure assertion and reports whether the injected failure fired,
+visible source bytes and slice ownership. Its deadline and complete-source/native
+fallback assertions remain unchanged. This diagnostic edit followed the Linux
+partition above; its targeted checks and full CI remain required.
+
+The diagnostic fixture passes in macOS Chrome in 0.88 seconds. Its four-contract
+Linux neighborhood (loaded-font switch, near-limit styled horizontal windows,
+injected source-slice failure and prepared native-window editing) passes under a
+two-CPU limit with all existing deadlines/assertions retained; see
+[constrained Linux evidence](editor-performance/slice-failure-diagnostics-two-cpu-linux.jsonl).
+Final strict WASM lint also passes. This does not reproduce or resolve the CI-only
+timeout; the expanded diagnostics must establish the next CI failure state if it
+recurs. CI reliability and the complete editor goal remain open.

@@ -15611,29 +15611,51 @@ async fn source_slice_measurement_failure_restores_full_source_in_both_modes() {
         input
             .dispatch_event(&web_sys::Event::new("scroll").unwrap())
             .unwrap();
-        wait_until(
-            "failed partial measurement restores complete source",
-            || {
-                js_sys::Reflect::get(&audit, &"failed".into())
-                    .unwrap()
-                    .as_bool()
-                    == Some(true)
-                    && mounted
-                        .root
-                        .query_selector(".editor-source-line")
-                        .unwrap()
-                        .and_then(|row| row.text_content())
-                        .as_deref()
-                        == Some(original.as_str())
-            },
-        )
-        .await;
+        let deadline = js_sys::Date::now() + 3000.0;
+        let complete_fallback = loop {
+            let failed = js_sys::Reflect::get(&audit, &"failed".into())
+                .unwrap()
+                .as_bool()
+                == Some(true);
+            let complete = mounted
+                .root
+                .query_selector(".editor-source-line")
+                .unwrap()
+                .and_then(|row| row.text_content())
+                .as_deref()
+                == Some(original.as_str());
+            if failed && complete {
+                break true;
+            }
+            if js_sys::Date::now() >= deadline {
+                break false;
+            }
+            openwebide_frontend::util::sleep_ms(10).await;
+            settle().await;
+        };
+        // Restore before asserting so a failed contract cannot poison later tests.
+        let failed = js_sys::Reflect::get(&audit, &"failed".into())
+            .unwrap()
+            .as_bool();
+        let row = mounted.root.query_selector(".editor-source-line").unwrap();
+        let visible_bytes = row
+            .as_ref()
+            .and_then(|row| row.text_content())
+            .map_or(0, |text| text.len());
+        let source_start = row
+            .as_ref()
+            .and_then(|row| row.get_attribute("data-source-start"));
         js_sys::Reflect::get(&audit, &"restore".into())
             .unwrap()
             .dyn_into::<js_sys::Function>()
             .unwrap()
             .call0(&wasm_bindgen::JsValue::NULL)
             .unwrap();
+        assert!(
+            complete_fallback,
+            "{mode:?}: failed partial measurement must restore complete source within 3 s: injected={failed:?}, visible_bytes={visible_bytes}/{}, source_start={source_start:?}",
+            original.len()
+        );
         assert_editor_native_source(&input, mounted.state.workspace, &original);
         assert!(
             mounted
