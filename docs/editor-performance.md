@@ -4580,7 +4580,9 @@ the backend WASM SHA-256 is
 [Unwrapped](editor-performance/current-production-boundaries-unwrapped.jsonl)
 and [wrapped](editor-performance/current-production-boundaries-wrapped.jsonl)
 records contain three repetitions per case and project mode, 36 samples total.
-They require complete Chrome PSS coverage and unchanged rendering deadlines.
+Every sample passes the strict peak/final Chrome PSS checks and unchanged
+rendering deadlines. Some intermediate or pre-load snapshots remain unavailable
+and are explicitly null; the records do not imply continuous memory coverage.
 Local cases use database recovery fixtures and do not prove filesystem permissions.
 
 The cases contain 8,388,416 bytes, 99,999 short lines, and a 1,048,572-byte
