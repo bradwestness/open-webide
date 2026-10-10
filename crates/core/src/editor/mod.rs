@@ -297,6 +297,32 @@ const HISTORY_STEPS: usize = 1_000;
 const EDIT_RESERVE_BYTES: usize = 64 * 1024;
 pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 
+/// Prepare source-owned row/native/visual indexes without publishing a partial
+/// document. Hosts retain the source and validate their ownership before finish.
+pub struct DocumentPreparation<'a> {
+    source: &'a std::sync::Arc<String>,
+    index: index::LineIndexPreparation<'a>,
+}
+impl<'a> DocumentPreparation<'a> {
+    pub fn new(source: &'a std::sync::Arc<String>) -> Self {
+        Self {
+            source,
+            index: index::LineIndexPreparation::new(source),
+        }
+    }
+    pub fn advance(&mut self, budget: usize) -> bool {
+        self.index.advance(budget)
+    }
+    /// Index preparation is complete-only. Saved-source allocation remains part
+    /// of final publication; hosts must revalidate account/project/read ownership.
+    pub fn finish(self) -> Option<Document> {
+        Some(Document::from_prepared_text(
+            self.source.clone(),
+            self.index.finish()?,
+        ))
+    }
+}
+
 impl Document {
     /// Source-indexed guide policy; immutable results are shared across queries.
     pub fn indent_guide_columns(&self, indentation: Indentation) -> std::sync::Arc<[usize]> {
@@ -309,11 +335,15 @@ impl Document {
 
     /// Construct from an immutable host snapshot without copying its source.
     pub fn from_shared_text(text: std::sync::Arc<String>) -> Self {
+        let index = index::LineIndex::new(&text);
+        Self::from_prepared_text(text, index)
+    }
+    fn from_prepared_text(text: std::sync::Arc<String>, index: index::LineIndex) -> Self {
         Self {
             identity: std::sync::Arc::new(()),
             saved: std::sync::Arc::from(text.as_str()),
             editor_limits: false,
-            line_index: std::sync::Arc::new(index::LineIndex::new(&text)),
+            line_index: std::sync::Arc::new(index),
             projection: ProjectionCache::default(),
             text,
             selections: vec![Selection::caret(0)],

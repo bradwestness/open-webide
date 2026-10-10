@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Add complete-only cooperative document preparation for logical rows, native/visual coordinates and admission totals, preserving CRLF/EOF mappings and source sharing. Ordinary constructors use the same implementation; workspace read/recovery integration and final publication costs remain roadmap work.
+
 - Share bounded Unicode source/context traversal between paint segmentation and resumable visual-index construction, visiting source characters once and publishing complete coordinates only. Cooperative document-loading integration remains roadmap work.
 
 - Reuse exact indexed boundaries for large Unicode graphemes during caret and paragraph-anchor queries, avoiding repeated interior/lookahead scans while preserving the original paint seams.

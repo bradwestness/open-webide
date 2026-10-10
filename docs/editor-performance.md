@@ -4462,3 +4462,25 @@ exact source/artifact hashes and complete runner output. This is preparation
 infrastructure: native/row/admission indexing, workspace-read and recovery
 integration still need cooperative construction/publication. Existing document
 calls remain synchronous, and production latency/memory gates are unfinished.
+
+## Cooperative row and document indexes
+
+Native checkpoints and admission summaries now have complete-only row preparation.
+Eligible visual rows share the bounded Unicode traversal; short/unsupported visual
+rows advance through bounded character chunks. Logical row discovery scans at most
+8 KiB per unit, then advances that row's coordinates before adding its exact raw
+and normalized offsets. EOF empty rows, CRLF and standalone-CR admission semantics
+remain identical. Ordinary index constructors consume the same implementation.
+`DocumentPreparation` exposes the completed index as a source-sharing document;
+it cannot expose partial row/native/visual mappings.
+
+All 260 native editor tests pass, including independent logical-row discovery,
+byte admission, UTF-16/native conversion and complete segmentation comparisons
+across budgets and oversized visual fallback. Strict optimized core/frontend WASM
+lint passes. All 16 editor library tests pass in macOS and Linux Chrome; the giant
+fixture now prepares a complete document through yielding tasks, checks source
+sharing/clean state and compares exact glyph coordinates. [Browser evidence](editor-performance/cooperative-document-browser.jsonl)
+records source/artifact hashes and complete output. Workspace reads and recovery
+still need to await this builder with ownership cancellation and draft protection.
+Metadata vector growth, saved-source allocation and final publication costs remain
+responsiveness/memory targets; these primitive checks do not complete those gates.

@@ -1,8 +1,8 @@
 //! Incremental logical-line and UTF-16 coordinates owned by the source document.
 use super::{
     EditError, Selection,
-    coordinates::LineCoordinates,
-    lines::{Line, LineEdit, lines, row_at},
+    coordinates::{LineCoordinatePreparation, LineCoordinates},
+    lines::{Line, LineEdit, row_at},
 };
 use std::{ops::Range, sync::Arc};
 
@@ -57,37 +57,109 @@ impl<T> PartialEq for RowCache<T> {
 }
 impl<T> Eq for RowCache<T> {}
 
+/// Initial row discovery and coordinates share one complete-only construction
+/// path. Retained indexes are never modified while a replacement is preparing.
+pub(super) struct LineIndexPreparation<'a> {
+    source: &'a str,
+    index: LineIndex,
+    coordinates: Vec<LineCoordinates>,
+    row_start: usize,
+    scan: usize,
+    active: Option<(Line, LineCoordinatePreparation<'a>)>,
+    done: bool,
+}
+impl<'a> LineIndexPreparation<'a> {
+    pub fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            index: LineIndex {
+                rows: Vec::new(),
+                offsets: Vec::new(),
+                oversized_rows: Vec::new(),
+                oversized_count: 0,
+                breaks: 0,
+                coordinates: Arc::new(Vec::new()),
+                utf16_len: 0,
+                textarea_len: 0,
+                guides: RowCache::default(),
+                visible_rows: RowCache::default(),
+            },
+            coordinates: Vec::new(),
+            row_start: 0,
+            scan: 0,
+            active: None,
+            done: false,
+        }
+    }
+    /// One unit discovers at most 8 KiB of source, or advances one bounded row
+    /// coordinate step. EOF/newline handling and complete publication are shared
+    /// by synchronous construction and cooperative hosts.
+    pub fn advance(&mut self, budget: usize) -> bool {
+        for _ in 0..budget {
+            if self.done {
+                break;
+            }
+            if let Some((_, coordinates)) = &mut self.active {
+                if !coordinates.advance(1) {
+                    continue;
+                }
+                let (row, coordinates) = self.active.take().unwrap();
+                let (coordinates, summary) = coordinates.finish().unwrap();
+                let text = &self.source[row.start..row.end];
+                self.index.offsets.push((
+                    self.index.utf16_len,
+                    self.index.textarea_len,
+                    self.index.breaks,
+                ));
+                self.index.breaks += summary.breaks;
+                self.index.oversized_count += usize::from(summary.oversized);
+                self.index.oversized_rows.push(summary.oversized);
+                self.coordinates.push(coordinates);
+                self.index.utf16_len += summary.utf16_len;
+                self.index.textarea_len += summary.utf16_len - usize::from(text.ends_with("\r\n"));
+                self.done = row.end == self.source.len()
+                    && (row.start == row.end || !self.source.ends_with('\n'));
+                self.row_start = row.end;
+                self.scan = row.end;
+                self.index.rows.push(row);
+                continue;
+            }
+            let scan_end = self.scan.saturating_add(8192).min(self.source.len());
+            let newline = self.source.as_bytes()[self.scan..scan_end]
+                .iter()
+                .position(|byte| *byte == b'\n');
+            self.scan = newline.map_or(scan_end, |offset| self.scan + offset + 1);
+            if newline.is_some() || self.scan == self.source.len() {
+                let text = &self.source[self.row_start..self.scan];
+                let ending = if text.ends_with("\r\n") {
+                    2
+                } else {
+                    usize::from(text.ends_with('\n'))
+                };
+                let row = Line {
+                    start: self.row_start,
+                    body_end: self.scan - ending,
+                    end: self.scan,
+                };
+                self.active = Some((row, LineCoordinatePreparation::new(text)));
+            }
+        }
+        self.done
+    }
+    pub fn finish(mut self) -> Option<LineIndex> {
+        if !self.done {
+            return None;
+        }
+        self.index.coordinates = Arc::new(self.coordinates);
+        Some(self.index)
+    }
+}
+
 impl LineIndex {
     pub fn new(source: &str) -> Self {
-        let rows = lines(source);
-        let mut coordinates = Vec::with_capacity(rows.len());
-        let mut index = Self {
-            rows,
-            offsets: Vec::new(),
-            oversized_rows: Vec::new(),
-            oversized_count: 0,
-            breaks: 0,
-            coordinates: Arc::new(Vec::new()),
-            utf16_len: 0,
-            textarea_len: 0,
-            guides: RowCache::default(),
-            visible_rows: RowCache::default(),
-        };
-        for row in &index.rows {
-            index
-                .offsets
-                .push((index.utf16_len, index.textarea_len, index.breaks));
-            let text = &source[row.start..row.end];
-            let (row_coordinates, summary) = LineCoordinates::with_summary(text);
-            index.breaks += summary.breaks;
-            index.oversized_count += usize::from(summary.oversized);
-            index.oversized_rows.push(summary.oversized);
-            coordinates.push(row_coordinates);
-            index.utf16_len += summary.utf16_len;
-            index.textarea_len += summary.utf16_len - usize::from(text.ends_with("\r\n"));
-        }
-        index.coordinates = Arc::new(coordinates);
-        index
+        let mut preparation = LineIndexPreparation::new(source);
+        preparation.advance(usize::MAX);
+        preparation.finish().unwrap()
     }
 
     /// Re-scan changed logical rows, preserving all unchanged suffix coordinates.
@@ -398,6 +470,64 @@ impl LineIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cooperative_line_tables_preserve_eof_rows_and_exact_native_coordinates() {
+        for source in [
+            String::new(),
+            "x".into(),
+            "\n".into(),
+            "\r\n".into(),
+            "head 文😀\r\nbody\rword\n".repeat(300),
+            format!("{}\r\nlast\n", "文😀e\u{301}\t".repeat(9000)),
+            format!("👩{}\u{200d}👩\r\n", "\u{301}".repeat(40_000)),
+        ] {
+            let expected_rows = super::super::lines::lines(&source);
+            let (breaks, _) = super::super::capacity::row_admission(&source);
+            for budget in [1, 8, 64] {
+                assert!(LineIndexPreparation::new(&source).finish().is_none());
+                let mut prep = LineIndexPreparation::new(&source);
+                assert!(!prep.advance(0));
+                let mut turns = 0;
+                loop {
+                    let rows = prep.index.rows.len();
+                    let done = prep.advance(budget);
+                    assert!(prep.index.rows.len() - rows <= budget);
+                    turns += 1;
+                    if done {
+                        break;
+                    }
+                    assert!(turns < source.len() * 4 + 3);
+                }
+                let index = prep.finish().unwrap();
+                assert_eq!(index.rows, expected_rows);
+                assert_eq!(index.utf16_len, source.encode_utf16().count());
+                assert_eq!(
+                    index.textarea_len,
+                    super::super::byte_to_textarea(&source, source.len()).unwrap()
+                );
+                assert_eq!(index.breaks, breaks);
+                for byte in source
+                    .char_indices()
+                    .map(|(byte, _)| byte)
+                    .step_by((source.len() / 97).max(1))
+                    .chain([source.len()])
+                {
+                    let expected = super::super::byte_to_textarea(&source, byte).unwrap();
+                    assert_eq!(index.byte_to_textarea(&source, byte), Ok(expected));
+                    assert_eq!(
+                        index.line_column(&source, byte),
+                        super::super::line_column(&source, byte)
+                    );
+                    for native in expected.saturating_sub(1)..=expected + 1 {
+                        assert_eq!(
+                            index.textarea_to_byte(&source, native),
+                            super::super::textarea_to_byte(&source, native)
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn edits_ending_at_row_boundaries_retain_only_separate_suffix_coordinates() {

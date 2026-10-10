@@ -127,9 +127,11 @@ tracks the remaining work rather than every optimization already shipped.
   boundaries so caret and paint-boundary queries skip their interiors and avoid
   lookahead through an already indexed large grapheme; initial index construction
   now exposes a resumable builder using the same bounded Unicode scanner as paint
-  segmentation. Finish cooperative native/row/admission index construction and
-  wire completed document preparation into workspace reads and recovery; current
-  document construction still runs synchronously through that shared builder.
+  segmentation. Native/row/admission index construction now also has a complete-only
+  cooperative document builder. Wire completed preparation into workspace reads
+  and recovery, with cancellation and draft protection; current document callers
+  still consume that shared implementation synchronously. Finish metadata capacity
+  growth, saved-source allocation and final publication costs.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   parser context/selection-list extraction and final paint publication. Finish
