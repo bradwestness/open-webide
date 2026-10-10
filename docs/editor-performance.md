@@ -3974,6 +3974,9 @@ No production parser limits, geometry or fallback policy changed; these warm-edi
 results do not establish cold-start latency. The separate font-cache fix preserves
 ordinary-row replay across matching notifications.
 
-All five CI jobs passed for `1b499c4` in run `38018986189`. Full CI for the
-font-cache checkpoint `574d2a5` and this fixture correction remains under
-observation; the complete editor and reliable-CI gates remain open.
+All five CI jobs passed for `1b499c4` in run `38018986189`. All five jobs also passed for the
+font-cache checkpoint `574d2a5` in run `38020653214`. The corrected fixture
+checkpoint `644ece9` passes the complete [147-test Linux editor component partition](editor-performance/prepared-paint-linux-editor-partition.jsonl)
+with CI's two existing matrix exclusions and unchanged 300-second run deadline
+(157.26 seconds). Its full CI run `38021534434` remains under observation; the
+complete editor and reliable-CI gates remain open.

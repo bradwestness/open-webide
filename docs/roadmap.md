@@ -143,7 +143,8 @@ tracks the remaining work rather than every optimization already shipped.
   terminal contracts; verify focus/layout behavior in the complete browser partition.
   Warm burst checks now wait for published parser/fallback paint and exact token-owned
   dimensions; three Linux repetitions pass the strict burst and both-mode row-reuse
-  assertions. Repeat the complete browser partition and full CI for this correction.
+  assertions, and the 147-test Linux editor component partition passes. Finish and
+  repeat full CI for this correction.
   Current checkpoints and measured results are in [performance evidence](editor-performance.md).
 - [ ] **Physical Chrome/Edge PWA input:** verify real input-method commit/cancel,
   Unicode and LF/CRLF undo/redo, multiple-cursor clipboard behavior and touch input
