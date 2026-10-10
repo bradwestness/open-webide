@@ -58,6 +58,17 @@ pub enum RecoveryDiskState {
 }
 
 impl DocumentRecovery {
+    /// Capture a clean source that has no live editor document. Recovery needs
+    /// source and baseline, not coordinate indexes or an undo history.
+    pub fn clean(source: &str) -> Self {
+        Self {
+            text: source.to_owned(),
+            saved: source.to_owned(),
+            selections: vec![Selection::caret(0)],
+            collapsed: Vec::new(),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.text.len() > MAX_DOCUMENT_BYTES || self.saved.len() > MAX_DOCUMENT_BYTES {
             return Err("Recovered document exceeds the editor's size limit".into());
@@ -70,9 +81,11 @@ impl DocumentRecovery {
         if self.collapsed.len() > MAX_RECOVERY_FOLDS {
             return Err("Too many recovered folds".into());
         }
-        let lines = self.text.bytes().filter(|byte| *byte == b'\n').count() + 1;
-        if normalize_folds(self.collapsed.clone(), lines) != self.collapsed {
-            return Err("Recovered folds are outside the document or overlap".into());
+        if !self.collapsed.is_empty() {
+            let lines = self.text.bytes().filter(|byte| *byte == b'\n').count() + 1;
+            if normalize_folds(self.collapsed.clone(), lines) != self.collapsed {
+                return Err("Recovered folds are outside the document or overlap".into());
+            }
         }
         Ok(())
     }
@@ -475,6 +488,25 @@ mod tests {
             clean.reconcile_disk(None).unwrap().1,
             RecoveryDiskState::Missing
         );
+    }
+
+    #[test]
+    fn clean_source_capture_matches_document_recovery_without_indexes() {
+        for source in ["", "文😀\r\nsecond\rthird\n", "one\n"] {
+            let recovery = DocumentRecovery::clean(source);
+            assert_eq!(recovery, Document::new(source).recovery());
+            recovery.validate_editor().unwrap();
+            let restored = recovery.restore().unwrap();
+            assert_eq!(restored.text(), source);
+            assert!(!restored.is_dirty());
+            assert!(!restored.can_undo());
+        }
+        let mut recovery = DocumentRecovery::clean("one\n");
+        recovery.collapsed.push(FoldRange {
+            start_line: 0,
+            end_line: 2,
+        });
+        assert!(recovery.validate().is_err());
     }
 
     #[test]

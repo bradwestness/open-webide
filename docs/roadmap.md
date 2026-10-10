@@ -139,6 +139,8 @@ tracks the remaining work rather than every optimization already shipped.
   completed document summaries or cooperative rejection results. Finish remaining
   synchronous document callers, recovery validation/copies, metadata capacity
   growth, saved-source allocation and final publication costs.
+  Clean recovery snapshots now capture source directly without building indexes;
+  recovery validation counts lines only when saved folds require it.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   parser context/selection-list extraction and final paint publication. Finish
@@ -184,8 +186,11 @@ tracks the remaining work rather than every optimization already shipped.
   Improvements must preserve source/account/project ownership,
   pending edits, themes, supported previews, agent context and both adapter contracts.
 - [ ] **Reliable CI and release/PWA checks:** pass the complete native/WASI/WASM,
-  platform, browser and release-app checks reliably. Validate bounded browser
-  setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
+  platform, browser and release-app checks reliably.
+  CI run `38045611820` failed wrapped startup readiness, highlight burst generations,
+  localized wrapped-row reuse and file-switch cancellation assertions; diagnose
+  these failures and verify the fixes in the full partition.
+  Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving
   source and selection comparisons; verify the complete suite on CI as well.

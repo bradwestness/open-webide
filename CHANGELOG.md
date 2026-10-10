@@ -9,6 +9,10 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Capture clean editor recovery snapshots without constructing unused document indexes, reusing source capacity decisions and skipping line-count scans when no folds are saved.
+
+- Keep capacity checks usable during document updates by falling back to the immutable source cache when document state is already borrowed.
+
 - Reuse editor capacity decisions across immutable source snapshots and shared controls, preserving limit precedence and rejecting decisions belonging to another source allocation.
 
 - Prepare explicit recovered-file reloads cooperatively, rejecting stale reviews before publication and sharing the completed source across editor documents and buffers. Over-limit files keep bounded read-only viewing.

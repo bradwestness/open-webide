@@ -693,10 +693,10 @@ impl WorkspaceState {
                             "The saved baseline for `{path}` is not ready for recovery"
                         ));
                     }
-                    if openwebide_core::editor::editor_limit(text).is_some() {
+                    if text.editor_limit().is_some() {
                         return Ok(None);
                     }
-                    return Ok(Some(Document::from_shared_text(text.shared()).recovery()));
+                    return Ok(Some(openwebide_core::editor::DocumentRecovery::clean(text)));
                 }
                 Ok(documents.get(&key).map(Document::recovery))
             })?;
@@ -1149,6 +1149,36 @@ impl Default for WorkspaceState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_recovery_capture_without_documents_preserves_both_project_modes() {
+        use openwebide_core::{Project, WorkspaceMode, editor::DocumentRecovery};
+        for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+            let owner = Owner::new();
+            owner.with(|| {
+                let workspace = WorkspaceState::with_active_project(RwSignal::new(Some(1)));
+                let project = Project {
+                    id: 1,
+                    user_id: None,
+                    created_at: 1,
+                    name: "project".into(),
+                    path: Some("project".into()),
+                    mode,
+                };
+                workspace.open_file.set(Some("clean.txt".into()));
+                workspace.content.set("文😀\r\nsecond".into());
+                let recovery = workspace.editor_recovery(&project, false).unwrap();
+                assert_eq!(recovery.files.len(), 1);
+                assert_eq!(
+                    recovery.files[0].document,
+                    Some(DocumentRecovery::clean("文😀\r\nsecond"))
+                );
+                assert!(workspace.editor_documents.get_untracked().is_empty());
+                workspace.dirty.set(true);
+                assert!(workspace.editor_recovery(&project, false).is_err());
+            });
+        }
+    }
 
     #[test]
     fn admission_cache_is_shared_only_by_the_immutable_source() {

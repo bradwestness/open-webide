@@ -135,6 +135,7 @@ impl EditorActions {
 
     pub fn new(workspace: WorkspaceState) -> Self {
         let preferences = use_context::<crate::state::settings::SettingsState>();
+        let capacity_documents = ArcRwSignal::from(workspace.editor_documents);
         Self {
             workspace,
             auth: use_context::<crate::state::auth::AuthState>(),
@@ -147,7 +148,10 @@ impl EditorActions {
                         .get_untracked()
                         .zip(workspace.open_file.get_untracked())
                     {
-                        workspace.editor_documents.with_untracked(|documents| {
+                        // A document update may evaluate this memo while holding
+                        // the write guard. Its immutable source cache remains
+                        // valid even when indexed totals cannot be borrowed.
+                        capacity_documents.try_with_untracked(|documents| {
                             if let Some(document) = documents.get(&key)
                                 && std::ptr::eq(document.text(), source.as_str())
                             {
