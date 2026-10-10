@@ -4878,8 +4878,10 @@ latency or process-memory claim. Full responsiveness and physical-device gates
 remain open.
 
 The preceding rejected-source checkpoint `43f66c9` passed all five hosted CI jobs
-([receipt](editor-performance/grouped-ci-43f66c9.json)). The newer baseline-sharing
-checkpoint and current save change still require their own hosted verification.
+([receipt](editor-performance/grouped-ci-43f66c9.json)). The baseline-sharing
+checkpoint `8a5f1e3` also passed all five hosted CI jobs
+([receipt](editor-performance/grouped-ci-8a5f1e3.json)); the current save change
+still requires its own hosted verification.
 
 All 470 native core tests, 128 native frontend tests, strict native-core lint
 (including tests) and optimized frontend WASM lint pass. Thirty selected browser
@@ -4891,3 +4893,21 @@ write failure and newer typing in both local filesystem and remote HTTP adapters
 Formatting and recovery-conflict checks retain their original assertions and
 three-second readiness deadline. This selected run does not replace full hosted
 CI, production timing or physical-device verification.
+
+## Late save after a clean disk reload
+
+A held-write regression reproduced a clean-state mismatch: reloading newer disk
+content while an older save waited left the active editor marked clean after the
+older write replaced the file. The document and retained buffer correctly differed
+from the acknowledged source, but active and project-snapshot dirty flags did not.
+The shared save completion now reconciles each matching view with the exact source
+written, retaining account, root, project and file ownership guards.
+
+The unchanged regression fails on the preceding implementation at local case 8
+and passes after the correction. Ten scenarios per adapter cover the active reload,
+switching away after reload, newer typing, write failure and ownership changes.
+All 29 selected save-related browser checks, 128 native frontend tests and strict
+optimized frontend WASM lint including tests pass
+([failure/pass record](editor-performance/late-save-reload-browser.jsonl)).
+This is a shared-state correction, not a performance measurement or physical
+folder-permission verification; those roadmap gates remain open.

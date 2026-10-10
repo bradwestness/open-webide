@@ -18088,9 +18088,10 @@ async fn editor_save_completion_retains_root_and_account_ownership_in_both_modes
     };
     const BASE: &str = "base 😀\r\n";
     const DRAFT: &str = "draft 😀\r\n";
+    const RELOADED: &str = "reloaded 😀\r\n";
     for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
         // Root/file/account/bridge/project changes and write failure during a save.
-        for case in 0..8 {
+        for case in 0..10 {
             let folder = if mode == WorkspaceMode::Local {
                 Some(editorConfigFolder().await.unwrap())
             } else {
@@ -18236,6 +18237,48 @@ async fn editor_save_completion_retains_root_and_account_ownership_in_both_modes
                         .unwrap();
                     mounted.state.workspace.retain_editor_buffer(false);
                 }
+                8 | 9 => {
+                    if let Some(folder) = folder.as_ref() {
+                        Workspace::Local {
+                            handle: editorConfigHandle(folder).unchecked_into(),
+                        }
+                        .write("guard.rs", RELOADED)
+                        .await
+                        .unwrap();
+                    } else {
+                        mounted
+                            .state
+                            .fake
+                            .files
+                            .borrow_mut()
+                            .insert((1, "guard.rs".into()), RELOADED.into());
+                    }
+                    mounted.state.workspace.remove_editor_tab(1, "guard.rs");
+                    mounted.state.workspace.open_file.set(None);
+                    mounted.state.workspace.content.set(String::new().into());
+                    mounted.state.workspace.dirty.set(false);
+                    slot.get().unwrap().request_open.run("guard.rs".into());
+                    wait_until("newer disk read is clean while old save waits", || {
+                        !mounted.state.workspace.editor_loading.get_untracked()
+                            && mounted.state.workspace.content.get_untracked() == RELOADED
+                            && !mounted.state.workspace.dirty.get_untracked()
+                    })
+                    .await;
+                    mounted.state.workspace.save_active(1);
+                    if case == 9 {
+                        mounted
+                            .state
+                            .workspace
+                            .open_file
+                            .set(Some("other.rs".into()));
+                        mounted
+                            .state
+                            .workspace
+                            .content
+                            .set("unrelated draft".into());
+                        mounted.state.workspace.dirty.set(true);
+                    }
+                }
                 _ => unreachable!(),
             }
             if let Some(sender) = sender {
@@ -18261,10 +18304,12 @@ async fn editor_save_completion_retains_root_and_account_ownership_in_both_modes
             );
             assert_eq!(
                 &*mounted.state.workspace.content.get_untracked(),
-                if matches!(case, 1 | 6) {
+                if matches!(case, 1 | 6 | 9) {
                     "unrelated draft"
                 } else if case == 7 {
                     "newer 😀\r\n"
+                } else if case == 8 {
+                    RELOADED
                 } else {
                     DRAFT
                 }

@@ -249,8 +249,9 @@ tracks the remaining work rather than every optimization already shipped.
   ([receipt](editor-performance/grouped-ci-43f66c9.json)).
   Prepared-source baseline sharing passes all 469 native core tests, 128 native
   frontend tests and 174 editor browser tests with both font matrices
-  ([record](editor-performance/shared-saved-source-browser.jsonl)). Current hosted
-  verification is still required for this allocation change.
+  ([record](editor-performance/shared-saved-source-browser.jsonl)). Its `8a5f1e3`
+  checkpoint passed all five hosted CI jobs
+  ([receipt](editor-performance/grouped-ci-8a5f1e3.json)).
   Immutable save payload/acknowledgement sharing additionally passes 470 native
   core tests, 128 native frontend tests and 30 selected browser checks, including
   both-adapter save ownership and recovery failures
@@ -286,7 +287,11 @@ tracks the remaining work rather than every optimization already shipped.
 - [ ] **Folder permissions and recovery:** expand permission/error regressions and
   verify real local directory-handle permission loss/regrant and reload recovery.
   Existing held-write contracts cover failures and stale account/folder/bridge/project
-  results, background saves and newer edits; the disposable recovery check has no
+  results, background saves, newer edits and a clean disk reload while a save waits.
+  Late acknowledgements reconcile active and retained snapshot dirty state with
+  the actual written source
+  ([failure/pass evidence](editor-performance/late-save-reload-browser.jsonl)).
+  The disposable recovery check has no
   native local folder handle. Coordinate with Offline & error-state recovery below.
 - [ ] **Accessibility and integration:** verify keyboard focus/Tab escape, assistive
   technology, touch, theme integration and PWA loading across the completed editor,

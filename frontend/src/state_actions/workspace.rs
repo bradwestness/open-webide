@@ -998,20 +998,18 @@ impl WorkspaceActions {
                                 buffer.dirty = buffer.content != content;
                             }
                         });
-                        if save_editor.is_current(project_id, &path)
-                            && workspace.content.get_untracked() == content
-                        {
-                            workspace.dirty.set(false);
-                        } else {
-                            workspace.snapshots.update(|snapshots| {
-                                if let Some(snapshot) = snapshots.get_mut(&project_id)
-                                    && snapshot.open_file.as_deref() == Some(path.as_str())
-                                    && snapshot.content == content
-                                {
-                                    snapshot.dirty = false;
-                                }
-                            });
+                        if save_editor.is_current(project_id, &path) {
+                            workspace
+                                .dirty
+                                .set(workspace.content.get_untracked() != content);
                         }
+                        workspace.snapshots.update(|snapshots| {
+                            if let Some(snapshot) = snapshots.get_mut(&project_id)
+                                && snapshot.open_file.as_deref() == Some(path.as_str())
+                            {
+                                snapshot.dirty = snapshot.content != content;
+                            }
+                        });
                         if path.rsplit('/').next() == Some(".editorconfig") {
                             workspace
                                 .editor_configuration_revision

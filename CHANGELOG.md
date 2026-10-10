@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reconcile editor dirty state after a late save finishes over a newer disk reload, preserving the newer content as a draft in the active editor and retained project snapshot.
+
 - Retain immutable editor source through save preparation and acknowledgement, avoiding full-file copies while preserving newer drafts and composition cancellation.
 
 - Share prepared editor source with its saved baseline instead of duplicating the full file during publication. Preserve in-place edits when only the baseline retains the source, immutable snapshots, late save acknowledgements and composition cancellation.
