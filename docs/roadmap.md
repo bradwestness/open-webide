@@ -119,7 +119,11 @@ tracks the remaining work rather than every optimization already shipped.
   builds the complete table once, retaining it only within the existing cache limit;
   it no longer restarts after a capped initial pass. Finish other initial
   run-table construction and unsupported-boundary fallbacks that still segment
-  complete rows; avoid repeated over-limit fallback reconstruction.
+  complete rows; avoid repeated over-limit fallback reconstruction. Cooperative
+  styled-run preparation now suspends inside large Unicode graphemes using
+  bounded forward/context chunks, preserving the original paint boundaries;
+  synchronous coordinate, glyph-anchor and complete-layout construction still
+  require bounded preparation.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   parser context/selection-list extraction and final paint publication. Finish

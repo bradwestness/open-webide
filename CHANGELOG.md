@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Suspend long-token paint segmentation between bounded Unicode chunks, including within a single large grapheme, while preserving complete run boundaries and rejecting stale editor ownership before publication.
+
 - Retain the following row's exact coordinates when an edit preserves its line boundary or moves it to the document start, avoiding rescanning an untouched long line. Rebuild joined rows normally.
 
 - Collect row admission, UTF-16 totals and native checkpoints during the visual index's character pass, avoiding repeated source-row scans.

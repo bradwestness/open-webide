@@ -1437,70 +1437,84 @@ mod tests {
             future::Future,
             task::{Context, Poll, Waker},
         };
-        for stale in [
-            "complete", "source", "read", "project", "account", "dispose",
-        ] {
-            let owner = Owner::new();
-            let body = "word 文😀e\u{301} ".repeat(6000);
-            let (workspace, auth, actions, paint, expected) = owner.with(|| {
-                let auth = crate::state::auth::AuthState::new();
-                provide_context(auth);
-                let workspace = crate::state::workspace::WorkspaceState::new();
-                workspace.active_project.set(Some(1));
-                workspace.open_file.set(Some("styled.rs".into()));
-                workspace.content.set(body.clone().into());
-                let actions = EditorActions::new(workspace);
-                let tokens = vec![Token {
-                    kind: TokenKind::String,
-                    text: body.clone(),
-                }];
-                let expected: Arc<[usize]> = openwebide_core::editor::visual_text_run_ranges(&body)
-                    .map(|run| run.end)
-                    .collect();
-                let paint = actions
-                    .row_paint_snapshot(
-                        "font metrics".into(),
-                        FoldProjection::new(&body, &Default::default()),
-                        (true, Arc::new(vec![tokens.into()])),
-                        Arc::from([]),
-                        Indentation::default(),
-                        false,
-                    )
-                    .unwrap();
-                (workspace, auth, actions, paint, expected)
-            });
-            take_paint_run_segment_bytes();
-            let mut preparation = Box::pin(actions.prepare_styled_paint_runs(&paint, 0));
-            assert!(matches!(
-                preparation
-                    .as_mut()
-                    .poll(&mut Context::from_waker(Waker::noop())),
-                Poll::Pending
-            ));
-            assert!(workspace.editor_paint_runs.get_untracked().is_none());
-            let scanned = take_paint_run_segment_bytes();
-            assert!(scanned > 0 && scanned < body.len());
-            match stale {
-                "source" => workspace.pending_epoch.update(|epoch| *epoch += 1),
-                "read" => workspace
-                    .editor_read_revision
-                    .update(|revision| *revision += 1),
-                "project" => workspace.active_project.set(Some(2)),
-                "account" => auth.generation.update(|generation| *generation += 1),
-                "dispose" => owner.cleanup(),
-                _ => {}
-            }
-            assert_eq!(preparation.await, stale == "complete");
-            if stale == "complete" {
-                assert_eq!(
-                    actions.cached_styled_paint_runs(&paint, 0).unwrap(),
-                    expected
-                );
+        for giant in [false, true] {
+            for stale in [
+                "complete", "source", "read", "project", "account", "dispose",
+            ] {
+                let owner = Owner::new();
+                let body = if giant {
+                    format!("👩{}\u{200d}👩 last", "\u{301}".repeat(40_000))
+                } else {
+                    "word 文😀e\u{301} ".repeat(6000)
+                };
+                let (workspace, auth, actions, paint, expected) = owner.with(|| {
+                    let auth = crate::state::auth::AuthState::new();
+                    provide_context(auth);
+                    let workspace = crate::state::workspace::WorkspaceState::new();
+                    workspace.active_project.set(Some(1));
+                    workspace.open_file.set(Some("styled.rs".into()));
+                    workspace.content.set(body.clone().into());
+                    let actions = EditorActions::new(workspace);
+                    let tokens = vec![Token {
+                        kind: TokenKind::String,
+                        text: body.clone(),
+                    }];
+                    let expected: Arc<[usize]> =
+                        openwebide_core::editor::visual_text_run_ranges(&body)
+                            .map(|run| run.end)
+                            .collect();
+                    let paint = actions
+                        .row_paint_snapshot(
+                            "font metrics".into(),
+                            FoldProjection::new(&body, &Default::default()),
+                            (true, Arc::new(vec![tokens.into()])),
+                            Arc::from([]),
+                            Indentation::default(),
+                            false,
+                        )
+                        .unwrap();
+                    (workspace, auth, actions, paint, expected)
+                });
                 take_paint_run_segment_bytes();
-                assert!(actions.prepare_styled_paint_runs(&paint, 0).await);
-                assert_eq!(take_paint_run_segment_bytes(), 0);
-            } else if stale != "dispose" {
+                let mut preparation = Box::pin(actions.prepare_styled_paint_runs(&paint, 0));
+                assert!(matches!(
+                    preparation
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop())),
+                    Poll::Pending
+                ));
                 assert!(workspace.editor_paint_runs.get_untracked().is_none());
+                let scanned = take_paint_run_segment_bytes();
+                if giant {
+                    assert_eq!(
+                        scanned, 0,
+                        "the incomplete cluster must yield before emitting a run"
+                    );
+                } else {
+                    assert!(scanned > 0 && scanned < body.len());
+                }
+                match stale {
+                    "source" => workspace.pending_epoch.update(|epoch| *epoch += 1),
+                    "read" => workspace
+                        .editor_read_revision
+                        .update(|revision| *revision += 1),
+                    "project" => workspace.active_project.set(Some(2)),
+                    "account" => auth.generation.update(|generation| *generation += 1),
+                    "dispose" => owner.cleanup(),
+                    _ => {}
+                }
+                assert_eq!(preparation.await, stale == "complete");
+                if stale == "complete" {
+                    assert_eq!(
+                        actions.cached_styled_paint_runs(&paint, 0).unwrap(),
+                        expected
+                    );
+                    take_paint_run_segment_bytes();
+                    assert!(actions.prepare_styled_paint_runs(&paint, 0).await);
+                    assert_eq!(take_paint_run_segment_bytes(), 0);
+                } else if stale != "dispose" {
+                    assert!(workspace.editor_paint_runs.get_untracked().is_none());
+                }
             }
         }
     }
@@ -1844,29 +1858,34 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn bounded_styled_runs_preserve_complete_grapheme_and_crlf_boundaries() {
-        for suffix in ["", "\r"] {
-            let body = "word 文😀e\u{301} ".repeat(1000);
-            let tokens = [Token {
-                kind: TokenKind::String,
-                text: body.clone() + suffix,
-            }];
-            let row = PaintRow {
-                tokens: &tokens,
-                plain: None,
-                guide: 0,
-                normalize_cr: !suffix.is_empty(),
-                ending: !suffix.is_empty(),
-            };
-            let expected = openwebide_core::editor::visual_text_run_ranges(&body)
-                .map(|run| run.end)
-                .collect::<Vec<_>>();
-            let runs = styled_paint_runs(&body, &row, expected.len()).unwrap();
-            assert_eq!(runs.as_ref(), expected);
-            assert!(styled_paint_runs(&body, &row, expected.len() - 1).is_none());
-            assert_eq!(
-                styled_paint_runs(&body, &row, usize::MAX).unwrap().as_ref(),
-                expected
-            );
+        for body in [
+            "word 文😀e\u{301} ".repeat(1000),
+            format!("{}🇺🇸", "a".repeat(508)),
+            format!("👩{}\u{200d}👩 last", "\u{301}".repeat(2000)),
+        ] {
+            for suffix in ["", "\r"] {
+                let tokens = [Token {
+                    kind: TokenKind::String,
+                    text: body.clone() + suffix,
+                }];
+                let row = PaintRow {
+                    tokens: &tokens,
+                    plain: None,
+                    guide: 0,
+                    normalize_cr: !suffix.is_empty(),
+                    ending: !suffix.is_empty(),
+                };
+                let expected = openwebide_core::editor::visual_text_run_ranges(&body)
+                    .map(|run| run.end)
+                    .collect::<Vec<_>>();
+                let runs = styled_paint_runs(&body, &row, expected.len()).unwrap();
+                assert_eq!(runs.as_ref(), expected);
+                assert!(styled_paint_runs(&body, &row, expected.len() - 1).is_none());
+                assert_eq!(
+                    styled_paint_runs(&body, &row, usize::MAX).unwrap().as_ref(),
+                    expected
+                );
+            }
         }
     }
 

@@ -4393,3 +4393,25 @@ memory improvement. These measurements do not complete responsiveness gates.
 [after](editor-performance/combined-row-after-host.json) retain exact artifacts
 and limitations. Both cohorts include the same trace/host-observation overhead;
 the frozen backend snapshot and absence of a real local directory handle remain.
+
+## Paint segmentation within large graphemes
+
+Styled run preparation now advances a Unicode cursor through source and backward
+context chunks of at most 512 bytes. Each scan step caps cursor calls and forward/context
+progress; a large indivisible grapheme can suspend before emitting its run. Small
+chunk overlap retains sequential regional-indicator parity. Original 512-byte
+grapheme-safe run boundaries, token merging, CR normalization, caps and complete-only
+publication stay exact. This shared primitive serves the existing editor facade
+without selecting workspace modes.
+
+All 256 native editor tests pass with `PROPTEST_CASES=1024`, including fresh
+whole-string segmentation comparisons and the retained mixed-Unicode failing seed.
+The same final WASM artifact passes all 16 editor library tests in macOS and Linux
+Chrome. A giant combining/emoji cluster must suspend without publishing any run;
+source/read/project/account/disposal changes reject that suspended preparation.
+The browser boundary contract includes a flag pair crossing byte 512 and CR
+normalization. [Runner evidence](editor-performance/chunked-paint-browser.jsonl)
+records exact source/artifact hashes, selection, limits and complete console output.
+These are scoped correctness/yielding checks, not production responsiveness or
+memory measurements. Synchronous coordinate/anchor construction, other complete
+fallbacks and the full release/device gates remain unfinished.
