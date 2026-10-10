@@ -3118,6 +3118,7 @@ pub fn Editor(
     // Existing nodes retain their current viewport during commands and external updates.
     let restored_textarea =
         StoredValue::new_local(None::<(web_sys::HtmlTextAreaElement, Option<(i64, String)>)>);
+    let awaiting_initial_native_context = StoredValue::new(false);
     Effect::new(move || {
         let full_projection = projection.get();
         editor_actions.track_native_context();
@@ -3135,8 +3136,18 @@ pub fn Editor(
             .ok()
             .flatten()
             .is_some_and(|query| query.matches());
-        if mounted && !touch && view_mode.get_untracked() == ViewMode::Code {
-            editor_actions.begin_initial_native_context();
+        if mounted {
+            awaiting_initial_native_context.set_value(true);
+        }
+        if awaiting_initial_native_context.get_value()
+            && !touch
+            && view_mode.get_untracked() == ViewMode::Code
+        {
+            workspace.editor_documents.track();
+            awaiting_initial_native_context.set_value(
+                editor_actions.prepare_initial_native_context()
+                    == crate::state_actions::editor::InitialNativeContextPreparation::WaitingForDocument,
+            );
         }
         let current_projection = editor_actions.input_projection().unwrap_or(full_projection);
         let value = current_projection.textarea_text();

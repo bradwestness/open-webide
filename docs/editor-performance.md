@@ -4695,3 +4695,23 @@ remains unresolved. Check whether the first startup timeout leaves probe/state
 behind and contaminates later assertions; the local selection pass does not
 prove either cause or a fix. Current CI and reliable repeated verification remain
 required.
+
+
+## Initial native context readiness
+
+Initial input binding now distinguishes a document still being prepared from an
+unneeded binding. The shared editor facade supplies this result; the component
+retries on document publication and stops after binding or a terminal fallback.
+Both workspace modes use the same lifecycle and retain source/selection ownership.
+The existing ownership contract now checks missing-document readiness before
+preparation in both modes. Near-limit startup tests also log readiness metadata
+once near their unchanged three-second deadline to diagnose future failures.
+
+All 173 editor browser tests pass on Linux arm64 with two CPUs, unchanged
+deadlines and both font matrices ([record](editor-performance/native-startup-retry-browser.jsonl)).
+All 128 native frontend tests, strict optimized frontend WASM lint and the
+production frontend build pass. This does not establish the cause of the previous
+hosted x64 startup failure. The preceding checkpoint `87df822` passed all five
+CI jobs ([receipt](editor-performance/grouped-ci-87df822.json)) before this
+lifecycle change. Current hosted verification and repeated reliability checks
+remain required; responsiveness, memory and physical PWA gates remain open.

@@ -13210,6 +13210,11 @@ fn initial_native_preparation_preserves_source_and_failure_ownership_in_both_mod
                 view! { <div/> }
             });
             let actions = slot.get().unwrap();
+            assert_eq!(
+                actions.prepare_initial_native_context(),
+                openwebide_frontend::state_actions::editor::InitialNativeContextPreparation::WaitingForDocument,
+            );
+            assert!(actions.bound_native_context().is_none());
             let selected = Selection::caret(if case == 10 { 35_006 } else { 0 });
             actions.prepare_edit(selected).unwrap();
             actions.record_scroll(1, "startup.txt", 120.0, 450.0);
@@ -19593,10 +19598,26 @@ async fn wrapped_startup_keeps_near_limit_native_input_bounded_in_both_modes() {
         let actions = EditorActions::new(mounted.state.workspace);
         let input: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
+        let startup_started = js_sys::Date::now();
+        let startup_logged = std::cell::Cell::new(false);
         wait_until("wrapped native context precedes complete geometry", || {
-            actions.native_geometry_pending()
-                && actions.bound_native_context().is_some()
-                && actions.measured_rows().is_none()
+            let pending = actions.native_geometry_pending();
+            let bound = actions.bound_native_context().is_some();
+            let measured = actions.measured_rows().is_some();
+            if !(pending && bound && !measured)
+                && js_sys::Date::now() - startup_started >= 2500.0
+                && !startup_logged.replace(true)
+            {
+                let document = mounted.state.workspace.editor_documents.with_untracked(|documents| {
+                    documents.get(&(1, "wrapped-startup.rs".into()))
+                        .is_some_and(|document| document.matches_text(&source))
+                });
+                wasm_bindgen_test::console_log!(
+                    "{mode:?} startup: document={document}, pending={pending}, bound={bound}, measured={measured}, native_bytes={}, worker_requests={}",
+                    input.value().len(), transport.pending.borrow().len()
+                );
+            }
+            pending && bound && !measured
         })
         .await;
         assert_editor_native_source(&input, mounted.state.workspace, &source);

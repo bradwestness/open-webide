@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Retry initial editor input binding when document preparation finishes after mounting, without restarting released geometry fallbacks.
+
 - Report editor parser work-budget exhaustion as a capacity fallback, distinguishing it from cancellation while preserving file content and grammar recovery.
 
 - Paint plain-document edits before pending worker replies while retaining grammar paint coalescing and bounded terminal fallback through the shared editor facade.

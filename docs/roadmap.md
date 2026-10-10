@@ -214,6 +214,13 @@ tracks the remaining work rather than every optimization already shipped.
   ([record](editor-performance/ci-3afca61-group-current.jsonl)); this does not
   prove the hosted x64 failure is fixed. Investigate the first startup failure
   and any subsequent probe contamination before declaring CI reliable.
+  The subsequent `87df822` checkpoint passed all five CI jobs
+  ([receipt](editor-performance/grouped-ci-87df822.json)), before the initial
+  native-input lifecycle change. Binding now retries when document preparation
+  finishes after mounting; all 173 editor tests pass with two CPUs in Linux arm64
+  ([record](editor-performance/native-startup-retry-browser.jsonl)). This does not
+  prove the hosted startup failure's cause; preserve unchanged readiness deadlines
+  and verify the current checkpoint on hosted CI.
   Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving

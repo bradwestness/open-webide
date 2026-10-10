@@ -29,7 +29,7 @@ mod decorations;
 pub use decorations::EditorDecorations;
 mod input;
 mod motion;
-pub use input::{EditorNativeCommit, EditorNativeContext};
+pub use input::{EditorNativeCommit, EditorNativeContext, InitialNativeContextPreparation};
 mod loading;
 mod preparation;
 mod rows;
