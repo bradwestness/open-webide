@@ -34,7 +34,10 @@ impl EditorActions {
         let document = match prepare_document(&source, &owned).await {
             Ok(Some(document)) => Some(document),
             Ok(None) => return false,
-            Err(_) => None,
+            Err(admission) => {
+                text.record_admission(admission);
+                None
+            }
         };
         if !owned() {
             return false;
@@ -70,10 +73,13 @@ impl EditorActions {
 
 /// Shared preparation policy for file reads and recovery; adapters only provide
 /// incoming text and runtime scheduling. Cancellation never exposes partial rows.
-async fn prepare_document(
-    source: &std::sync::Arc<String>,
+async fn prepare_document<'a>(
+    source: &'a std::sync::Arc<String>,
     current: &impl Fn() -> bool,
-) -> Result<Option<openwebide_core::editor::Document>, openwebide_core::editor::EditorLimit> {
+) -> Result<
+    Option<openwebide_core::editor::Document>,
+    openwebide_core::editor::EditorAdmissionResult<'a>,
+> {
     if !current() {
         return Ok(None);
     }
@@ -84,8 +90,9 @@ async fn prepare_document(
             return Ok(None);
         }
     }
-    if let Some(limit) = admission.finish().unwrap() {
-        return Err(limit);
+    let admission = admission.finish_with_source().unwrap();
+    if admission.limit().is_some() {
+        return Err(admission);
     }
     let mut preparation = DocumentPreparation::new(source);
     while !preparation.advance(64) {
@@ -158,7 +165,9 @@ impl EditorActions {
         current: impl Fn() -> bool,
     ) -> Result<Option<openwebide_core::editor::Document>, openwebide_core::editor::EditorLimit>
     {
-        prepare_document(source, &current).await
+        prepare_document(source, &current)
+            .await
+            .map_err(|admission| admission.limit().unwrap())
     }
 
     pub(crate) async fn prepare_recovery(
@@ -172,7 +181,9 @@ impl EditorActions {
         let saved_source = std::sync::Arc::new(recovery.saved.clone());
         let Some(saved) = prepare_document(&saved_source, &current)
             .await
-            .map_err(|limit| openwebide_core::editor::EditError::Capacity(limit).to_string())?
+            .map_err(|admission| {
+                openwebide_core::editor::EditError::Capacity(admission.limit().unwrap()).to_string()
+            })?
         else {
             return Ok(None);
         };
@@ -182,7 +193,10 @@ impl EditorActions {
             let source = std::sync::Arc::new(recovery.text.clone());
             let Some(draft) = prepare_document(&source, &current)
                 .await
-                .map_err(|limit| openwebide_core::editor::EditError::Capacity(limit).to_string())?
+                .map_err(|admission| {
+                    openwebide_core::editor::EditError::Capacity(admission.limit().unwrap())
+                        .to_string()
+                })?
             else {
                 return Ok(None);
             };

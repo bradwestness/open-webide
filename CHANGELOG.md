@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Reuse editor capacity decisions across immutable source snapshots and shared controls, preserving limit precedence and rejecting decisions belonging to another source allocation.
+
 - Prepare explicit recovered-file reloads cooperatively, rejecting stale reviews before publication and sharing the completed source across editor documents and buffers. Over-limit files keep bounded read-only viewing.
 
 - Prepare recovered saved/draft indexes cooperatively before atomic hydration, preserving one-step undo and refusing stale account, folder or editor ownership. Disk verification classifies recovery states without rebuilding document indexes; clean changed-disk reloads share cooperative preparation.

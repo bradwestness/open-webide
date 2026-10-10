@@ -1,14 +1,24 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use leptos::prelude::*;
 use openwebide_core::{EditDecision, FileDiff, FileEntry, PersistedEdit, SearchHit};
 
 /// Immutable editor source shared by documents, buffers and project snapshots.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct EditorText(Arc<String>);
+#[derive(Clone, Debug, Default)]
+pub struct EditorText(
+    Arc<String>,
+    Arc<OnceLock<Option<openwebide_core::editor::EditorLimit>>>,
+);
+
+impl PartialEq for EditorText {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl Eq for EditorText {}
 
 impl EditorText {
     pub fn shared(&self) -> Arc<String> {
@@ -16,6 +26,18 @@ impl EditorText {
     }
     pub fn as_str(&self) -> &str {
         self.0.as_str()
+    }
+    pub fn editor_limit(&self) -> Option<openwebide_core::editor::EditorLimit> {
+        *self
+            .1
+            .get_or_init(|| openwebide_core::editor::editor_limit(self.as_str()))
+    }
+    /// Cache only core-minted decisions for this exact retained source allocation.
+    pub fn record_admission(
+        &self,
+        result: openwebide_core::editor::EditorAdmissionResult<'_>,
+    ) -> bool {
+        result.matches(self.as_str()) && *self.1.get_or_init(|| result.limit()) == result.limit()
     }
 }
 impl std::ops::Deref for EditorText {
@@ -31,7 +53,7 @@ impl std::fmt::Display for EditorText {
 }
 impl From<String> for EditorText {
     fn from(text: String) -> Self {
-        Self(Arc::new(text))
+        Arc::new(text).into()
     }
 }
 impl From<&str> for EditorText {
@@ -41,7 +63,7 @@ impl From<&str> for EditorText {
 }
 impl From<Arc<String>> for EditorText {
     fn from(text: Arc<String>) -> Self {
-        Self(text)
+        Self(text, Arc::new(OnceLock::new()))
     }
 }
 impl From<EditorText> for String {
@@ -1127,6 +1149,45 @@ impl Default for WorkspaceState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admission_cache_is_shared_only_by_the_immutable_source() {
+        use openwebide_core::editor::{Document, Edit, Selection};
+        let mut document = Document::new("one\r\ntwo");
+        let source = EditorText::from(document.shared_text());
+        let equal_source = EditorText::from(source.as_str());
+        let clone = source.clone();
+        assert!(source.1.get().is_none());
+        assert!(!equal_source.record_admission(document.admission()));
+        assert!(equal_source.1.get().is_none());
+        assert!(source.record_admission(document.admission()));
+        assert_eq!(clone.1.get(), Some(&None));
+        assert_eq!(source, equal_source);
+        document
+            .apply(
+                vec![Edit::replace(0..3, "changed")],
+                vec![Selection::caret(0)],
+                None,
+            )
+            .unwrap();
+        let edited = EditorText::from(document.shared_text());
+        assert!(edited.1.get().is_none());
+        assert!(!source.record_admission(document.admission()));
+        assert!(edited.record_admission(document.admission()));
+        assert_eq!(String::from(clone), "one\r\ntwo");
+        assert_eq!(edited.editor_limit(), None);
+    }
+
+    #[test]
+    fn admission_cache_retains_completed_limit_decisions() {
+        use openwebide_core::editor::{EditorAdmission, EditorLimit, MAX_EDITOR_LINE_BYTES};
+        let source = EditorText::from("x".repeat(MAX_EDITOR_LINE_BYTES + 1));
+        let mut preparation = EditorAdmission::new(source.as_str());
+        while !preparation.advance(1) {}
+        assert!(source.record_admission(preparation.finish_with_source().unwrap()));
+        assert_eq!(source.editor_limit(), Some(EditorLimit::LineBytes));
+        assert_eq!(source.clone().1.get(), Some(&Some(EditorLimit::LineBytes)));
+    }
 
     fn diff(old: &str, new: &str) -> FileDiff {
         FileDiff {

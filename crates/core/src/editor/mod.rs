@@ -62,8 +62,8 @@ mod folds;
 pub use folds::{FoldCommand, FoldRange, FoldState, normalize_folds};
 mod capacity;
 pub use capacity::{
-    EditorAdmission, EditorLimit, MAX_EDITOR_BYTES, MAX_EDITOR_LINE_BYTES, MAX_EDITOR_LINES,
-    TEXT_PAGE_BYTES, TextPage, editor_limit,
+    EditorAdmission, EditorAdmissionResult, EditorLimit, MAX_EDITOR_BYTES, MAX_EDITOR_LINE_BYTES,
+    MAX_EDITOR_LINES, TEXT_PAGE_BYTES, TextPage, editor_limit,
 };
 mod paint;
 pub use paint::{PaintCoverage, PaintPosition, PaintSelection, retained_paint_ranges};
@@ -523,6 +523,11 @@ impl Document {
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+    /// Indexed totals prove admitted sources without scanning their bytes.
+    /// Over-limit sources retain the shared scan's exact failure precedence.
+    pub fn admission(&self) -> EditorAdmissionResult<'_> {
+        capacity::EditorAdmissionResult::from_index(&self.text, &self.line_index)
     }
     pub fn selections(&self) -> &[Selection] {
         &self.selections

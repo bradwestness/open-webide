@@ -141,9 +141,22 @@ impl EditorActions {
             preferences,
             rules: Memo::new(move |_| resolve_current_rules(workspace, preferences)),
             capacity: Memo::new(move |_| {
-                workspace
-                    .content
-                    .with(|source| openwebide_core::editor::editor_limit(source))
+                workspace.content.with(|source| {
+                    if let Some(key) = workspace
+                        .active_project
+                        .get_untracked()
+                        .zip(workspace.open_file.get_untracked())
+                    {
+                        workspace.editor_documents.with_untracked(|documents| {
+                            if let Some(document) = documents.get(&key)
+                                && std::ptr::eq(document.text(), source.as_str())
+                            {
+                                source.record_admission(document.admission());
+                            }
+                        });
+                    }
+                    source.editor_limit()
+                })
             }),
             group: workspace.editor_group,
             typing: RwSignal::new(None),

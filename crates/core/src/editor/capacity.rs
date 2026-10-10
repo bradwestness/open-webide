@@ -31,6 +31,34 @@ pub fn editor_limit(source: &str) -> Option<EditorLimit> {
     preparation.finish().unwrap()
 }
 
+/// A completed admission decision bound to its exact immutable source slice.
+/// Private fields prevent hosts from manufacturing a decision for another file.
+#[derive(Clone, Copy, Debug)]
+pub struct EditorAdmissionResult<'a> {
+    source: &'a str,
+    limit: Option<EditorLimit>,
+}
+impl EditorAdmissionResult<'_> {
+    pub fn matches(self, source: &str) -> bool {
+        std::ptr::eq(self.source, source)
+    }
+    pub fn limit(self) -> Option<EditorLimit> {
+        self.limit
+    }
+}
+impl<'a> EditorAdmissionResult<'a> {
+    pub(super) fn from_index(source: &'a str, index: &super::index::LineIndex) -> Self {
+        Self {
+            source,
+            limit: if index.admitted(source.len()) {
+                None
+            } else {
+                editor_limit(source)
+            },
+        }
+    }
+}
+
 /// Allocation-free, complete-only interactive admission. Each unit inspects at
 /// most 8 KiB; byte limits reject immediately before building any row metadata.
 pub struct EditorAdmission<'a> {
@@ -64,7 +92,13 @@ impl<'a> EditorAdmission<'a> {
     }
     /// `None` is pending; `Some(None)` is admitted without a limit.
     pub fn finish(self) -> Option<Option<EditorLimit>> {
-        self.result
+        self.finish_with_source().map(EditorAdmissionResult::limit)
+    }
+    pub fn finish_with_source(self) -> Option<EditorAdmissionResult<'a>> {
+        self.result.map(|limit| EditorAdmissionResult {
+            source: self.source,
+            limit,
+        })
     }
 }
 
@@ -255,6 +289,64 @@ impl TextPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn admission_results_require_complete_preparation_and_exact_source() {
+        let source = "文😀\r\n".repeat(9000);
+        assert!(EditorAdmission::new(&source).finish_with_source().is_none());
+        let mut preparation = EditorAdmission::new(&source);
+        while !preparation.advance(1) {}
+        let result = preparation.finish_with_source().unwrap();
+        assert_eq!(result.limit(), None);
+        assert!(result.matches(&source));
+        assert!(!result.matches(&source.clone()));
+        assert!(!result.matches(&source[..3]));
+    }
+
+    #[test]
+    fn indexed_admission_proofs_follow_edits_history_and_failure_precedence() {
+        use crate::editor::{Document, Edit, Selection};
+        for source in [
+            "文😀\r\n".repeat(3000),
+            "\r\n".repeat(MAX_EDITOR_LINES),
+            "x".repeat(MAX_EDITOR_LINE_BYTES + 1),
+            format!(
+                "{}{}",
+                "\r".repeat(MAX_EDITOR_LINES),
+                "x".repeat(MAX_EDITOR_LINE_BYTES + 1)
+            ),
+            format!(
+                "{}{}",
+                "x".repeat(MAX_EDITOR_LINE_BYTES + 1),
+                "\r".repeat(MAX_EDITOR_LINES)
+            ),
+        ] {
+            let mut document = Document::new(source);
+            for stage in 0..4 {
+                let proof = document.admission();
+                assert!(proof.matches(document.text()));
+                assert_eq!(proof.limit(), editor_limit(document.text()));
+                match stage {
+                    0 => {
+                        document
+                            .apply(
+                                vec![Edit::replace(0..document.text().len(), "small\r\n")],
+                                vec![Selection::caret(0)],
+                                None,
+                            )
+                            .unwrap();
+                    }
+                    1 => {
+                        assert!(document.undo());
+                    }
+                    2 => {
+                        assert!(document.redo());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     #[test]
     fn cooperative_admission_preserves_limits_across_byte_and_crlf_seams() {
         let sources = [
