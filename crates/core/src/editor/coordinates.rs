@@ -18,40 +18,77 @@ pub(super) struct LineCoordinates {
     native: Option<Arc<[Coordinate]>>,
     visual: Option<super::VisualLineIndex>,
 }
+
+#[derive(Default)]
+pub(super) struct RowSummary {
+    pub utf16_len: usize,
+    pub breaks: usize,
+    pub oversized: bool,
+}
+
 impl LineCoordinates {
     pub fn new(text: &str) -> Self {
         if text.len() <= STEP_BYTES {
             return Self::default();
         }
+        Self::with_summary(text).0
+    }
+
+    /// Admission and native totals share the exact coordinate traversal. Long
+    /// rows also share the visual index's character pass, without changing its
+    /// grapheme-safe paint boundaries.
+    pub fn with_summary(text: &str) -> (Self, RowSummary) {
+        let sparse = text.len() > STEP_BYTES;
         let mut checkpoints = Vec::new();
-        let mut chars = text.char_indices().peekable();
         let mut position = Coordinate::default();
+        let mut summary = RowSummary::default();
+        let mut width = 0;
         let mut last = 0;
         let mut previous_cr = false;
-        while let Some((byte, ch)) = chars.next() {
+        let mut visit = |byte: usize, ch: char| {
             // Never start a query between CR and LF: both positions have the
             // same native offset, whose inverse must select the original CR.
-            if byte - last >= STEP_BYTES && !(previous_cr && ch == '\n') {
+            if sparse && byte - last >= STEP_BYTES && !(previous_cr && ch == '\n') {
                 position.byte = byte;
                 checkpoints.push(position);
                 last = byte;
             }
             position.chars += 1;
-            if !(ch == '\r' && chars.peek().is_some_and(|(_, next)| *next == '\n')) {
+            summary.utf16_len += ch.len_utf16();
+            if !(ch == '\r' && text.as_bytes().get(byte + 1) == Some(&b'\n')) {
                 position.native += ch.len_utf16();
             }
+            if matches!(ch, '\r' | '\n') {
+                summary.breaks += usize::from(ch != '\n' || !previous_cr);
+                width = 0;
+            } else {
+                width += ch.len_utf8();
+                summary.oversized |= width > super::MAX_EDITOR_LINE_BYTES;
+            }
             previous_cr = ch == '\r';
-        }
+        };
         let body = text
             .strip_suffix("\r\n")
             .or_else(|| text.strip_suffix('\n'))
             .unwrap_or(text);
-        Self {
-            native: Some(checkpoints.into()),
-            visual: (body.len() > super::MAX_MEASURE_BYTES)
-                .then(|| super::VisualLineIndex::new(body))
-                .flatten(),
+        let visual = (body.len() > super::MAX_MEASURE_BYTES)
+            .then(|| super::VisualLineIndex::with_character_scan(body, &mut visit))
+            .flatten();
+        if visual.is_none() {
+            for (byte, ch) in body.char_indices() {
+                visit(byte, ch);
+            }
         }
+        for (byte, ch) in text[body.len()..].char_indices() {
+            visit(body.len() + byte, ch);
+        }
+        (
+            Self {
+                native: sparse.then(|| checkpoints.into()),
+                visual,
+            },
+            summary,
+        )
     }
     pub fn visual(&self) -> Option<super::VisualLineIndex> {
         self.visual.clone()
@@ -89,6 +126,34 @@ impl LineCoordinates {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combined_row_summaries_match_independent_byte_and_utf16_scans() {
+        for text in [
+            String::new(),
+            "文😀\r\n\r\t".into(),
+            "文😀e\u{301}\r\n".repeat(3000),
+            "🇺🇸👩‍👩‍👧‍👦क्ष \rword\n".repeat(1000),
+            "a".repeat(super::super::MAX_EDITOR_LINE_BYTES),
+            "a".repeat(super::super::MAX_EDITOR_LINE_BYTES) + "😀\r\n",
+            "a".repeat(super::super::MAX_STRUCTURE_BYTES + 1) + "\r\n",
+        ] {
+            let (coordinates, summary) = LineCoordinates::with_summary(&text);
+            let (breaks, oversized) = super::super::capacity::row_admission(&text);
+            assert_eq!(summary.utf16_len, text.encode_utf16().count());
+            assert_eq!((summary.breaks, summary.oversized), (breaks, oversized));
+            let body = text
+                .strip_suffix("\r\n")
+                .or_else(|| text.strip_suffix('\n'))
+                .unwrap_or(&text);
+            assert_eq!(
+                coordinates.visual(),
+                (body.len() > super::super::MAX_MEASURE_BYTES)
+                    .then(|| super::super::VisualLineIndex::new(body))
+                    .flatten()
+            );
+        }
+    }
 
     #[test]
     fn long_unicode_and_crlf_queries_match_reference_and_bound_scan_distance() {

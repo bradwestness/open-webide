@@ -129,14 +129,16 @@ tracks the remaining work rather than every optimization already shipped.
   indexes still shift/splice in place; immutable retained tables must remain exact.
   Edits now retain preceding rows with proved unchanged complete newline endings;
   changed long rows still rebuild their coordinate and visual indexes.
+  Row admission summaries, UTF-16 totals and native checkpoints now share the
+  visual character pass; remaining synchronous construction still needs bounded
+  preparation rather than relying on fewer full-row passes.
 - [ ] **Source ownership and storage:** finish external parser snapshots,
   remaining changed-revision paint/transport comparisons, metadata materialization
   and transport serialization, message decoding, diff shaping and native-text
   materialization. Browser request source publication and oversized-message fallback
-  still run synchronously. Current production traces locate 140–147 ms tasks
-  during first source publication and 64–75 ms tasks after native edits. Batched
-  viewport sizing retains the geometry contracts, but new production repeats
-  still show 136–150 ms cold tasks and 60–72 ms input tasks; these
+  still run synchronously. Combined row scans retain the geometry contracts, but
+  current production repeats still show 125–178 ms cold source-publication tasks
+  and 64–69 ms input tasks; these
   source/controller costs remain responsiveness targets. Bound remaining
   initial capacity allocation, folded/bounded projection assembly, retained
   row/coordinate copies, changed indentation-guide copies and storage suffix
@@ -176,6 +178,12 @@ tracks the remaining work rather than every optimization already shipped.
   The scoped crop-failure fixture checkpoint (`11150a0`) passed all five jobs,
   including the complete editor and other UI partitions and both font matrices;
   repeat verification for subsequent implementation checkpoints remains required.
+  Later checkpoints exhausted the combined 149-test browser deadline without an
+  individual assertion failure. CI now inventories current compiled artifacts and
+  checks complete, disjoint groups of at most 64 editor tests, preserving the
+  300-second browser deadline and separate font matrices. All 167 editor tests
+  pass in the official Linux runner; repeat full CI with the new grouping remains
+  required.
   Current checkpoints and measured results are in [performance evidence](editor-performance.md).
 - [ ] **Physical Chrome/Edge PWA input:** verify real input-method commit/cancel,
   Unicode and LF/CRLF undo/redo, multiple-cursor clipboard behavior and touch input

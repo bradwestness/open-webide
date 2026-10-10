@@ -4336,3 +4336,60 @@ font matrices, frontend unit/integration partitions and storage measurements pas
 the editor partition takes 228.24 seconds. Both previously failing crop-failure
 and early wrapped-paint fixtures pass. This establishes that checkpoint's full
 CI result; subsequent implementation checkpoints still require repeated full CI.
+
+### Combined row-coordinate character pass and complete browser grouping
+
+Source-row indexing now collects raw UTF-16 totals, admission summaries and
+native checkpoints during the visual index's character traversal. Short or
+visual-over-limit rows use one character pass for those summaries/checkpoints;
+projection windows retain the existing short-row fast path. Visual grapheme
+checkpoints, plain paint boundaries, CRLF inverse offsets and shared immutable
+coordinates remain unchanged. Constructors still run synchronously: fewer passes
+do not establish bounded initial construction or changed-row preparation.
+
+All 253 native editor tests pass, including independent byte-admission/UTF-16
+oracles at ordinary, Unicode/CRLF and byte-limit boundaries and visual-index
+rejection above the structure limit. Existing independent coordinate queries,
+index edits, history, composition and retained-snapshot contracts also pass.
+Strict optimized core and frontend WASM library/test lint, formatting and the
+current production Trunk/PWA build pass.
+
+The `b846c17` and `7ea1367` full CI runs each passed four jobs; their combined
+149-test editor browser run exceeded its 300-second deadline without an
+individual assertion failure. The previously failing crop/partial-paint and
+new resize contracts passed. CI now uses
+`tools/run-editor-browser-tests.py`: Cargo supplies current test artifacts, the
+official runner inventories their editor tests, and independently listed
+selections must equal every planned group. Selection collisions, omissions,
+duplicates and missing independent matrices fail the plan. Ordinary groups have
+at most 64 tests; round-robin assignment distributes expensive fixtures. Every
+test keeps its readiness assertions and each browser keeps the 300-second
+deadline. The existing two font matrices still run independently.
+
+[Official Linux evidence](editor-performance/combined-row-official-browser-linux.jsonl)
+proves all 167 editor tests execute: ordinary component groups pass 50/50/49 tests
+in 99.38/33.65/37.00 seconds, font matrices pass in 22.06/14.97 seconds, and 16
+editor unit tests pass in 0.18 seconds. Artifacts/script hashes, official runner
+version/checksum provenance, existing image and unchanged four-CPU/10-GiB limits
+are recorded. This verifies the actual grouping/runner; full CI with the new
+grouping remains required.
+
+Fresh production cohorts compare the previous `7ea1367` frontend with the
+combined-pass frontend, four local/remote repetitions each. No host build
+process was observed at one-second intervals during either cohort (25/24
+observations); the earlier known-contended run is excluded from comparisons.
+Exact full source/caret, actual near-1-MiB String styling, scrolling, complete
+geometry and Linux PSS checks pass. Cold styled viewport paint is 1.52–1.70
+seconds before and 1.49–1.56 seconds after. Before cold source-publication tasks
+are 139–149 ms; three after tasks are 125–129 ms and one is 178 ms. That outlier
+prevents claiming consistently improved blocking latency. Input viewport paint
+is 245–269 ms before and 247–273 ms after; complete input geometry is
+1.18–1.26 seconds before and 1.18–1.26 seconds after. Peak Chrome PSS is
+672,942–738,142 KiB before and 732,281–742,660 KiB after, with no established
+memory improvement. These measurements do not complete responsiveness gates.
+[Before](editor-performance/combined-row-before-linux.jsonl),
+[after](editor-performance/combined-row-after-linux.jsonl) and
+[host observations before](editor-performance/combined-row-before-host.json)/
+[after](editor-performance/combined-row-after-host.json) retain exact artifacts
+and limitations. Both cohorts include the same trace/host-observation overhead;
+the frozen backend snapshot and absence of a real local directory handle remain.

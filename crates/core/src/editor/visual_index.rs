@@ -28,6 +28,14 @@ impl VisualLineIndex {
         Arc::ptr_eq(&self.0, &other.0)
     }
     pub fn new(body: &str) -> Option<Self> {
+        Self::with_character_scan(body, |_, _| {})
+    }
+    /// Share the exact character traversal with source-coordinate construction.
+    /// Grapheme checkpoints and original plain paint boundaries stay unchanged.
+    pub(super) fn with_character_scan(
+        body: &str,
+        mut visit: impl FnMut(usize, char),
+    ) -> Option<Self> {
         if body.len() > super::MAX_STRUCTURE_BYTES {
             return None;
         }
@@ -39,7 +47,8 @@ impl VisualLineIndex {
             if byte - points.last()?.byte >= STEP_BYTES {
                 points.push(Position { byte, ..end });
             }
-            for ch in glyph.chars() {
+            for (offset, ch) in glyph.char_indices() {
+                visit(byte + offset, ch);
                 end.native += ch.len_utf16();
                 tabs |= ch == '\t';
                 if horizontal && !super::viewport::horizontal_paint_character(ch) {

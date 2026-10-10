@@ -78,14 +78,13 @@ impl LineIndex {
                 .offsets
                 .push((index.utf16_len, index.textarea_len, index.breaks));
             let text = &source[row.start..row.end];
-            let (breaks, oversized) = super::capacity::row_admission(text);
-            index.breaks += breaks;
-            index.oversized_count += usize::from(oversized);
-            index.oversized_rows.push(oversized);
-            coordinates.push(LineCoordinates::new(text));
-            let units = text.encode_utf16().count();
-            index.utf16_len += units;
-            index.textarea_len += units - usize::from(text.ends_with("\r\n"));
+            let (row_coordinates, summary) = LineCoordinates::with_summary(text);
+            index.breaks += summary.breaks;
+            index.oversized_count += usize::from(summary.oversized);
+            index.oversized_rows.push(summary.oversized);
+            coordinates.push(row_coordinates);
+            index.utf16_len += summary.utf16_len;
+            index.textarea_len += summary.utf16_len - usize::from(text.ends_with("\r\n"));
         }
         index.coordinates = Arc::new(coordinates);
         index

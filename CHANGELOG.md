@@ -9,6 +9,9 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Collect row admission, UTF-16 totals and native checkpoints during the visual index's character pass, avoiding repeated source-row scans.
+- Inventory compiled editor tests and verify complete, disjoint browser groups for CI, preserving individual readiness limits and separate font matrices.
+
 - Retain the preceding row's exact coordinate index when an edit leaves its complete newline unchanged, avoiding repeated long-row scans when editing the following line.
 
 - Batch editor viewport sizing reads before scroll-extent writes, preserving source-owned dimensions and native-input fallback during resizing.

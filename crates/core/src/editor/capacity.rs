@@ -49,6 +49,7 @@ pub(super) fn editor_limit_parts(parts: &[&str]) -> Option<EditorLimit> {
 
 /// Logical rows end at LF, so their admission summaries start with no carried CR.
 /// Standalone CR still counts as a break for the shared admission contract.
+#[cfg(test)]
 pub(super) fn row_admission(text: &str) -> (usize, bool) {
     let mut breaks = 0;
     let mut width = 0;
