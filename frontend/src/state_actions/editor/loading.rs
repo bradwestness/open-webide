@@ -156,10 +156,9 @@ impl EditorActions {
     pub(crate) async fn prepare_source(
         source: &std::sync::Arc<String>,
         current: impl Fn() -> bool,
-    ) -> Result<Option<openwebide_core::editor::Document>, String> {
-        prepare_document(source, &current)
-            .await
-            .map_err(|limit| openwebide_core::editor::EditError::Capacity(limit).to_string())
+    ) -> Result<Option<openwebide_core::editor::Document>, openwebide_core::editor::EditorLimit>
+    {
+        prepare_document(source, &current).await
     }
 
     pub(crate) async fn prepare_recovery(
@@ -475,6 +474,11 @@ mod tests {
             (workspace, EditorActions::new(workspace))
         });
         let incoming = "x".repeat(openwebide_core::editor::MAX_EDITOR_LINE_BYTES + 1);
+        let source = std::sync::Arc::new(incoming.clone());
+        assert_eq!(
+            EditorActions::prepare_source(&source, || true).await,
+            Err(openwebide_core::editor::EditorLimit::LineBytes)
+        );
         assert!(
             actions
                 .publish_read(incoming.clone(), &EditorText::default(), || true)

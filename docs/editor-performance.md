@@ -4544,3 +4544,27 @@ contracts remain covered without changing their readiness or runner deadlines.
 exact artifacts, source hashes, selection inventory and complete output. The
 [preceding complete CI run](editor-performance/grouped-ci-81a6516.json) also passed
 all five jobs; current changes still require their full CI run.
+
+## Cooperative explicit review reloads
+
+Explicit recovered-file reloads now use the same complete-only admission/index
+preparation as incoming reads and hydration. Cheap account/root/read-source and
+composition guards run across yields; complete recovery snapshot validation runs
+before publication. The reviewed disk is read again after preparation so external
+changes during that window preserve the draft and require another review. Reloads
+install the completed document and share its source with active content/buffers.
+Over-limit sources keep bounded read-only viewing without allocating document
+indexes. Clean changed-disk reloads also share their prepared source with buffers.
+
+Recovery validation, final disk/source comparisons, remaining document callers,
+metadata growth, saved-source/history allocation and production latency/memory
+checks remain unfinished. Physical PWA and folder-permission checks remain open.
+
+Strict optimized frontend WASM lint passes. All 20 editor library tests and the
+17 inventoried recovery/read component contracts pass in macOS and Linux Chrome,
+including both real filesystem adapters. Extended review assertions verify shared
+document/buffer source and fresh undo history; admission checks retain typed
+capacity failures. Existing stale disk/editor/account/cancel, hydration, permission
+retry, save and normal/lossy read contracts remain covered without changing any
+readiness or runner deadlines. [Browser evidence](editor-performance/cooperative-review-browser.jsonl)
+records source/artifact hashes, selection inventory and complete output.

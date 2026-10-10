@@ -683,12 +683,24 @@ fn check_files(ctx: RecoveryContext, id: i64) {
                                     ctx.workspace.editor_documents.update(|documents| {
                                         documents.insert(key.clone(), document.clone());
                                     });
-                                    update_buffer(ctx.workspace, id, &path, document.text(), false);
+                                    update_buffer_source(
+                                        ctx.workspace,
+                                        id,
+                                        &path,
+                                        document.shared_text().into(),
+                                        false,
+                                    );
                                 }
                                 Ok(None) => continue,
                                 Err(error) => {
                                     ctx.workspace.editor_recovery_checks.update(|checks| {
-                                        checks.insert(key, RecoveredFileIssue::Unavailable(error));
+                                        checks.insert(
+                                            key,
+                                            RecoveredFileIssue::Unavailable(
+                                                openwebide_core::editor::EditError::Capacity(error)
+                                                    .to_string(),
+                                            ),
+                                        );
                                     });
                                     continue;
                                 }
@@ -720,10 +732,20 @@ fn check_files(ctx: RecoveryContext, id: i64) {
 }
 
 fn update_buffer(workspace: WorkspaceState, id: i64, path: &str, content: &str, dirty: bool) {
+    update_buffer_source(workspace, id, path, content.into(), dirty);
+}
+
+fn update_buffer_source(
+    workspace: WorkspaceState,
+    id: i64,
+    path: &str,
+    content: crate::state::workspace::EditorText,
+    dirty: bool,
+) {
     batch(|| {
         workspace.editor_buffers.update(|buffers| {
             if let Some(buffer) = buffers.get_mut(&(id, path.into())) {
-                buffer.content = content.into();
+                buffer.content.clone_from(&content);
                 buffer.dirty = dirty;
             }
         });
@@ -732,14 +754,14 @@ fn update_buffer(workspace: WorkspaceState, id: i64, path: &str, content: &str, 
                 .open_file
                 .with_untracked(|open| open.as_deref() == Some(path))
         {
-            workspace.content.set(content.into());
+            workspace.content.set(content.clone());
             workspace.dirty.set(dirty);
         } else {
             workspace.snapshots.update(|snapshots| {
                 if let Some(snapshot) = snapshots.get_mut(&id)
                     && snapshot.open_file.as_deref() == Some(path)
                 {
-                    snapshot.content = content.into();
+                    snapshot.content.clone_from(&content);
                     snapshot.dirty = dirty;
                 }
             });
@@ -816,7 +838,7 @@ pub async fn verify_recovered_save(
 }
 
 impl RecoveryContext {
-    fn review_current(self, scope: &FileReviewGuard) -> bool {
+    fn review_root_current(self, scope: &FileReviewGuard) -> bool {
         self.state.file_review_ticket.try_get_untracked() == Some(scope.ticket)
             && self.auth.generation.try_get_untracked() == Some(scope.account)
             && self.projects.active_project.try_get_untracked() == Some(Some(scope.project.id))
@@ -832,6 +854,9 @@ impl RecoveryContext {
                 .try_with_untracked(|handles| handles.get(&scope.project.id).cloned())
                 == Some(scope.handle.clone())
             && self.settings.bridge_url.try_get_untracked().as_ref() == Some(&scope.bridge)
+    }
+    fn review_current(self, scope: &FileReviewGuard) -> bool {
+        self.review_root_current(scope)
             && self.workspace.editor_recovery_guard_matches(
                 &scope.project,
                 &scope.guard,
@@ -906,6 +931,32 @@ impl RecoveryContext {
         }
     }
 
+    async fn read_review_current(
+        self,
+        ws: &Workspace,
+        scope: &FileReviewGuard,
+    ) -> Option<Option<String>> {
+        let result = read_review_disk(ws, &scope.path).await;
+        if !self.review_current(scope) {
+            self.invalidate_review(scope);
+            return None;
+        }
+        let disk = match result {
+            Ok(disk) => disk,
+            Err(error) => {
+                self.ui.notify(error);
+                self.state.file_review.set(None);
+                return None;
+            }
+        };
+        if disk != scope.disk {
+            self.state.file_review.set(None);
+            self.ui.notify("The disk file changed while its review was open. Review it again before choosing an action.");
+            return None;
+        }
+        Some(disk)
+    }
+
     fn resolve_file(self, overwrite: bool) {
         let scope = self
             .file_guard
@@ -922,24 +973,9 @@ impl RecoveryContext {
             return;
         };
         spawn_local(async move {
-            let result = read_review_disk(&ws, &scope.path).await;
-            if !self.review_current(&scope) {
-                self.invalidate_review(&scope);
+            let Some(disk) = self.read_review_current(&ws, &scope).await else {
                 return;
-            }
-            let disk = match result {
-                Ok(disk) => disk,
-                Err(error) => {
-                    self.ui.notify(error);
-                    self.state.file_review.set(None);
-                    return;
-                }
             };
-            if disk != scope.disk {
-                self.state.file_review.set(None);
-                self.ui.notify("The disk file changed while its review was open. Review it again before choosing an action.");
-                return;
-            }
             let key = (scope.project.id, scope.path.clone());
             if overwrite {
                 self.workspace.editor_recovery_overwrites.update(|permits| {
@@ -957,12 +993,48 @@ impl RecoveryContext {
                 self.state.file_review.set(None);
                 self.save_file.run(());
             } else if let Some(disk) = disk {
+                let source = std::sync::Arc::new(disk);
+                let revision = self.workspace.editor_source_revision.get_untracked();
+                let owned = || {
+                    self.review_root_current(&scope)
+                        && self.workspace.editor_source_revision.try_get_untracked()
+                            == Some(revision)
+                        && self
+                            .workspace
+                            .editor_composition
+                            .try_with_untracked(Option::is_none)
+                            == Some(true)
+                };
+                let prepared = super::editor::EditorActions::prepare_source(&source, owned).await;
+                if !owned() || !self.review_current(&scope) {
+                    self.invalidate_review(&scope);
+                    return;
+                }
+                // Preparation yields to other host activity. Recheck the reviewed
+                // disk version before publishing its completed editor snapshot.
+                if self.read_review_current(&ws, &scope).await.is_none() {
+                    return;
+                }
+                if !owned() {
+                    self.invalidate_review(&scope);
+                    return;
+                }
+                let document = match prepared {
+                    Ok(Some(document)) => Some(document),
+                    Ok(None) => {
+                        self.invalidate_review(&scope);
+                        return;
+                    }
+                    // Capacity limits retain the existing bounded read-only view.
+                    Err(_) => None,
+                };
                 batch(|| {
                     self.workspace.editor_documents.update(|documents| {
-                        documents.insert(
-                            key.clone(),
-                            openwebide_core::editor::Document::new(disk.clone()),
-                        );
+                        if let Some(document) = document {
+                            documents.insert(key.clone(), document);
+                        } else {
+                            documents.remove(&key);
+                        }
                     });
                     self.read_only.set(false);
                     self.workspace.editor_buffers.update(|buffers| {
@@ -970,7 +1042,13 @@ impl RecoveryContext {
                             buffer.read_only = false;
                         }
                     });
-                    update_buffer(self.workspace, scope.project.id, &scope.path, &disk, false);
+                    update_buffer_source(
+                        self.workspace,
+                        scope.project.id,
+                        &scope.path,
+                        source.clone().into(),
+                        false,
+                    );
                     self.workspace.editor_recovery_checks.update(|checks| {
                         checks.remove(&key);
                     });

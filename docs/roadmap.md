@@ -133,8 +133,10 @@ tracks the remaining work rather than every optimization already shipped.
   with cancellation and draft protection. Recovery hydration now prepares saved
   and draft indexes before atomic publication, and disk checks classify recovery
   without rebuilding indexes; clean changed-disk reloads prepare cooperatively.
-  Finish explicit recovery-review reloads, remaining synchronous document callers,
-  recovery validation/copies and admission-cache reuse, metadata capacity
+  Explicit recovery-review reloads now also prepare complete indexes before
+  publishing, retain shared source allocations and preserve over-limit read-only
+  viewing. Finish remaining synchronous document callers, recovery validation/copies
+  and admission-cache reuse, metadata capacity
   growth, saved-source allocation and final publication costs.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,

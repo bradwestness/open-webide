@@ -7366,6 +7366,29 @@ async fn recovered_file_review_reload_and_overwrite_share_both_real_adapters() {
         })
         .await;
         assert!(!mounted.state.workspace.dirty.get_untracked());
+        mounted
+            .state
+            .workspace
+            .editor_documents
+            .with_untracked(|documents| {
+                let document = &documents[&(1, "src/a.rs".into())];
+                let source = document.shared_text();
+                assert!(std::sync::Arc::ptr_eq(
+                    &source,
+                    &mounted.state.workspace.content.get_untracked().shared()
+                ));
+                mounted
+                    .state
+                    .workspace
+                    .editor_buffers
+                    .with_untracked(|buffers| {
+                        assert!(std::sync::Arc::ptr_eq(
+                            &source,
+                            &buffers[&(1, "src/a.rs".into())].content.shared()
+                        ));
+                    });
+                assert!(!document.can_undo());
+            });
         let editor = EditorActions::new(mounted.state.workspace);
         editor
             .native_input(

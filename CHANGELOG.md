@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Prepare explicit recovered-file reloads cooperatively, rejecting stale reviews before publication and sharing the completed source across editor documents and buffers. Over-limit files keep bounded read-only viewing.
+
 - Prepare recovered saved/draft indexes cooperatively before atomic hydration, preserving one-step undo and refusing stale account, folder or editor ownership. Disk verification classifies recovery states without rebuilding document indexes; clean changed-disk reloads share cooperative preparation.
 
 - Prepare incoming editor files cooperatively through the shared facade for normal and lossy workspace reads, rejecting stale ownership and preserving drafts, unchanged-file history and over-limit read-only viewing.
