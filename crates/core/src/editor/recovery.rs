@@ -86,6 +86,10 @@ impl DocumentRecovery {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_with_lines(|| self.text.bytes().filter(|byte| *byte == b'\n').count() + 1)
+    }
+
+    fn validate_with_lines(&self, lines: impl FnOnce() -> usize) -> Result<(), String> {
         if self.text.len() > MAX_DOCUMENT_BYTES || self.saved.len() > MAX_DOCUMENT_BYTES {
             return Err("Recovered document exceeds the editor's size limit".into());
         }
@@ -97,11 +101,10 @@ impl DocumentRecovery {
         if self.collapsed.len() > MAX_RECOVERY_FOLDS {
             return Err("Too many recovered folds".into());
         }
-        if !self.collapsed.is_empty() {
-            let lines = self.text.bytes().filter(|byte| *byte == b'\n').count() + 1;
-            if normalize_folds(self.collapsed.clone(), lines) != self.collapsed {
-                return Err("Recovered folds are outside the document or overlap".into());
-            }
+        if !self.collapsed.is_empty()
+            && normalize_folds(self.collapsed.clone(), lines()) != self.collapsed
+        {
+            return Err("Recovered folds are outside the document or overlap".into());
         }
         Ok(())
     }
@@ -157,8 +160,28 @@ impl DocumentRecovery {
         mut document: Document,
         draft: Document,
     ) -> Result<Document, String> {
-        self.validate_editor()?;
-        if !document.matches_text(&self.saved) || !draft.matches_text(&self.text) {
+        let saved_matches = document.matches_text(&self.saved);
+        let draft_matches = draft.matches_text(&self.text);
+        self.validate_with_lines(|| {
+            if draft_matches {
+                draft.line_count()
+            } else {
+                self.text.bytes().filter(|byte| *byte == b'\n').count() + 1
+            }
+        })?;
+        // Complete source-owned indexes prove admission without repeating the
+        // preparation scan. Unmatched inputs retain the original validation
+        // errors before reporting the source mismatch.
+        if saved_matches && draft_matches {
+            for prepared in [&document, &draft] {
+                if let Some(limit) = prepared.admission().limit() {
+                    return Err(super::EditError::Capacity(limit).to_string());
+                }
+            }
+        } else {
+            validate_sources(&self.text, &self.saved)?;
+        }
+        if !saved_matches || !draft_matches {
             return Err("Prepared recovery sources do not match the recovered document".into());
         }
         for prepared in [&document, &draft] {
@@ -383,6 +406,74 @@ mod prepared_tests {
                 .restore_prepared(edited, Document::new("base"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn indexed_recovery_validation_preserves_admission_metadata_and_error_precedence() {
+        let clean = |source: String| DocumentRecovery::clean_source(std::sync::Arc::new(source));
+        let mut cases = vec![
+            clean("head\r\nbody\rstandalone\nend".into()),
+            clean("head\rbody".into()),
+            clean("文😀\nend".into()),
+            clean("x".repeat(super::super::MAX_EDITOR_BYTES + 1)),
+            clean("x\n".repeat(super::super::MAX_EDITOR_LINES)),
+            clean("x".repeat(super::super::MAX_EDITOR_LINE_BYTES + 1)),
+        ];
+        cases[0].collapsed = vec![FoldRange {
+            start_line: 0,
+            end_line: 2,
+        }];
+        // Standalone CR contributes to admission but does not create an LF
+        // logical row for persisted folding metadata.
+        cases[1].collapsed = vec![FoldRange {
+            start_line: 0,
+            end_line: 1,
+        }];
+        cases[2].selections = vec![Selection::caret(1)];
+        let mut crossing = clean("a\nb\nc\nd\ne".into());
+        crossing.collapsed = vec![
+            FoldRange {
+                start_line: 0,
+                end_line: 2,
+            },
+            FoldRange {
+                start_line: 1,
+                end_line: 3,
+            },
+        ];
+        cases.push(crossing);
+        let mut competing = clean("x".repeat(super::super::MAX_EDITOR_BYTES + 1));
+        competing.saved = "x".repeat(super::super::MAX_EDITOR_LINE_BYTES + 1).into();
+        cases.push(competing.clone());
+        // Metadata failures still precede either source's capacity rejection.
+        competing.selections.clear();
+        cases.push(competing);
+        for recovery in cases {
+            let expected = recovery.restore();
+            let saved = Document::from_shared_text(recovery.saved.clone());
+            let draft = Document::from_shared_text(recovery.text.clone());
+            let prepared = recovery.restore_prepared(saved, draft);
+            match (expected, prepared) {
+                (Ok(expected), Ok(prepared)) => {
+                    assert_eq!(prepared.recovery(), expected.recovery());
+                    assert_eq!(prepared.admission().limit(), None);
+                }
+                (Err(expected), Err(prepared)) => assert_eq!(prepared, expected),
+                _ => panic!("Indexed validation changed the recovery decision"),
+            }
+            // A mismatched index may never prove admission or fold validity
+            // for the actual payload, and retains prior validation precedence.
+            let expected_error = recovery.validate_editor().err().unwrap_or_else(|| {
+                "Prepared recovery sources do not match the recovered document".into()
+            });
+            assert_eq!(
+                recovery
+                    .restore_prepared(Document::new("wrong"), Document::new("wrong"))
+                    .err()
+                    .unwrap(),
+                expected_error
+            );
+        }
     }
 }
 

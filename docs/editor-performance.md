@@ -5006,3 +5006,32 @@ work, despite successful source/caret checks. Byte-limit beginning-of-source
 samples retain the earlier nonzero vertical scroll position; physical scroll
 alignment needs investigation. Full-source undo publication, transport encoding,
 cold/fallback geometry and physical PWA/IME/permission verification remain open.
+
+
+## Final recovery validation from complete indexes
+
+Final recovery restoration now uses the already prepared documents' source-owned
+admission summaries and the draft's complete LF row count. It still validates
+selection boundaries, fold order/overlap, source identity, capacity and fresh
+preparation state. Mismatched prepared sources retain the original source-scan
+validation and error precedence; they cannot prove validity for another payload.
+Standalone CR continues to affect editor admission without becoming an LF fold
+row. The persisted record validator retains its existing source-based behavior.
+
+A new shared core regression compares ordinary and prepared recovery across
+byte, line and individual-line capacity rejection, invalid Unicode selections,
+invalid/crossing folds, mixed line endings, competing errors and mismatched
+prepared sources. This removes repeated admitted-source scans from final
+hydration, without changing persistence policy. Initial record validation,
+metadata normalization, transport serialization and full-source undo publication
+remain unfinished; no whole-app latency or memory improvement is claimed here.
+
+All 474 native core and 128 native frontend tests pass. Strict native/core,
+optimized frontend WASM including tests and backend WASI lint pass. All 15
+recovery-related component checks and 20 editor library browser checks pass on
+two-CPU Linux arm64 with unchanged deadlines
+([verification](editor-performance/indexed-recovery-validation.json)). The browser
+contracts include cooperative hydration cancellation, stale account/project guards,
+disk conflicts, save failure/retry and source identity through both real adapters.
+This is targeted verification of the changed path, not another complete editor
+inventory or a hosted CI result; those wider gates remain open.

@@ -10,6 +10,7 @@ for what's still ahead.
 ## [Unreleased]
 
 - Share immutable editor source through recovery capture, queued record clones and hydration preparation, preserving the existing encoded storage format and independent saved/draft versions.
+- Reuse complete source-owned editor indexes for final recovery admission and fold validation, retaining capacity limits, metadata checks and error precedence.
 
 - Retain prepared saved/draft sources in the recovered editor's undo step instead of copying both full files into history. Ordinary edits still retain only their replacement spans, with unchanged history budgets and undo/redo behavior.
 

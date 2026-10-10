@@ -155,8 +155,10 @@ tracks the remaining work rather than every optimization already shipped.
   spans ([complete editor contracts](editor-performance/shared-recovery-history-browser.jsonl)).
   Recovery capture, record clones and hydration preparation now share immutable
   saved/draft sources; clean buffers without a document share their existing source.
-  Recovery transport encode/decode allocations, full-source undo publication and
-  final hydration validation costs still require work.
+  Final recovery admission and fold row counts now reuse complete source-owned
+  indexes. Recovery transport encode/decode allocations, full-source undo
+  publication, initial metadata validation and final normalization costs still
+  require work.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   parser context/selection-list extraction and final paint publication. Finish
