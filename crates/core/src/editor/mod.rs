@@ -642,6 +642,18 @@ impl Document {
             &mut self.projection,
             &edits,
         );
+        self.record_transaction(edits, inverse, after, group);
+        Ok(true)
+    }
+
+    // Editing and recovery share history limits, grouping and revision policy.
+    fn record_transaction(
+        &mut self,
+        edits: Vec<Edit>,
+        inverse: Vec<Edit>,
+        after: Vec<Selection>,
+        group: Option<u64>,
+    ) {
         let bytes = edits
             .iter()
             .chain(&inverse)
@@ -685,7 +697,6 @@ impl Document {
         self.motion_columns = None;
         self.identity = std::sync::Arc::new(());
         self.revision = self.revision.wrapping_add(1);
-        Ok(true)
     }
 
     pub fn undo(&mut self) -> bool {

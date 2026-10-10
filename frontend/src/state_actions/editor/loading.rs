@@ -31,27 +31,11 @@ impl EditorActions {
         }
         let text = EditorText::from(content);
         let source = text.shared();
-        let mut admission = EditorAdmission::new(&source);
-        while !admission.advance(8) {
-            crate::util::yield_task().await;
-            if !owned() {
-                return false;
-            }
-        }
-        let mut document = None;
-        if admission.finish() == Some(None) {
-            let mut preparation = DocumentPreparation::new(&source);
-            while !preparation.advance(64) {
-                crate::util::yield_task().await;
-                if !owned() {
-                    return false;
-                }
-            }
-            if !owned() {
-                return false;
-            }
-            document = preparation.finish();
-        }
+        let document = match prepare_document(&source, &owned).await {
+            Ok(Some(document)) => Some(document),
+            Ok(None) => return false,
+            Err(_) => None,
+        };
         if !owned() {
             return false;
         }
@@ -84,6 +68,134 @@ impl EditorActions {
     }
 }
 
+/// Shared preparation policy for file reads and recovery; adapters only provide
+/// incoming text and runtime scheduling. Cancellation never exposes partial rows.
+async fn prepare_document(
+    source: &std::sync::Arc<String>,
+    current: &impl Fn() -> bool,
+) -> Result<Option<openwebide_core::editor::Document>, openwebide_core::editor::EditorLimit> {
+    if !current() {
+        return Ok(None);
+    }
+    let mut admission = EditorAdmission::new(source);
+    while !admission.advance(8) {
+        crate::util::yield_task().await;
+        if !current() {
+            return Ok(None);
+        }
+    }
+    if let Some(limit) = admission.finish().unwrap() {
+        return Err(limit);
+    }
+    let mut preparation = DocumentPreparation::new(source);
+    while !preparation.advance(64) {
+        crate::util::yield_task().await;
+        if !current() {
+            return Ok(None);
+        }
+    }
+    if !current() {
+        return Ok(None);
+    }
+    let mut document = preparation.finish().unwrap();
+    document.enforce_editor_limits();
+    Ok(Some(document))
+}
+
+impl EditorActions {
+    pub(crate) async fn restore_recovery(
+        workspace: crate::state::workspace::WorkspaceState,
+        project: &openwebide_core::Project,
+        guard: &crate::state::workspace::EditorRecoveryGuard,
+        recovery: &openwebide_core::editor::EditorRecovery,
+        active_read_only: bool,
+        current: impl Fn() -> bool,
+    ) -> Result<Option<crate::state::workspace::EditorRecoveryHydration>, String> {
+        if !current()
+            || !workspace.can_restore_editor_recovery(project, guard, recovery, active_read_only)?
+        {
+            return Ok(None);
+        }
+        let source_revision = workspace.editor_source_revision.get_untracked();
+        let owned = || {
+            current()
+                && workspace.editor_source_revision.try_get_untracked() == Some(source_revision)
+                && workspace.pending_epoch.try_get_untracked() == Some(guard.epoch)
+                && workspace.editor_read_revision.try_get_untracked() == Some(guard.read_revision)
+                && workspace
+                    .editor_composition
+                    .try_with_untracked(|composition| {
+                        composition
+                            .as_ref()
+                            .is_none_or(|composition| composition.key.0 != project.id)
+                    })
+                    == Some(true)
+        };
+        let mut documents = std::collections::HashMap::new();
+        for file in &recovery.files {
+            if let Some(saved) = &file.document {
+                let Some(document) = Self::prepare_recovery(saved, owned).await? else {
+                    return Ok(None);
+                };
+                documents.insert((project.id, file.path.clone()), document);
+            }
+        }
+        if !owned()
+            || !workspace.can_restore_editor_recovery(project, guard, recovery, active_read_only)?
+        {
+            return Ok(None);
+        }
+        let prepared = crate::state::workspace::PreparedEditorRecovery::from_documents(
+            project.id, recovery, documents,
+        );
+        Ok(Some(
+            workspace.install_editor_recovery(project, recovery, prepared),
+        ))
+    }
+
+    pub(crate) async fn prepare_source(
+        source: &std::sync::Arc<String>,
+        current: impl Fn() -> bool,
+    ) -> Result<Option<openwebide_core::editor::Document>, String> {
+        prepare_document(source, &current)
+            .await
+            .map_err(|limit| openwebide_core::editor::EditError::Capacity(limit).to_string())
+    }
+
+    pub(crate) async fn prepare_recovery(
+        recovery: &openwebide_core::editor::DocumentRecovery,
+        current: impl Fn() -> bool,
+    ) -> Result<Option<openwebide_core::editor::Document>, String> {
+        if !current() {
+            return Ok(None);
+        }
+        recovery.validate()?;
+        let saved_source = std::sync::Arc::new(recovery.saved.clone());
+        let Some(saved) = prepare_document(&saved_source, &current)
+            .await
+            .map_err(|limit| openwebide_core::editor::EditError::Capacity(limit).to_string())?
+        else {
+            return Ok(None);
+        };
+        let draft = if recovery.text == recovery.saved {
+            saved.clone()
+        } else {
+            let source = std::sync::Arc::new(recovery.text.clone());
+            let Some(draft) = prepare_document(&source, &current)
+                .await
+                .map_err(|limit| openwebide_core::editor::EditError::Capacity(limit).to_string())?
+            else {
+                return Ok(None);
+            };
+            draft
+        };
+        if !current() {
+            return Ok(None);
+        }
+        recovery.restore_prepared(saved, draft).map(Some)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +204,137 @@ mod tests {
         future::Future,
         task::{Context, Poll, Waker},
     };
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn recovery_hydration_yields_and_publishes_complete_documents_only() {
+        use openwebide_core::{
+            Project, WorkspaceMode,
+            editor::{
+                DocumentRecovery, EditorRecovery, EditorRecoveryFile, EditorRecoveryRoot,
+                RecoveryScroll, Selection,
+            },
+        };
+        for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+            for phase in ["saved", "draft"] {
+                for stale in [
+                    "complete", "draft", "read", "epoch", "root", "account", "dispose",
+                ] {
+                    let owner = Owner::new();
+                    let project = Project {
+                        id: 1,
+                        user_id: None,
+                        created_at: 1,
+                        name: "recovery".into(),
+                        path: Some("project".into()),
+                        mode,
+                    };
+                    let (workspace, auth, guard) = owner.with(|| {
+                        let auth = crate::state::auth::AuthState::new();
+                        let workspace = crate::state::workspace::WorkspaceState::new();
+                        workspace.active_project.set(Some(1));
+                        workspace.open_file.set(Some("old.txt".into()));
+                        workspace.content.set("keep".into());
+                        let guard = workspace.editor_recovery_guard(&project, false).unwrap();
+                        (workspace, auth, guard)
+                    });
+                    let incoming = "文😀\r\n".repeat(2000);
+                    let saved = if phase == "saved" {
+                        incoming.clone()
+                    } else {
+                        "base".into()
+                    };
+                    let recovery = EditorRecovery {
+                        format: 1,
+                        root: Some(EditorRecoveryRoot::for_project(&project)),
+                        selected: Some("incoming.txt".into()),
+                        files: vec![EditorRecoveryFile {
+                            path: "incoming.txt".into(),
+                            document: Some(DocumentRecovery {
+                                text: format!("{incoming}tail"),
+                                saved: saved.clone(),
+                                selections: vec![Selection::caret(0)],
+                                collapsed: vec![],
+                            }),
+                            scroll: RecoveryScroll::default(),
+                            read_only: false,
+                        }],
+                    };
+                    let root = Cell::new(true);
+                    let account = auth.generation.get_untracked();
+                    let mut pending = Box::pin(EditorActions::restore_recovery(
+                        workspace,
+                        &project,
+                        &guard,
+                        &recovery,
+                        false,
+                        || root.get() && auth.generation.try_get_untracked() == Some(account),
+                    ));
+                    assert!(matches!(
+                        pending
+                            .as_mut()
+                            .poll(&mut Context::from_waker(Waker::noop())),
+                        Poll::Pending
+                    ));
+                    assert_eq!(workspace.content.get_untracked(), "keep");
+                    assert!(
+                        workspace
+                            .editor_documents
+                            .with_untracked(std::collections::HashMap::is_empty)
+                    );
+                    match stale {
+                        "draft" => {
+                            workspace.content.set("new draft".into());
+                            workspace.dirty.set(true);
+                        }
+                        "read" => {
+                            workspace.begin_editor_read();
+                        }
+                        "epoch" => workspace.pending_epoch.update(|epoch| *epoch += 1),
+                        "root" => root.set(false),
+                        "account" => auth.generation.update(|account| *account += 1),
+                        "dispose" => owner.cleanup(),
+                        _ => {}
+                    }
+                    assert_eq!(pending.await.unwrap().is_some(), stale == "complete");
+                    if stale == "complete" {
+                        assert_eq!(
+                            workspace.open_file.get_untracked().as_deref(),
+                            Some("incoming.txt")
+                        );
+                        workspace.editor_documents.update(|documents| {
+                            let document = documents.get_mut(&(1, "incoming.txt".into())).unwrap();
+                            assert_eq!(document.text(), format!("{incoming}tail"));
+                            assert!(std::sync::Arc::ptr_eq(
+                                &document.shared_text(),
+                                &workspace.content.get_untracked().shared()
+                            ));
+                            assert!(document.is_dirty());
+                            assert!(document.undo());
+                            assert_eq!(document.text(), saved);
+                            assert!(!document.is_dirty());
+                            assert!(document.redo());
+                            assert_eq!(document.text(), format!("{incoming}tail"));
+                        });
+                    } else if stale != "dispose" {
+                        assert_eq!(
+                            workspace.content.get_untracked().as_str(),
+                            if stale == "draft" {
+                                "new draft"
+                            } else {
+                                "keep"
+                            }
+                        );
+                        assert!(
+                            workspace
+                                .editor_documents
+                                .with_untracked(std::collections::HashMap::is_empty)
+                        );
+                    }
+                    owner.cleanup();
+                }
+            }
+        }
+    }
 
     #[wasm_bindgen_test::wasm_bindgen_test]
     async fn incoming_documents_yield_and_preserve_drafts_and_ownership() {

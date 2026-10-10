@@ -9,11 +9,13 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Prepare recovered saved/draft indexes cooperatively before atomic hydration, preserving one-step undo and refusing stale account, folder or editor ownership. Disk verification classifies recovery states without rebuilding document indexes; clean changed-disk reloads share cooperative preparation.
+
 - Prepare incoming editor files cooperatively through the shared facade for normal and lossy workspace reads, rejecting stale ownership and preserving drafts, unchanged-file history and over-limit read-only viewing.
 
-- Add complete-only cooperative document preparation for logical rows, native/visual coordinates and admission totals, preserving CRLF/EOF mappings and source sharing. Ordinary constructors use the same implementation; workspace read/recovery integration and final publication costs remain roadmap work.
+- Add complete-only cooperative document preparation for logical rows, native/visual coordinates and admission totals, preserving CRLF/EOF mappings and source sharing. Ordinary constructors use the same implementation; final publication costs remain roadmap work.
 
-- Share bounded Unicode source/context traversal between paint segmentation and resumable visual-index construction, visiting source characters once and publishing complete coordinates only. Cooperative document-loading integration remains roadmap work.
+- Share bounded Unicode source/context traversal between paint segmentation and resumable visual-index construction, visiting source characters once and publishing complete coordinates only.
 
 - Reuse exact indexed boundaries for large Unicode graphemes during caret and paragraph-anchor queries, avoiding repeated interior/lookahead scans while preserving the original paint seams.
 

@@ -4510,3 +4510,37 @@ adapters on both platforms, including normal and lossy prepared reads.
 [Browser evidence](editor-performance/cooperative-read-browser.jsonl) records
 source/artifact hashes and complete output. Assertions, the three-second readiness
 limit and the 300-second browser runner timeout remain unchanged.
+
+## Cooperative recovery hydration and disk verification
+
+Recovery prepares saved and draft indexes with the same shared editor admission
+and document builder as incoming file reads. Final restoration shares edit history
+policy with ordinary transactions, installs the prepared draft index without
+rebuilding it, and retains one-step undo against the original saved source. Clean
+records reuse their saved index. Workspace hydration collects complete documents
+before publishing project tabs, buffers, scroll positions and selected content
+atomically. Ownership checks reject newer editor activity, compositions, reads,
+account changes, root/handle/bridge changes and disposed state across yields;
+final snapshot validation also protects inactive project state.
+
+Disk verification now uses shared recovery classification without constructing
+throwaway documents. Changed clean disk sources use cooperative preparation with
+retained document source/revision checks before replacement. Explicit recovered
+file review reloads still construct synchronously. Record validation, admission
+memoization, source/history copies, final comparisons and publication remain
+responsiveness/memory work; physical folder permission and PWA checks remain
+unproven. These changes do not complete the production latency/memory gates.
+
+All 263 native editor tests pass, including comparisons with transaction-based
+restoration, undo/redo, folds, source-index sharing and invalid prepared documents.
+Native workspace recovery tests and strict optimized core/frontend WASM lint pass.
+All 20 editor library tests and 17 inventoried recovery/read component contracts
+pass on macOS and Linux Chrome. The new hydration fixture explicitly yields during
+saved and draft preparation in both project modes, checks complete-only source
+publication and rejects account/root/read/source/epoch/disposal changes. Existing
+real-adapter hydration, conflicts, permission retry, review, save and file-read
+contracts remain covered without changing their readiness or runner deadlines.
+[Browser evidence](editor-performance/cooperative-recovery-browser.jsonl) records
+exact artifacts, source hashes, selection inventory and complete output. The
+[preceding complete CI run](editor-performance/grouped-ci-81a6516.json) also passed
+all five jobs; current changes still require their full CI run.

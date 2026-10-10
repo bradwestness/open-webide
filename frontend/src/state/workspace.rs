@@ -268,8 +268,8 @@ pub struct RecoveryOverwrite {
 pub struct EditorRecoveryGuard {
     project: i64,
     state: openwebide_core::editor::EditorRecovery,
-    read_revision: u64,
-    epoch: u64,
+    pub(crate) read_revision: u64,
+    pub(crate) epoch: u64,
     documents: HashMap<String, u64>,
 }
 
@@ -281,7 +281,7 @@ pub struct EditorRecoveryHydration {
     pub revoke_urls: Vec<String>,
 }
 
-struct PreparedEditorRecovery {
+pub(crate) struct PreparedEditorRecovery {
     documents: HashMap<(i64, String), openwebide_core::editor::Document>,
     buffers: HashMap<(i64, String), EditorBuffer>,
     scroll: HashMap<(i64, String), EditorScroll>,
@@ -297,14 +297,26 @@ impl PreparedEditorRecovery {
         recovery: &openwebide_core::editor::EditorRecovery,
     ) -> Result<Self, String> {
         let mut documents = HashMap::new();
+        for file in &recovery.files {
+            if let Some(saved) = &file.document {
+                documents.insert((project, file.path.clone()), saved.restore()?);
+            }
+        }
+        Ok(Self::from_documents(project, recovery, documents))
+    }
+
+    pub(crate) fn from_documents(
+        project: i64,
+        recovery: &openwebide_core::editor::EditorRecovery,
+        documents: HashMap<(i64, String), openwebide_core::editor::Document>,
+    ) -> Self {
         let mut buffers = HashMap::new();
         let mut scroll = HashMap::new();
         let mut paths = Vec::with_capacity(recovery.files.len());
         for file in &recovery.files {
             let key = (project, file.path.clone());
             paths.push(file.path.clone());
-            if let Some(saved) = &file.document {
-                let document = saved.restore()?;
+            if let Some(document) = documents.get(&key) {
                 buffers.insert(
                     key.clone(),
                     EditorBuffer {
@@ -313,7 +325,6 @@ impl PreparedEditorRecovery {
                         read_only: file.read_only,
                     },
                 );
-                documents.insert(key.clone(), document);
             }
             scroll.insert(
                 key,
@@ -341,7 +352,7 @@ impl PreparedEditorRecovery {
             needs_read: recovery.selected.is_some() && selected.is_none(),
             revoke_urls: Vec::new(),
         };
-        Ok(Self {
+        Self {
             documents,
             buffers,
             scroll,
@@ -349,7 +360,7 @@ impl PreparedEditorRecovery {
             content,
             dirty,
             result,
-        })
+        }
     }
 }
 
@@ -756,15 +767,37 @@ impl WorkspaceState {
         recovery: &openwebide_core::editor::EditorRecovery,
         active_read_only: bool,
     ) -> Result<Option<EditorRecoveryHydration>, String> {
+        if !self.can_restore_editor_recovery(project, guard, recovery, active_read_only)? {
+            return Ok(None);
+        }
+        let prepared = PreparedEditorRecovery::new(project.id, recovery)?;
+        Ok(Some(
+            self.install_editor_recovery(project, recovery, prepared),
+        ))
+    }
+
+    pub(crate) fn can_restore_editor_recovery(
+        &self,
+        project: &openwebide_core::Project,
+        guard: &EditorRecoveryGuard,
+        recovery: &openwebide_core::editor::EditorRecovery,
+        active_read_only: bool,
+    ) -> Result<bool, String> {
         recovery.validate()?;
         if recovery.root.as_ref().is_some_and(|root| {
             *root != openwebide_core::editor::EditorRecoveryRoot::for_project(project)
         }) {
             return Err("The recovered files belong to a different project folder".into());
         }
-        if !self.editor_recovery_guard_matches(project, guard, active_read_only) {
-            return Ok(None);
-        }
+        Ok(self.editor_recovery_guard_matches(project, guard, active_read_only))
+    }
+
+    pub(crate) fn install_editor_recovery(
+        &self,
+        project: &openwebide_core::Project,
+        recovery: &openwebide_core::editor::EditorRecovery,
+        prepared: PreparedEditorRecovery,
+    ) -> EditorRecoveryHydration {
         let PreparedEditorRecovery {
             documents,
             buffers,
@@ -773,7 +806,7 @@ impl WorkspaceState {
             content,
             dirty,
             mut result,
-        } = PreparedEditorRecovery::new(project.id, recovery)?;
+        } = prepared;
         result.revoke_urls = self.snapshots.with_untracked(|snapshots| {
             snapshots
                 .get(&project.id)
@@ -830,7 +863,7 @@ impl WorkspaceState {
             self.editor_fold_revision
                 .update(|revision| *revision = revision.wrapping_add(1));
         });
-        Ok(Some(result))
+        result
     }
 
     pub fn register_editor_tab(&self, project: i64, path: String) {

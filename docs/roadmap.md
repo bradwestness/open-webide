@@ -130,8 +130,11 @@ tracks the remaining work rather than every optimization already shipped.
   segmentation. Native/row/admission index construction now also has a complete-only
   cooperative document builder. Normal and lossy workspace reads now prepare
   admission and complete indexes cooperatively through the shared editor facade,
-  with cancellation and draft protection. Wire this into recovery and remaining
-  synchronous document callers. Finish admission-cache reuse, metadata capacity
+  with cancellation and draft protection. Recovery hydration now prepares saved
+  and draft indexes before atomic publication, and disk checks classify recovery
+  without rebuilding indexes; clean changed-disk reloads prepare cooperatively.
+  Finish explicit recovery-review reloads, remaining synchronous document callers,
+  recovery validation/copies and admission-cache reuse, metadata capacity
   growth, saved-source allocation and final publication costs.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,

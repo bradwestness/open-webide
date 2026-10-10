@@ -136,6 +136,11 @@ impl RecoveryContext {
             .workspace
             .editor_recovery(&project, self.read_only.get_untracked())
             .is_ok_and(|state| !state.files.is_empty());
+        let handle = self
+            .projects
+            .local_handles
+            .with_untracked(|handles| handles.get(&id).cloned());
+        let bridge = self.settings.bridge_url.get_untracked();
         let ticket = self.next_ticket();
         self.state.projects.update(|projects| {
             let entry = projects.entry(id).or_insert(RecoveryProject {
@@ -174,7 +179,29 @@ impl RecoveryContext {
             } else if occupied && matches!(policy, LoadPolicy::Initial) {
                 RecoveryPhase::Conflict("Saved editor files are available. Choose which files to keep before recovery saves resume.".into())
             } else {
-                match self.workspace.restore_editor_recovery(&project, &guard, &record.state, self.read_only.get_untracked()) {
+                let current = || {
+                    self.current(account, &project, ticket)
+                        && self
+                            .projects
+                            .local_handles
+                            .try_with_untracked(|handles| handles.get(&id).cloned())
+                            == Some(handle.clone())
+                        && self.settings.bridge_url.try_get_untracked().as_ref() == Some(&bridge)
+                };
+                let hydrated = super::editor::EditorActions::restore_recovery(
+                    self.workspace,
+                    &project,
+                    &guard,
+                    &record.state,
+                    self.read_only.get_untracked(),
+                    current,
+                )
+                .await;
+                if !current() {
+                    self.reject_changed_root(account, id, ticket);
+                    return;
+                }
+                match hydrated {
                     Ok(Some(hydrated)) => {
                         self.workspace.editor_recovery_checks.update(|checks| {
                             checks.retain(|(project, _), _| *project != id);
@@ -550,12 +577,14 @@ fn check_files(ctx: RecoveryContext, id: i64) {
         let _check = CheckGuard { ctx, id, ticket };
         for path in paths {
             let current = || {
-                !ctx.workspace
-                    .editor_composition
-                    .with_untracked(|composition| {
-                        composition.as_ref().is_some_and(|owner| owner.key.0 == id)
-                    })
-                    && ctx.auth.generation.try_get_untracked() == Some(account)
+                ctx.auth.generation.try_get_untracked() == Some(account)
+                    && ctx
+                        .workspace
+                        .editor_composition
+                        .try_with_untracked(|composition| {
+                            composition.as_ref().is_none_or(|owner| owner.key.0 != id)
+                        })
+                        == Some(true)
                     && ctx.projects.project(id).is_some_and(|current| {
                         Workspace::root_identity(&current) == Workspace::root_identity(&project)
                     })
@@ -604,11 +633,11 @@ fn check_files(ctx: RecoveryContext, id: i64) {
             };
             let result = result.and_then(|disk| {
                 recovery
-                    .reconcile_disk(disk.as_deref())
-                    .map(|(document, state)| (document, state, disk))
+                    .disk_state(disk.as_deref())
+                    .map(|state| (state, disk))
             });
             match result {
-                Ok((document, state, disk)) => {
+                Ok((state, disk)) => {
                     match state {
                         RecoveryDiskState::Current => {}
                         RecoveryDiskState::AlreadySaved => {
@@ -618,13 +647,52 @@ fn check_files(ctx: RecoveryContext, id: i64) {
                                         .mark_saved_version(disk.as_deref().unwrap_or_default());
                                 }
                             });
-                            update_buffer(ctx.workspace, id, &path, document.text(), false);
+                            update_buffer(ctx.workspace, id, &path, &recovery.text, false);
                         }
                         RecoveryDiskState::Reloaded => {
-                            ctx.workspace.editor_documents.update(|documents| {
-                                documents.insert(key.clone(), document.clone());
-                            });
-                            update_buffer(ctx.workspace, id, &path, document.text(), false);
+                            let retained =
+                                ctx.workspace.editor_documents.with_untracked(|documents| {
+                                    documents.get(&key).map(|document| {
+                                        (document.revision(), document.shared_text())
+                                    })
+                                });
+                            let owned = || {
+                                current()
+                                    && ctx.workspace.editor_documents.try_with_untracked(
+                                        |documents| {
+                                            documents.get(&key).zip(retained.as_ref()).is_some_and(
+                                                |(document, (revision, source))| {
+                                                    document.revision() == *revision
+                                                        && std::sync::Arc::ptr_eq(
+                                                            &document.shared_text(),
+                                                            source,
+                                                        )
+                                                },
+                                            )
+                                        },
+                                    ) == Some(true)
+                            };
+                            let source = std::sync::Arc::new(disk.as_ref().unwrap().clone());
+                            let prepared =
+                                super::editor::EditorActions::prepare_source(&source, owned).await;
+                            if !owned() {
+                                continue;
+                            }
+                            match prepared {
+                                Ok(Some(document)) => {
+                                    ctx.workspace.editor_documents.update(|documents| {
+                                        documents.insert(key.clone(), document.clone());
+                                    });
+                                    update_buffer(ctx.workspace, id, &path, document.text(), false);
+                                }
+                                Ok(None) => continue,
+                                Err(error) => {
+                                    ctx.workspace.editor_recovery_checks.update(|checks| {
+                                        checks.insert(key, RecoveredFileIssue::Unavailable(error));
+                                    });
+                                    continue;
+                                }
+                            }
                         }
                         RecoveryDiskState::Conflict | RecoveryDiskState::Missing => {
                             ctx.workspace.editor_recovery_checks.update(|checks| {
@@ -732,9 +800,7 @@ pub async fn verify_recovered_save(
     });
     let result = disk.and_then(|disk| {
         let recovery = recovery.ok_or("The recovered document's baseline is not ready")?;
-        recovery
-            .reconcile_disk(disk.as_deref())
-            .map(|(_, state)| state)
+        recovery.disk_state(disk.as_deref())
     });
     let issue = match result {
         Ok(RecoveryDiskState::Current | RecoveryDiskState::AlreadySaved) => return Ok(()),

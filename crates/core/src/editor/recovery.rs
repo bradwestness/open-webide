@@ -83,43 +83,99 @@ impl DocumentRecovery {
         &self,
         disk: Option<&str>,
     ) -> Result<(Document, RecoveryDiskState), String> {
+        let state = self.disk_state(disk)?;
         let mut document = self.restore()?;
-        let state = match disk {
-            None => RecoveryDiskState::Missing,
-            Some(text) if text == self.saved => RecoveryDiskState::Current,
-            Some(text) if text == self.text => {
-                document.mark_saved();
-                RecoveryDiskState::AlreadySaved
+        match state {
+            RecoveryDiskState::AlreadySaved => document.mark_saved(),
+            RecoveryDiskState::Reloaded => {
+                document =
+                    Document::for_editor(disk.unwrap()).map_err(|error| error.to_string())?;
             }
+            _ => {}
+        }
+        Ok((document, state))
+    }
+
+    /// Classify disk changes without rebuilding recovered document indexes.
+    /// Save verification and hydration use the same reconciliation decisions.
+    pub fn disk_state(&self, disk: Option<&str>) -> Result<RecoveryDiskState, String> {
+        self.validate_editor()?;
+        match disk {
+            None => Ok(RecoveryDiskState::Missing),
+            Some(text) if text == self.saved => Ok(RecoveryDiskState::Current),
+            Some(text) if text == self.text => Ok(RecoveryDiskState::AlreadySaved),
             Some(text) if self.text == self.saved => {
                 if text.len() > MAX_DOCUMENT_BYTES {
                     return Err("Disk document exceeds the editor's size limit".into());
                 }
-                document = Document::for_editor(text).map_err(|error| error.to_string())?;
-                RecoveryDiskState::Reloaded
+                if let Some(limit) = super::editor_limit(text) {
+                    return Err(super::EditError::Capacity(limit).to_string());
+                }
+                Ok(RecoveryDiskState::Reloaded)
             }
-            Some(_) => RecoveryDiskState::Conflict,
-        };
-        Ok((document, state))
+            Some(_) => Ok(RecoveryDiskState::Conflict),
+        }
+    }
+
+    fn validate_editor(&self) -> Result<(), String> {
+        self.validate()?;
+        for source in [&self.saved, &self.text] {
+            if let Some(limit) = super::editor_limit(source) {
+                return Err(super::EditError::Capacity(limit).to_string());
+            }
+        }
+        Ok(())
     }
 
     /// The recovered draft is one undoable change against its original disk text.
     pub fn restore(&self) -> Result<Document, String> {
         self.validate()?;
-        let mut document =
-            Document::for_editor(self.saved.clone()).map_err(|error| error.to_string())?;
-        if self.text != self.saved {
-            document
-                .apply(
-                    vec![Edit::replace(0..self.saved.len(), self.text.clone())],
-                    self.selections.clone(),
-                    None,
-                )
-                .map_err(|error| error.to_string())?;
+        let saved = Document::for_editor(self.saved.clone()).map_err(|error| error.to_string())?;
+        let draft = if self.text == self.saved {
+            saved.clone()
         } else {
-            document
-                .set_selections(self.selections.clone())
-                .map_err(|error| error.to_string())?;
+            Document::for_editor(self.text.clone()).map_err(|error| error.to_string())?
+        };
+        self.restore_prepared(saved, draft)
+    }
+
+    /// Restore from complete source-owned indexes prepared by the host. Validate
+    /// admission and metadata before installing the draft as one undoable edit;
+    /// no document indexes are rebuilt during this final recovery transition.
+    pub fn restore_prepared(
+        &self,
+        mut document: Document,
+        draft: Document,
+    ) -> Result<Document, String> {
+        self.validate_editor()?;
+        if !document.matches_text(&self.saved) || !draft.matches_text(&self.text) {
+            return Err("Prepared recovery sources do not match the recovered document".into());
+        }
+        for prepared in [&document, &draft] {
+            if prepared.revision != 0
+                || !prepared.history.is_empty()
+                || prepared.is_composing()
+                || prepared.is_dirty()
+            {
+                return Err("Recovery preparation must contain fresh document indexes".into());
+            }
+        }
+        document.enforce_editor_limits();
+        document.selections = vec![Selection::caret(0)];
+        document.selection_history.clear();
+        document.motion_columns = None;
+        document.folds = Default::default();
+        document.projection = Default::default();
+        let after = normalize_selections(&self.text, self.selections.clone())
+            .map_err(|error| error.to_string())?;
+        if self.text != self.saved {
+            let forward = vec![Edit::replace(0..self.saved.len(), self.text.clone())];
+            let inverse = vec![Edit::replace(0..self.text.len(), self.saved.clone())];
+            document.text = draft.text;
+            document.line_index = draft.line_index;
+            document.record_transaction(forward, inverse, after, None);
+        } else {
+            document.selections = after;
         }
         let lines = document.line_count();
         document
@@ -127,6 +183,103 @@ impl DocumentRecovery {
             .set_ranges(self.collapsed.clone(), lines);
         document.fold_state_mut().collapse_all();
         Ok(document)
+    }
+}
+
+#[cfg(test)]
+mod prepared_tests {
+    use super::*;
+
+    #[test]
+    fn prepared_recovery_matches_transaction_restore_and_retains_indexes() {
+        for (saved, text) in [
+            (String::new(), String::new()),
+            ("base\r\n".into(), "文😀\r\ntail\n".into()),
+            ("same\n".into(), "same\n".into()),
+            ("word\n".repeat(2000), "文😀\r\n".repeat(3000)),
+        ] {
+            let selections = vec![Selection {
+                anchor: text.len(),
+                head: 0,
+            }];
+            let collapsed = if text.contains('\n') {
+                vec![FoldRange {
+                    start_line: 0,
+                    end_line: text.bytes().filter(|byte| *byte == b'\n').count(),
+                }]
+            } else {
+                vec![]
+            };
+            let recovery = DocumentRecovery {
+                text,
+                saved,
+                selections,
+                collapsed,
+            };
+            let baseline = Document::for_editor(recovery.saved.clone()).unwrap();
+            let draft = Document::for_editor(recovery.text.clone()).unwrap();
+            let index = draft.line_index.clone();
+            let mut expected = baseline.clone();
+            if recovery.text != recovery.saved {
+                expected
+                    .apply(
+                        vec![Edit::replace(0..recovery.saved.len(), &recovery.text)],
+                        recovery.selections.clone(),
+                        None,
+                    )
+                    .unwrap();
+            } else {
+                expected
+                    .set_selections(recovery.selections.clone())
+                    .unwrap();
+            }
+            let rows = expected.line_count();
+            expected
+                .fold_state_mut()
+                .set_ranges(recovery.collapsed.clone(), rows);
+            expected.fold_state_mut().collapse_all();
+            let mut prepared = recovery.restore_prepared(baseline, draft).unwrap();
+            assert_eq!(prepared.text(), expected.text());
+            assert_eq!(prepared.selections(), expected.selections());
+            assert_eq!(prepared.is_dirty(), expected.is_dirty());
+            assert_eq!(prepared.revision(), expected.revision());
+            if recovery.text != recovery.saved {
+                assert!(std::sync::Arc::ptr_eq(&prepared.line_index, &index));
+            }
+            assert_eq!(prepared.fold_state().ranges(), recovery.collapsed);
+            assert_eq!(prepared.undo(), expected.undo());
+            assert_eq!(prepared.fold_state(), expected.fold_state());
+            assert_eq!(prepared.text(), recovery.saved);
+            assert!(!prepared.is_dirty());
+            assert_eq!(prepared.redo(), expected.redo());
+            assert_eq!(prepared.fold_state(), expected.fold_state());
+            assert_eq!(prepared.text(), expected.text());
+            assert_eq!(prepared.selections(), expected.selections());
+        }
+    }
+
+    #[test]
+    fn prepared_recovery_rejects_mismatched_or_edited_documents() {
+        let recovery = Document::new("base").recovery();
+        assert!(
+            recovery
+                .restore_prepared(Document::new("wrong"), Document::new("base"))
+                .is_err()
+        );
+        let mut edited = Document::new("bas");
+        edited
+            .apply(
+                vec![Edit::replace(3..3, "e")],
+                vec![Selection::caret(4)],
+                None,
+            )
+            .unwrap();
+        edited.mark_saved();
+        assert!(
+            recovery
+                .restore_prepared(edited, Document::new("base"))
+                .is_err()
+        );
     }
 }
 
