@@ -5124,7 +5124,7 @@ pass on two-CPU Linux arm64 with unchanged deadlines
 verification covers both real workspace adapters, cancellation, stale ownership,
 disk conflict and save/retry behavior; it is not a complete editor inventory or a
 whole-app memory/latency measurement. Encoding, JSON/network buffers, decoded
-source ownership, initial metadata checks and remaining publication costs still
+source ownership and remaining publication costs still
 require work.
 
 The preceding `2301c26` final-index validation checkpoint passed all five hosted
@@ -5132,3 +5132,30 @@ jobs ([receipt](editor-performance/grouped-ci-2301c26.json)), following the full
 green `ba33f5d` source-sharing checkpoint. These runs do not establish the earlier
 parser-fallback failure's cause. Current motion/decoding checkpoints still require
 their own complete hosted and repeated verification.
+
+## Recovery metadata checks without normalization copies
+
+Persistence checks now validate borrowed selection offsets directly. They preserve
+the count limit and Unicode boundary errors, while restoration still normalizes
+and owns its final selections. Persisted folds must already be normalized: a
+linear check rejects invalid bounds, unordered/duplicate headers and crossing
+ranges, retaining only an ancestor-end stack bounded by nesting depth. It does
+not clone or sort the entire fold list. Source-size and selection failures still
+precede fold failures, and folds still use LF logical rows.
+
+The existing fold normalizer is an independent oracle for every list of up to
+four ranges over four endpoint positions, checked against six document lengths
+(419,430 cases). Selection checks cover every offset pair around Unicode and
+CRLF source, overlapping/reversed selections and invalid count limits without
+mutating the payload. This changes the shared recovery validator used by both
+workspace adapters and backend/storage persistence; source decoding, restoration,
+history and the storage format are unchanged. Deep ancestor-stack allocation,
+final selection/fold normalization and whole-source publication remain costs.
+
+All 483 core and 213 storage/backend tests pass, with strict native core,
+frontend WASM including tests and backend WASI lint. The optimized browser suite
+passes 15 recovery component contracts and 20 editor library contracts on
+two-CPU Linux arm64 with unchanged deadlines
+([verification](editor-performance/borrowed-recovery-metadata.json)). These
+targeted contracts cover both adapters, stale/account ownership, conflicts and
+retry; they do not establish full editor CI reliability or whole-app memory gains.

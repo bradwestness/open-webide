@@ -1,7 +1,6 @@
 //! Versioned recovery data: hosts persist it, shared Rust validates and restores it.
 use super::{
-    Document, Edit, FoldRange, MAX_DOCUMENT_BYTES, MAX_SELECTIONS, Selection, normalize_folds,
-    normalize_selections,
+    Document, Edit, FoldRange, MAX_DOCUMENT_BYTES, MAX_SELECTIONS, Selection, normalize_selections,
 };
 use serde::{Deserialize, Serialize};
 
@@ -96,14 +95,12 @@ impl DocumentRecovery {
         if self.selections.is_empty() || self.selections.len() > MAX_SELECTIONS {
             return Err("Recovered selections exceed the editor's limits".into());
         }
-        normalize_selections(&self.text, self.selections.clone())
+        super::validate_selections(&self.text, &self.selections)
             .map_err(|error| error.to_string())?;
         if self.collapsed.len() > MAX_RECOVERY_FOLDS {
             return Err("Too many recovered folds".into());
         }
-        if !self.collapsed.is_empty()
-            && normalize_folds(self.collapsed.clone(), lines()) != self.collapsed
-        {
+        if !self.collapsed.is_empty() && !super::folds::are_normalized(&self.collapsed, lines()) {
             return Err("Recovered folds are outside the document or overlap".into());
         }
         Ok(())
@@ -667,6 +664,38 @@ mod encoded_text {
 mod tests {
     use super::super::NativeInputKind;
     use super::*;
+
+    #[test]
+    fn borrowed_selection_validation_matches_normalization_without_reordering() {
+        let source = "a文😀\r\nz";
+        for anchor in 0..=source.len() + 1 {
+            for head in 0..=source.len() + 1 {
+                let selections = vec![
+                    Selection { anchor, head },
+                    Selection::caret(0),
+                    Selection {
+                        anchor: source.len(),
+                        head: 0,
+                    },
+                ];
+                let expected = normalize_selections(source, selections.clone())
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
+                let mut recovery = DocumentRecovery::clean(source);
+                recovery.selections = selections.clone();
+                assert_eq!(recovery.validate(), expected);
+                assert_eq!(recovery.selections, selections);
+            }
+        }
+        for selections in [Vec::new(), vec![Selection::caret(0); MAX_SELECTIONS + 1]] {
+            let mut recovery = DocumentRecovery::clean(source);
+            recovery.selections = selections;
+            assert_eq!(
+                recovery.validate().unwrap_err(),
+                "Recovered selections exceed the editor's limits"
+            );
+        }
+    }
 
     #[test]
     fn recovery_decode_borrows_encoded_json_fields_and_owns_decoded_sources() {

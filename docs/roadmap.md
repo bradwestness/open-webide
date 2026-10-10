@@ -162,8 +162,11 @@ tracks the remaining work rather than every optimization already shipped.
   Final recovery admission and fold row counts now reuse complete source-owned
   indexes. Canonical JSON decoding now borrows encoded field bytes before
   creating the owned decoded source. Encoding, complete JSON/network buffers,
-  full-source undo publication, initial metadata validation and final
-  normalization costs still require work.
+  full-source undo publication and final normalization costs still require work.
+  Recovery metadata validation now checks borrowed selection positions and ordered
+  fold ranges directly, without cloning and sorting them; fold validation retains
+  only an ancestor-end stack bounded by nesting depth. Restoration still owns and
+  normalizes its final selections and fold state.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   parser context/selection-list extraction and final paint publication. Finish
