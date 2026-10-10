@@ -15563,12 +15563,26 @@ async fn source_slice_measurement_failure_restores_full_source_in_both_modes() {
         });
         let input: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
-        wait_until("wrapped source anchors ready", || {
+        wait_until("complete wrapped source geometry ready", || {
             mounted
                 .root
                 .query_selector(".editor-source-line[data-paint-top]")
                 .unwrap()
                 .is_some()
+                && mounted
+                    .state
+                    .workspace
+                    .editor_rows
+                    .get_untracked()
+                    .is_some()
+                && mounted
+                    .root
+                    .query_selector(".editor-scroll-extent[data-source-height]")
+                    .unwrap()
+                    .is_some_and(|extent| {
+                        extent.get_attribute("data-editor-scope")
+                            == input.get_attribute("data-editor-scope")
+                    })
         })
         .await;
         for top in [10_000.0, 0.0] {
@@ -15583,23 +15597,26 @@ async fn source_slice_measurement_failure_restores_full_source_in_both_modes() {
                     .unwrap()
                     .and_then(|row| row.get_attribute("data-paint-top"))
                     .and_then(|top| top.parse::<f64>().ok())
-                    .is_some_and(|top| {
-                        (top - openwebide_frontend::viewport::editor_scroll(&input).scroll_top())
-                            .abs()
-                            < 200.0
+                    .is_some_and(|paint_top| {
+                        let actual =
+                            openwebide_frontend::viewport::editor_scroll(&input).scroll_top();
+                        (actual - top).abs() < 1.0 && (paint_top - actual).abs() < 200.0
                     })
             })
             .await;
             settle().await;
         }
         let audit = js_sys::Function::new_no_args(r#"
-            const state = {failed: false};
+            const state = {failed: false, sourceStart: null};
             const old = Range.prototype.getClientRects;
             Range.prototype.getClientRects = function(...args) {
                 const node = this.startContainer;
                 const element = node.nodeType === 1 ? node : node.parentElement;
-                if (!state.failed && element?.closest('.editor-row-measure .editor-source-line[data-source-start]')) {
+                const row = element?.closest('.editor-row-measure .editor-source-line[data-source-start]');
+                // Test viewport crop failure, never background source preparation.
+                if (!state.failed && row && !row.closest('.editor-height-measure') && Number(row.dataset.sourceStart) > 0) {
                     state.failed = true;
+                    state.sourceStart = Number(row.dataset.sourceStart);
                     return {length: 0, item() {return null;}};
                 }
                 return old.apply(this, args);
@@ -15655,6 +15672,13 @@ async fn source_slice_measurement_failure_restores_full_source_in_both_modes() {
             complete_fallback,
             "{mode:?}: failed partial measurement must restore complete source within 3 s: injected={failed:?}, visible_bytes={visible_bytes}/{}, source_start={source_start:?}",
             original.len()
+        );
+        assert!(
+            js_sys::Reflect::get(&audit, &"sourceStart".into())
+                .unwrap()
+                .as_f64()
+                .is_some_and(|start| start > 0.0),
+            "{mode:?}: injected failure must belong to the offscreen viewport slice"
         );
         assert_editor_native_source(&input, mounted.state.workspace, &original);
         assert!(

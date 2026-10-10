@@ -4214,3 +4214,48 @@ two-CPU limit with all existing deadlines/assertions retained; see
 Final strict WASM lint also passes. This does not reproduce or resolve the CI-only
 timeout; the expanded diagnostics must establish the next CI failure state if it
 recurs. CI reliability and the complete editor goal remain open.
+
+
+### Production source-publication task timing and scoped failure injection
+
+Four fresh production repeats after cooperative anchor setup pass source/caret,
+actual String styling, complete geometry, scrolling and Linux PSS checks in both
+workspace modes. First styled input viewport paint is 251–274 ms, complete input
+geometry is 1.22–1.26 seconds, cold styled viewport paint is 1.55–1.60 seconds and
+complete cold geometry is 2.49–2.56 seconds. Peak Chrome PSS is
+693,793–736,502 KiB. These results do not establish a material improvement over
+the previous cohort. [Task-timed evidence](editor-performance/cooperative-anchor-production-tasks-linux.jsonl)
+records exact frontend/backend/script hashes and image/resource constraints.
+The same local recovery-handle limitation and frozen backend snapshot apply.
+
+The measurement tool now records bounded long-task start/duration, observation
+time, phase and current editor scope. The four ordinary runs show 140–147 ms
+cold tasks during first source publication and 64–75 ms input tasks before
+geometry completion. A separate, explicitly labeled
+[diagnostic CPU profile](editor-performance/cooperative-anchor-cpu-profile-linux.jsonl)
+includes profiler overhead and cannot serve as a normal latency/PSS baseline.
+Correlating its monotonic navigation clock with task start times shows
+`refresh_editor_scroll`/`set_editor_scroll_position`, string transfer into WASM
+and anonymous WASM work in the cold task; some of the same WASM stacks recur
+after native input. Stripped production symbols do not establish exact named
+Rust-function attribution. Source publication/indexing and scroll-refresh paths
+remain the next measured candidates, rather than declaring total background
+geometry costs resolved. Python compilation and injected JavaScript syntax checks
+pass. The current production Trunk/PWA build also passes.
+
+Both checkpoint CI runs `38029581778` and `38030710930` passed four jobs but failed
+the source-slice failure fixture first. The latter's diagnostics prove injection
+fired while visible source still began at zero (770 of 210,000 bytes). The fixture
+previously accepted an origin anchor as setup readiness and could corrupt a
+background preparation probe before reaching its requested offscreen viewport.
+It now requires complete current-scope geometry/extents, verifies actual scroll
+positions, excludes background height probes and requires a positive injected
+source offset. All setup/fallback deadlines remain three seconds, and exact
+full-source restoration, native source preservation and subsequent bounded paint
+assertions remain in place. The held-continuation contract separately retains
+partial-coverage failure semantics. The corrected fixture passes on macOS in
+0.91 seconds. The unchanged Linux editor partition passes all 149 tests in
+166.57 seconds, with its existing two font-matrix exclusions and 300-second
+deadline; see [full output](editor-performance/complete-source-slice-failure-linux.jsonl).
+Strict optimized WASM library/test lint and formatting checks pass. A new full
+CI run remains required; the editor and CI reliability gates stay open.

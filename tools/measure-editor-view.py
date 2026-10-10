@@ -137,7 +137,7 @@ READY = """
 """
 
 
-def measure(case, mode, wrapped, trace=False, repetition=1, input_position="start"):
+def measure(case, mode, wrapped, trace=False, repetition=1, input_position="start", profile=False):
     source = source_for(case)
     require_styled = case == "styled-long-line"
     native = source.replace("\r\n", "\n")
@@ -180,6 +180,10 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                 browser.call("POST", "/cookie", {"cookie": {"name": cookie.name, "value": cookie.value,
                              "domain": "127.0.0.1", "path": cookie.path, "httpOnly": True}})
             samples = MemorySamples(browser.process.pid)
+            if profile:
+                for command, params in [("Performance.enable", {}), ("Profiler.enable", {}),
+                                        ("Profiler.setSamplingInterval", {"interval": 2000}), ("Profiler.start", {})]:
+                    browser.call("POST", "/goog/cdp/execute", {"cmd": command, "params": params})
             browser.call("POST", "/goog/cdp/execute", {"cmd": "Page.addScriptToEvaluateOnNewDocument", "params": {
                 "source": """
                     window.editorViewScroll = input => {
@@ -191,7 +195,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                         inputViewportPaintMs: null, inputCompleteGeometryMs: null,
                         coldViewportHadCompleteExtent: null, inputViewportHadCompleteExtent: null,
                         inputPreviousScope: null, inputScrollTop: null, inputScrollLeft: null,
-                        longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0, phase: "cold", probes: [], batches: [], workers: [], fonts: [], nativeEvents: [], traceTruncated: false};
+                        longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0, longTaskEvents: [], phase: "cold", probes: [], batches: [], workers: [], fonts: [], nativeEvents: [], traceTruncated: false};
                     if (__TRACE__) {
                         const batches = new WeakMap();
                         window.__openwebideEditorProbeTiming = (paint, phase, elapsedMs, units) => {
@@ -319,6 +323,12 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                     }
                     new PerformanceObserver(list => {
                         for (const entry of list.getEntries()) {
+                            if (__TRACE__ && editorViewMeasurement.longTaskEvents.length < 256) {
+                                editorViewMeasurement.longTaskEvents.push({at: entry.startTime,
+                                    durationMs: entry.duration, observedAt: performance.now(),
+                                    phase: editorViewMeasurement.phase,
+                                    scope: document.querySelector('textarea[data-editor-path]')?.dataset.editorScope ?? null});
+                            } else if (__TRACE__) editorViewMeasurement.traceTruncated = true;
                             editorViewMeasurement.longTasks++;
                             editorViewMeasurement.longTaskMs += entry.duration;
                             editorViewMeasurement.maxLongTaskMs = Math.max(editorViewMeasurement.maxLongTaskMs, entry.duration);
@@ -488,7 +498,12 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
             sampled = samples.finish()
             samples = None
             tasks = browser.script("return {...window.editorViewMeasurement, wasmBytes: window.editorViewWasmMemory.buffer.byteLength};")
-            return {"case": case, "mode": mode, "wrap": wrapped, "repetition": repetition, "sourceBytes": len(source.encode()),
+            profiling = {}
+            if profile:
+                metrics = browser.call("POST", "/goog/cdp/execute", {"cmd": "Performance.getMetrics", "params": {}})
+                cpu = browser.call("POST", "/goog/cdp/execute", {"cmd": "Profiler.stop", "params": {}})
+                profiling = {"cpuProfile": cpu["profile"], "cpuProfileMetrics": metrics["metrics"]}
+            return {**profiling, "cpuProfiling": profile, "case": case, "mode": mode, "wrap": wrapped, "repetition": repetition, "sourceBytes": len(source.encode()),
                     "inputPosition": input_position, "verifiedSourceCaretBeforeInput": verified_source_caret,
                     "completeSourceAfterInputVerified": input_position in {"beginning", "end"}, "loadToPaintMs": load_ms, **snapshot, **scroll, **edited, **memory,
                     "afterInputMemory": process_memory(browser.process.pid), **sampled,
@@ -498,7 +513,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                     "afterInputWasmCommittedBytes": tasks["wasmBytes"],
                     "longTasks": tasks["longTasks"], "longTaskMs": tasks["longTaskMs"],
                     "maxLongTaskMs": tasks["maxLongTaskMs"], "maxFrameIncludingInputMs": tasks["maxFrameMs"],
-                    **({"layoutProbes": tasks["probes"], "preparationBatches": tasks["batches"], "workerEvents": tasks["workers"], "fontEvents": tasks["fonts"], "nativeEvents": tasks["nativeEvents"], "traceTruncated": tasks["traceTruncated"]} if trace else {})}
+                    **({"layoutProbes": tasks["probes"], "preparationBatches": tasks["batches"], "workerEvents": tasks["workers"], "fontEvents": tasks["fonts"], "nativeEvents": tasks["nativeEvents"], "longTaskEvents": tasks["longTaskEvents"], "traceTruncated": tasks["traceTruncated"]} if trace else {})}
         except (AssertionError, TimeoutError, RuntimeError) as error:
             observed = samples.finish() if samples else {}
             samples = None
@@ -523,6 +538,7 @@ if __name__ == "__main__":
     parser.add_argument("--modes", nargs="+", choices=["local", "remote"], default=["local", "remote"])
     parser.add_argument("--wrap", action="store_true")
     parser.add_argument("--trace", action="store_true", help="Record bounded probe/worker diagnostics; timings include instrumentation overhead")
+    parser.add_argument("--profile", action="store_true", help="Capture a diagnostic main-thread CPU profile; timings and memory include profiler overhead")
     parser.add_argument("--input-position", choices=["start", "beginning", "end"], default="start", help="Use native-window start or verified complete-source Home/End navigation before typing")
     parser.add_argument("--repeat", type=int, default=1, help="Fresh browser/runtime runs for each case and mode")
     parser.add_argument("--require-pss", action="store_true", help="Fail if apportioned Chrome process memory cannot be measured")
@@ -534,7 +550,7 @@ if __name__ == "__main__":
                       **host_constraints(),
                       "repetitions": args.repeat,
                       "measurementImage": os.environ.get("EDITOR_VIEW_IMAGE"),
-                      "inputTimingStart": "beforeinput", "inputPosition": args.input_position,
+                      "inputTimingStart": "beforeinput", "inputPosition": args.input_position, "cpuProfiling": args.profile,
                       "frontendWasmSha256": {
                           path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                           for path in sorted((ROOT / "frontend/dist").glob("*.wasm"))
@@ -548,7 +564,7 @@ if __name__ == "__main__":
     for case in args.cases:
         for mode in args.modes:
             for repetition in range(1, args.repeat + 1):
-                result = measure(case, mode, args.wrap, args.trace, repetition, args.input_position)
+                result = measure(case, mode, args.wrap, args.trace, repetition, args.input_position, args.profile)
                 print(json.dumps(result), flush=True)
                 if args.require_pss:
                     assert result["peakChromePssKiB"] is not None, "Chrome peak PSS was unavailable"

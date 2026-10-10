@@ -131,7 +131,9 @@ tracks the remaining work rather than every optimization already shipped.
   remaining changed-revision paint/transport comparisons, metadata materialization
   and transport serialization, message decoding, diff shaping and native-text
   materialization. Browser request source publication and oversized-message fallback
-  still run synchronously. Bound remaining
+  still run synchronously. Current production traces locate 140–147 ms tasks
+  during first source publication and 64–75 ms tasks after native edits; these
+  source/controller costs remain responsiveness targets. Bound remaining
   initial capacity allocation, folded/bounded projection assembly, retained
   row/coordinate copies, changed indentation-guide copies and storage suffix
   byte/coordinate shifts. Long boundary rows still scan for admission. Revisit
