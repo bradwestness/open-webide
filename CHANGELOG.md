@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Retain the preceding row's exact coordinate index when an edit leaves its complete newline unchanged, avoiding repeated long-row scans when editing the following line.
+
 - Batch editor viewport sizing reads before scroll-extent writes, preserving source-owned dimensions and native-input fallback during resizing.
 
 - Record scoped main-thread task timing and optional CPU profiles for editor boundary measurements, with profiler overhead labeled separately.

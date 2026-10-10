@@ -95,7 +95,17 @@ impl LineIndex {
     /// The edit envelope includes every replacement in one overlapping row batch.
     pub fn update(&mut self, old_len: usize, new: &str, changed: Range<usize>, new_end: usize) {
         let old_rows = self.rows.len();
-        let edit = LineEdit::new(&self.rows, old_len, new.len(), changed, new_end);
+        let changed_start = changed.start;
+        let mut edit = LineEdit::new(&self.rows, old_len, new.len(), changed, new_end);
+        // The conservative envelope includes the preceding logical row. Its
+        // complete LF/CRLF ending is unchanged when it precedes the replacement,
+        // so retain its admission summary and exact native/visual coordinates.
+        // An unterminated row or an edit inside its ending must still be scanned.
+        let prefix = &self.rows[edit.rows.start];
+        if edit.rows.len() > 1 && prefix.body_end < prefix.end && prefix.end <= changed_start {
+            edit.rows.start += 1;
+            edit.bytes.start = prefix.end;
+        }
         let (start_row, end_row) = (edit.rows.start, edit.rows.end);
         let (start, end) = (edit.bytes.start, edit.bytes.end);
         let mut replacement = Self::new(&new[start..end]);
@@ -387,6 +397,75 @@ impl LineIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edits_after_complete_long_rows_retain_exact_coordinates() {
+        let body = "文😀e\u{301}\t words ".repeat(6000);
+        for ending in ["\n", "\r\n"] {
+            let prefix = format!("{body}{ending}");
+            let source = format!("{prefix}next{ending}tail");
+            for (range, replacement) in [
+                (prefix.len()..prefix.len(), "😀"),
+                (prefix.len()..prefix.len() + 4, ""),
+                (prefix.len() + 2..prefix.len() + 2, "\r\nnew\n"),
+                (source.len()..source.len(), "\nmore"),
+            ] {
+                let mut index = LineIndex::new(&source);
+                let retained = index.coordinates[0].visual().unwrap();
+                let snapshot = index.clone();
+                let mut next = source.clone();
+                next.replace_range(range.clone(), replacement);
+                index.update(
+                    source.len(),
+                    &next,
+                    range.clone(),
+                    range.start + replacement.len(),
+                );
+                assert_eq!(index, LineIndex::new(&next));
+                assert!(
+                    index.coordinates[0]
+                        .visual()
+                        .unwrap()
+                        .shared_with(&retained)
+                );
+                assert_eq!(snapshot, LineIndex::new(&source));
+            }
+        }
+    }
+
+    #[test]
+    fn row_envelope_reuse_matches_fresh_indexes_at_unicode_and_ending_boundaries() {
+        for source in [
+            "",
+            "x",
+            "\n",
+            "\r\n",
+            "文😀\r\n\t\rword\nlast",
+            "a\n\n😀\r\n",
+        ] {
+            let boundaries: Vec<_> = source
+                .char_indices()
+                .map(|(byte, _)| byte)
+                .chain([source.len()])
+                .collect();
+            for &start in &boundaries {
+                for &end in boundaries.iter().filter(|&&end| end >= start) {
+                    for replacement in ["", "x", "文😀", "\r", "\n", "\r\n", "\n\r", "x\r\ny"] {
+                        let mut index = LineIndex::new(source);
+                        let mut next = source.to_owned();
+                        next.replace_range(start..end, replacement);
+                        index.update(source.len(), &next, start..end, start + replacement.len());
+                        assert_eq!(
+                            index,
+                            LineIndex::new(&next),
+                            "{source:?}: {start}..{end} -> {replacement:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     fn reference_guides(source: &str, indentation: super::super::Indentation) -> Vec<usize> {
         let rows: Vec<_> = source.split('\n').collect();
         if source.len() > super::super::MAX_STRUCTURE_BYTES {

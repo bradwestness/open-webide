@@ -74,10 +74,11 @@ def source_for(case):
         return "x\n" * 99_999
     if case == "long-line":
         return "文😀 words " * (1024 * 1024 // len("文😀 words ".encode()))
-    if case == "styled-long-line":
+    if case in {"styled-long-line", "styled-long-line-following-row"}:
         prefix, suffix, unit = 'const VALUE: &str = "', '";', "文😀 words "
         budget = 1024 * 1024 - len((prefix + suffix).encode())
-        return prefix + unit * (budget // len(unit.encode())) + suffix
+        source = prefix + unit * (budget // len(unit.encode())) + suffix
+        return source + "\nlet next = 0;" if case == "styled-long-line-following-row" else source
     raise ValueError(case)
 
 
@@ -139,7 +140,7 @@ READY = """
 
 def measure(case, mode, wrapped, trace=False, repetition=1, input_position="start", profile=False):
     source = source_for(case)
-    require_styled = case == "styled-long-line"
+    require_styled = case in {"styled-long-line", "styled-long-line-following-row"}
     native = source.replace("\r\n", "\n")
     # JS lengths are UTF-16, not Python's Unicode scalar count.
     native_length = len(native.encode("utf-16-le")) // 2
@@ -429,7 +430,11 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                     const offset = Number(horizontal ? row?.dataset.paintLeft : row?.dataset.paintTop);
                     const target = horizontal ? scroll.scrollLeft : scroll.scrollTop;
                     const margin = horizontal ? scroll.clientWidth * 2 + 30 : scroll.clientHeight + 8 * parseFloat(getComputedStyle(input).lineHeight) + 32;
-                    const moved = singleRow ? Number.isFinite(offset) && offset <= target + 30 && target - offset <= margin : first !== old;
+                    // A wrapped long row can occupy many screens even when the
+                    // file has other rows. Prove its crop moved using geometry;
+                    // ordinary multiline windows can also change the first row.
+                    const cropped = Number.isFinite(offset) && offset <= target + 30 && target - offset <= margin;
+                    const moved = cropped || (!singleRow && first !== old);
                     if (moved && paint?.dataset.editorScope === input.dataset.editorScope && input.parentElement.classList.contains('highlight-ready') && (!requireStyled || paint.querySelector('.tok-string')))
                         return done({scrollToPaintMs: performance.now()-started, scrollAxis: horizontal ? 'horizontal' : 'vertical', scrollOffset: target});
                     requestAnimationFrame(check);
@@ -534,7 +539,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cases", nargs="+", choices=["small", "medium", "byte-limit", "line-limit", "long-line", "styled-long-line"], default=["small"])
+    parser.add_argument("--cases", nargs="+", choices=["small", "medium", "byte-limit", "line-limit", "long-line", "styled-long-line", "styled-long-line-following-row"], default=["small"])
     parser.add_argument("--modes", nargs="+", choices=["local", "remote"], default=["local", "remote"])
     parser.add_argument("--wrap", action="store_true")
     parser.add_argument("--trace", action="store_true", help="Record bounded probe/worker diagnostics; timings include instrumentation overhead")

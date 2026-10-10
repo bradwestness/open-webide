@@ -127,6 +127,8 @@ tracks the remaining work rather than every optimization already shipped.
   and validation. Bound cache-missing fallback scans, whole-row capacity growth,
   scratch allocation and remaining final publication work. Synchronous document
   indexes still shift/splice in place; immutable retained tables must remain exact.
+  Edits now retain preceding rows with proved unchanged complete newline endings;
+  changed long rows still rebuild their coordinate and visual indexes.
 - [ ] **Source ownership and storage:** finish external parser snapshots,
   remaining changed-revision paint/transport comparisons, metadata materialization
   and transport serialization, message decoding, diff shaping and native-text
@@ -171,6 +173,9 @@ tracks the remaining work rather than every optimization already shipped.
   assertions, and the expanded 149-test Linux editor component partition passes.
   The browser setup correction (`3956122`) passed all five CI jobs; repeat complete
   CI for the merged editor and plugin checkpoints and retain the boundary gates.
+  The scoped crop-failure fixture checkpoint (`11150a0`) passed all five jobs,
+  including the complete editor and other UI partitions and both font matrices;
+  repeat verification for subsequent implementation checkpoints remains required.
   Current checkpoints and measured results are in [performance evidence](editor-performance.md).
 - [ ] **Physical Chrome/Edge PWA input:** verify real input-method commit/cancel,
   Unicode and LF/CRLF undo/redo, multiple-cursor clipboard behavior and touch input

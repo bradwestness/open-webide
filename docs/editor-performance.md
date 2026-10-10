@@ -4289,3 +4289,50 @@ improvement or completion of source/controller responsiveness work. The same
 frozen backend, local recovery-handle limitation and measurement image/resource
 constraints apply; exact artifacts are recorded in the evidence header. Full CI,
 physical-device input and the remaining editor implementation gates remain open.
+
+### Reuse of proved unchanged preceding-row indexes
+
+The shared source index's conservative edit envelope formerly rebuilt the
+preceding row even when its complete LF/CRLF ending preceded the replacement.
+`LineIndex::update` now excludes that proved unchanged row from reconstruction,
+retaining its admission summary and exact immutable native/visual coordinates.
+Edits inside an ending and unterminated rows retain the conservative scan.
+Parser context envelopes are unchanged; no workspace-mode branch or second
+implementation was added. Document construction and changed long-row indexes
+still run synchronously.
+
+All 252 native editor tests pass, including exhaustive replacements at Unicode,
+LF, CRLF and standalone-CR boundaries against fresh complete indexes, and exact
+retained-coordinate checks across edits after long rows. Retained snapshots
+remain unchanged. Strict optimized core library/test lint passes, as does the
+production Trunk/PWA build. The unchanged Linux editor partition passes all 149
+tests in 179.02 seconds, retaining both existing font-matrix exclusions and its
+300-second deadline; see [full output](editor-performance/retained-preceding-row-editor-linux.jsonl).
+Strict optimized frontend WASM library/test lint and formatting checks pass.
+
+The production measurement tool adds a near-1-MiB styled first row followed by a
+short editable row. Wrapped crop movement is proved from measured offsets even
+when scrolling remains inside the same logical row of a multiline file. Native
+Ctrl+End, exact recovered source/caret before input and full resulting source
+after input are verified. Actual String styling, complete geometry, scrolling
+and Linux PSS checks remain required. With unchanged four-CPU/10-GiB limits,
+the previous `b846c17` frontend's four fresh local/remote samples show following-row
+input viewport/complete geometry in 105.5–112.0 ms; the new frontend's four fresh
+samples show 78.4–90.0 ms. Cold paint does not improve: it is 1.51–1.58 seconds
+before and 1.56–1.62 seconds after. Peak Chrome PSS is 729,933–742,401 KiB before
+and 734,243–742,695 KiB after, with no established memory improvement.
+[Before evidence](editor-performance/retained-preceding-row-before-linux.jsonl)
+and [after evidence](editor-performance/retained-preceding-row-after-linux.jsonl)
+record exact frontend/backend/script hashes. These observations support the
+following-row improvement, not removal of cold source-publication tasks or
+changed-long-row costs. The frozen backend, local recovery-handle limitation and
+existing image apply to both cohorts. Python compilation and executing all eight
+production measurements verify the updated measurement script.
+
+The earlier crop-failure fixture checkpoint `11150a0` passed all five CI jobs in
+[run 38033623746](https://github.com/openwebide/openwebide/actions/runs/38033623746).
+The UI log confirms 375 other components, 149 editor components, both independent
+font matrices, frontend unit/integration partitions and storage measurements pass;
+the editor partition takes 228.24 seconds. Both previously failing crop-failure
+and early wrapped-paint fixtures pass. This establishes that checkpoint's full
+CI result; subsequent implementation checkpoints still require repeated full CI.
