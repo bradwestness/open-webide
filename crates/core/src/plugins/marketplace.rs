@@ -147,7 +147,9 @@ impl MarketplaceCatalog {
                     license: "unspecified".into(),
                     readme: None,
                     compatibility: super::PluginCompatibility { plugin_api: 1 },
+                    executable: None,
                     contributions: super::PluginContributions {
+                        tools: vec![],
                         tool_groups: Vec::new(),
                         skills: vec![super::PluginSkill {
                             path: "skills/example/SKILL.md".into(),

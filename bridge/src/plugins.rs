@@ -69,6 +69,28 @@ impl NativePluginInstaller {
         }
     }
 
+    pub async fn component(
+        &self,
+        owner: &str,
+        prepared: &PreparedPlugin,
+    ) -> Result<Vec<u8>, PluginError> {
+        prepared.validate()?;
+        if prepared.manifest.executable.is_none() {
+            return Err(PluginError::Invalid(
+                "Plugin does not declare an executable.".into(),
+            ));
+        }
+        let _guard = self.lock.lock().await;
+        let root = self
+            .root
+            .as_ref()
+            .ok_or_else(|| host_error("Plugin cache is not configured."))?;
+        let host = ScopedHost {
+            root: root.join(key(owner)),
+            host_id: prepared.host_id.clone(),
+        };
+        load_artifact(&host.artifact(&prepared.source, &prepared.digest))
+    }
     pub async fn package(
         &self,
         owner: &str,
@@ -254,6 +276,17 @@ impl ScopedHost {
     fn repository(&self, source: &PluginSource) -> PathBuf {
         self.root.join("repositories").join(key(&source.repository))
     }
+    fn artifact(&self, source: &PluginSource, digest: &str) -> PathBuf {
+        self.root.join("artifacts").join(key(&format!(
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            source.repository,
+            source.path,
+            source.commit,
+            digest,
+            openwebide_plugin_runtime::build::TOOLCHAIN,
+            openwebide_plugin_runtime::build::sdk_digest(),
+        )))
+    }
     fn snapshot(&self, source: &PluginSource, digest: &str) -> PathBuf {
         self.root
             .join("versions")
@@ -379,6 +412,59 @@ impl PluginHost for ScopedHost {
             Ok(files)
         })
     }
+    fn compile<'a>(
+        &'a self,
+        source: &'a PluginSource,
+        digest: &'a str,
+        manifest: &'a openwebide_core::plugins::PluginManifest,
+    ) -> PluginFuture<'a, ()> {
+        Box::pin(async move {
+            let artifact = self.artifact(source, digest);
+            let snapshot = self.snapshot(source, digest);
+            let manifest = manifest.clone();
+            tokio::task::spawn_blocking(move || {
+                if artifact.exists() {
+                    load_artifact(&artifact)?;
+                    return Ok(());
+                }
+                let parent = artifact.parent().expect("artifact parent");
+                create_directory(parent)?;
+                let stage = tempfile::tempdir_in(parent).map_err(io_error)?;
+                let rust = manifest.executable.as_ref().expect("Rust manifest");
+                let build_dir = stage.path().join("build");
+                std::fs::create_dir(&build_dir).map_err(io_error)?;
+                let bytes =
+                    openwebide_plugin_runtime::build::compile(&snapshot, &rust.library, &build_dir)
+                        .map_err(|error| host_error(format!("{error:#}")))?;
+                let runtime = openwebide_plugin_runtime::Runtime::new()
+                    .map_err(|error| host_error(error.to_string()))?;
+                let tools = runtime
+                    .tools(&bytes, NoPluginServices, &[])
+                    .map_err(|error| host_error(format!("Invalid plugin interface: {error:#}")))?;
+                let tools: Vec<openwebide_core::plugins::PluginTool> = serde_json::from_value(
+                    serde_json::to_value(tools).map_err(|error| host_error(error.to_string()))?,
+                )
+                .map_err(|error| host_error(error.to_string()))?;
+                if tools != manifest.contributions.tools {
+                    return Err(PluginError::Invalid(
+                        "Compiled tools do not match the manifest.".into(),
+                    ));
+                }
+                // Build artifacts are disposable; retain only the validated component.
+                std::fs::remove_dir_all(&build_dir).map_err(io_error)?;
+                std::fs::write(stage.path().join("plugin.wasm"), &bytes).map_err(io_error)?;
+                std::fs::write(
+                    stage.path().join("digest"),
+                    openwebide_core::plugins::content_digest(&bytes),
+                )
+                .map_err(io_error)?;
+                std::fs::rename(stage.path(), &artifact).map_err(io_error)?;
+                Ok(())
+            })
+            .await
+            .map_err(|error| host_error(error.to_string()))?
+        })
+    }
     fn publish<'a>(
         &'a self,
         source: &'a PluginSource,
@@ -413,6 +499,30 @@ impl PluginHost for ScopedHost {
             verify_snapshot(&destination, files)
         })
     }
+}
+
+struct NoPluginServices;
+impl openwebide_plugin_runtime::HostServices for NoPluginServices {
+    fn request(&mut self, _capability: &str, _payload: &str) -> Result<String, String> {
+        Err("Host capabilities are unavailable during interface validation.".into())
+    }
+}
+fn load_artifact(path: &Path) -> Result<Vec<u8>, PluginError> {
+    reject_link(path)?;
+    let file = path.join("plugin.wasm");
+    reject_link(&file)?;
+    let digest = path.join("digest");
+    reject_link(&digest)?;
+    if std::fs::metadata(&file).map_err(io_error)?.len() > 32 * 1024 * 1024 {
+        return Err(host_error("Cached plugin artifact exceeds its limit."));
+    }
+    let bytes = std::fs::read(file).map_err(io_error)?;
+    if std::fs::read_to_string(digest).map_err(io_error)?
+        != openwebide_core::plugins::content_digest(&bytes)
+    {
+        return Err(host_error("Cached plugin artifact has changed."));
+    }
+    Ok(bytes)
 }
 
 fn reject_link(path: &Path) -> Result<(), PluginError> {
@@ -885,5 +995,65 @@ mod bundled_tests {
         let mut future = sources[0].clone();
         future.commit = "b".repeat(40);
         assert!(bundled_files(&future).is_none());
+    }
+}
+
+#[cfg(test)]
+mod rust_plugin_tests {
+    use super::*;
+    #[tokio::test]
+    async fn source_compilation_validates_tools_caches_offline_and_rejects_artifact_corruption() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest: openwebide_core::plugins::PluginManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion":1,"publisher":"example","name":"fixture","version":"0.1.0",
+            "displayName":"Fixture","description":"SDK adapter contract","license":"MIT",
+            "compatibility":{"pluginApi":3},
+            "executable":{"manifest":"Cargo.toml","library":"sdk_fixture","sdkVersion":"0.1.0","capabilities":["records"]},
+            "contributions":{"skills":[],"tools":[{"name":"fixture_echo","description":"Exercise the public host contract.","parameters":{"type":"object","properties":{}},"requires_approval":false}]}
+        })).unwrap();
+        let cargo = include_str!("../../crates/plugin-sdk/examples/fixture/Cargo.toml")
+            .replace("{ path = \"../..\" }", "\"=0.1.0\"");
+        let files = vec![
+            ("plugin.json", serde_json::to_string(&manifest).unwrap()),
+            ("Cargo.toml", cargo),
+            (
+                "Cargo.lock",
+                include_str!("../../crates/plugin-sdk/examples/fixture/Cargo.lock").into(),
+            ),
+            (
+                "src/lib.rs",
+                include_str!("../../crates/plugin-sdk/examples/fixture/src/lib.rs").into(),
+            ),
+        ]
+        .into_iter()
+        .map(|(path, content)| PackageFile {
+            path: path.into(),
+            content: content.into_bytes(),
+            kind: PackageFileKind::File,
+        })
+        .collect::<Vec<_>>();
+        openwebide_core::plugins::validate_files(&files).unwrap();
+        let source = openwebide_core::plugins::testing::source();
+        let digest = openwebide_core::plugins::package_digest(&files);
+        for host_id in ["server-host", "paired-local-host"] {
+            let host = ScopedHost {
+                root: root.path().to_path_buf(),
+                host_id: host_id.into(),
+            };
+            host.publish(&source, &digest, &files).await.unwrap();
+            host.compile(&source, &digest, &manifest).await.unwrap();
+            let bytes = load_artifact(&host.artifact(&source, &digest)).unwrap();
+            assert!(!bytes.is_empty());
+        }
+        let host = ScopedHost {
+            root: root.path().to_path_buf(),
+            host_id: "server-host".into(),
+        };
+        std::fs::write(
+            host.artifact(&source, &digest).join("plugin.wasm"),
+            b"corrupt",
+        )
+        .unwrap();
+        assert!(host.compile(&source, &digest, &manifest).await.is_err());
     }
 }

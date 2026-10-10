@@ -1,0 +1,13 @@
+package openwebide:plugin@0.1.0;
+
+/// The host attaches account, project, plugin identity and grants to every call.
+/// Plugin code cannot choose a different authority or access other plugin state.
+interface host {
+    request: func(capability: string, payload: string) -> result<string, string>;
+}
+
+world plugin {
+    import host;
+    export tools: func() -> string;
+    export execute: func(name: string, arguments: string) -> result<string, string>;
+}
