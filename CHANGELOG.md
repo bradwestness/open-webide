@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share prepared editor source with its saved baseline instead of duplicating the full file during publication. Preserve in-place edits when only the baseline retains the source, immutable snapshots, late save acknowledgements and composition cancellation.
+
 - Paint edits to parser-rejected documents while grammar analysis retries, preserving source ownership and grammar recovery. Restart unfinished wrapped geometry when syntax preparation advances, so rejected-source edits cannot stall after a worker reply.
 
 - Keep neutral editor geometry identity stable when plain fallback preparation completes, while preserving separate preparation readiness and source ownership.

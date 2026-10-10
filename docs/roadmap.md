@@ -138,7 +138,9 @@ tracks the remaining work rather than every optimization already shipped.
   viewing. Immutable editor sources now share cached admission decisions, using
   completed document summaries or cooperative rejection results. Finish remaining
   synchronous document callers, recovery validation/copies, metadata capacity
-  growth, saved-source allocation and final publication costs.
+  growth, external saved-version allocation and final publication costs. Prepared
+  documents now share their immutable source with the saved baseline; standalone
+  edits detach the baseline only when necessary to preserve in-place source edits.
   Clean recovery snapshots now capture source directly without building indexes;
   recovery validation counts lines only when saved folds require it.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
@@ -188,6 +190,11 @@ tracks the remaining work rather than every optimization already shipped.
   wrapped geometry restarts when syntax preparation advances. Reduce remaining
   source, layout and memory costs while preserving grammar paint coalescing,
   localized row reuse, cancellation and bounded terminal fallback.
+  The source-sharing checkpoint additionally verifies complete source after beginning
+  edits in 16 fresh both-mode release samples, including actual near-1-MiB String
+  styling ([record](editor-performance/shared-saved-source-production.jsonl)). Styled
+  wrapped input paints in 251–262 ms but complete geometry still takes 1.21–1.25
+  seconds; cold startup reaches 3.98 seconds. Reduce those remaining costs.
   Neutral rendering borrows immutable projection rows with a stable cache identity;
   fallback completion remains a separate readiness condition. Verify styled-boundary
   and beginning-edit production workloads before crediting broader improvements.
@@ -236,6 +243,10 @@ tracks the remaining work rather than every optimization already shipped.
   Linux arm64 with unchanged readiness deadlines and paint/probe limits
   ([record](editor-performance/rejected-source-browser.jsonl)); current hosted
   verification, repeated reliability and the broader gates remain open.
+  Prepared-source baseline sharing passes all 469 native core tests, 128 native
+  frontend tests and 174 editor browser tests with both font matrices
+  ([record](editor-performance/shared-saved-source-browser.jsonl)). Current hosted
+  verification is still required for this allocation change.
   Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving

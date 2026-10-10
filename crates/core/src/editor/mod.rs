@@ -264,7 +264,7 @@ pub struct Document {
     editor_limits: bool,
     line_index: std::sync::Arc<index::LineIndex>,
     projection: ProjectionCache,
-    saved: std::sync::Arc<str>,
+    saved: std::sync::Arc<String>,
     selections: Vec<Selection>,
     history: Vec<std::sync::Arc<HistoryStep>>,
     history_cursor: usize,
@@ -313,8 +313,8 @@ impl<'a> DocumentPreparation<'a> {
     pub fn advance(&mut self, budget: usize) -> bool {
         self.index.advance(budget)
     }
-    /// Index preparation is complete-only. Saved-source allocation remains part
-    /// of final publication; hosts must revalidate account/project/read ownership.
+    /// Index preparation is complete-only. The saved baseline shares the source;
+    /// hosts must revalidate account/project/read ownership before publication.
     pub fn finish(self) -> Option<Document> {
         Some(Document::from_prepared_text(
             self.source.clone(),
@@ -341,7 +341,7 @@ impl Document {
     fn from_prepared_text(text: std::sync::Arc<String>, index: index::LineIndex) -> Self {
         Self {
             identity: std::sync::Arc::new(()),
-            saved: std::sync::Arc::from(text.as_str()),
+            saved: text.clone(),
             editor_limits: false,
             line_index: std::sync::Arc::new(index),
             projection: ProjectionCache::default(),
@@ -536,11 +536,11 @@ impl Document {
         self.revision
     }
     pub fn is_dirty(&self) -> bool {
-        self.text.as_str() != self.saved.as_ref()
+        !std::sync::Arc::ptr_eq(&self.text, &self.saved)
+            && self.text.as_str() != self.saved.as_str()
     }
     pub fn mark_saved(&mut self) {
-        let saved = self.saved_version(&self.text);
-        self.mark_saved_snapshot(saved);
+        self.mark_saved_snapshot(self.text.clone());
     }
     /// A write can finish after another edit. Record the version actually written
     /// without treating the newer in-memory document as saved.
@@ -548,14 +548,18 @@ impl Document {
         let saved = self.saved_version(text);
         self.mark_saved_snapshot(saved);
     }
-    fn saved_version(&self, text: &str) -> std::sync::Arc<str> {
-        if self.saved.as_ref() == text {
+    fn saved_version(&self, text: &str) -> std::sync::Arc<String> {
+        if std::ptr::eq(self.text.as_str(), text) {
+            self.text.clone()
+        } else if std::ptr::eq(self.saved.as_str(), text) || self.saved.as_str() == text {
             self.saved.clone()
+        } else if self.matches_text(text) {
+            self.text.clone()
         } else {
-            std::sync::Arc::from(text)
+            std::sync::Arc::new(text.to_owned())
         }
     }
-    fn mark_saved_snapshot(&mut self, saved: std::sync::Arc<str>) {
+    fn mark_saved_snapshot(&mut self, saved: std::sync::Arc<String>) {
         self.saved = saved;
         if let Some(composition) = &mut self.composition {
             composition.mark_saved_snapshot(self.saved.clone());
@@ -642,6 +646,7 @@ impl Document {
         drop(parts);
         replace_indexed_text(
             &mut self.text,
+            &mut self.saved,
             &mut self.line_index,
             &mut self.folds,
             &mut self.projection,
@@ -712,6 +717,7 @@ impl Document {
         for transaction in step.transactions.iter().rev() {
             replace_indexed_text(
                 &mut self.text,
+                &mut self.saved,
                 &mut self.line_index,
                 &mut self.folds,
                 &mut self.projection,
@@ -735,6 +741,7 @@ impl Document {
         for transaction in &step.transactions {
             replace_indexed_text(
                 &mut self.text,
+                &mut self.saved,
                 &mut self.line_index,
                 &mut self.folds,
                 &mut self.projection,
@@ -813,6 +820,7 @@ fn inverse_edits(text: &str, edits: &[Edit]) -> Vec<Edit> {
 
 fn replace_indexed_text(
     text: &mut std::sync::Arc<String>,
+    saved: &mut std::sync::Arc<String>,
     index: &mut std::sync::Arc<index::LineIndex>,
     folds: &mut FoldState,
     projection: &mut ProjectionCache,
@@ -835,6 +843,15 @@ fn replace_indexed_text(
     // An unused derived view must not force a detach of its shared source.
     // Retained external views and composition baselines still require a copy.
     projection.0.take();
+    // If only our clean baseline retains this source, preserve the mutable
+    // buffer and its insertion headroom. External snapshots still keep the
+    // original allocation and force the normal source detach below.
+    if std::sync::Arc::ptr_eq(text, saved)
+        && std::sync::Arc::strong_count(text) == 2
+        && std::sync::Arc::weak_count(text) == 0
+    {
+        *saved = std::sync::Arc::new(text.as_ref().clone());
+    }
     let boundaries = folds.prepare_rebase(&index.rows, &edits);
     // Merge edits whose row contexts overlap. Multiple cursors in one long row
     // rebuild it once, while distant edits retain unchanged interior indexes.
@@ -1594,12 +1611,44 @@ mod tests {
     }
 
     #[test]
+    fn prepared_documents_share_saved_source_and_detach_edits_without_losing_baselines() {
+        let source = std::sync::Arc::new("文😀 words\r\n".repeat(4096));
+        let mut preparation = DocumentPreparation::new(&source);
+        while !preparation.advance(8) {}
+        let mut document = preparation.finish().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&source, &document.text));
+        assert!(std::sync::Arc::ptr_eq(&source, &document.saved));
+        assert!(!document.is_dirty());
+        document.insert_native_text("a", None).unwrap();
+        assert!(document.is_dirty());
+        assert!(!std::sync::Arc::ptr_eq(&source, &document.text));
+        assert!(std::sync::Arc::ptr_eq(&source, &document.saved));
+        assert_eq!(document.recovery().saved, *source);
+        let written = document.shared_text();
+        document.mark_saved_version(&written);
+        assert!(std::sync::Arc::ptr_eq(&written, &document.saved));
+        assert!(!document.is_dirty());
+        document.insert_native_text("b", None).unwrap();
+        document.mark_saved_version(&written);
+        assert!(document.is_dirty());
+        assert!(std::sync::Arc::ptr_eq(&written, &document.saved));
+        assert!(document.undo());
+        assert!(!document.is_dirty());
+        assert!(document.undo());
+        assert!(document.is_dirty());
+        assert_eq!(document.text(), source.as_str());
+        assert_eq!(document.recovery().saved, *written);
+    }
+
+    #[test]
     fn saved_baselines_are_shared_until_a_distinct_version_is_acknowledged() {
         let mut document = Document::new("文\r\n😀");
         let snapshot = document.clone();
+        assert!(std::sync::Arc::ptr_eq(&document.saved, &document.text));
         assert!(std::sync::Arc::ptr_eq(&document.saved, &snapshot.saved));
         document.insert_native_text("a", None).unwrap();
         document.mark_saved();
+        assert!(std::sync::Arc::ptr_eq(&document.saved, &document.text));
         assert!(!document.is_dirty());
         assert!(!snapshot.is_dirty());
         assert!(!std::sync::Arc::ptr_eq(&document.saved, &snapshot.saved));

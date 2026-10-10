@@ -4796,3 +4796,63 @@ These are scrolled native-window observations, with complete-source-after-input
 verification explicitly false and no actual String styling. They do not validate
 styled boundaries, beginning edits, physical PWA/FSA permissions or the full
 responsiveness/memory gate. Measurement limits and readiness deadlines are unchanged.
+
+
+## Sharing prepared source with the saved baseline
+
+The shared core document now retains its saved baseline as the same immutable
+source allocation used by complete document preparation. Initial publication and
+marking the current version saved no longer allocate another full source string;
+clean dirty-state checks can prove equality by source identity. Acknowledging an
+external write still checks exact bytes and retains the version actually written,
+so a late acknowledgement cannot mark newer typing clean. External versions that
+match neither retained source still require their own baseline allocation.
+
+The first candidate broke the existing unused-projection contract by forcing a
+source copy on a standalone document's first edit. The corrected edit path releases
+the unused projection, then detaches only the saved baseline if it is the sole
+other owner and no weak source handles exist. The mutable source keeps its buffer
+and insertion headroom. External snapshots and composition retain the original
+source and use the existing source-detach path. This defers a necessary baseline
+copy to the first standalone edit; it does not eliminate source copies from edits
+with retained versions. No adapter or UI mode branch is involved.
+
+Four fresh styled wrapped beginning-edit samples at `43f66c9` retain actual String
+paint and verify exact complete recovered source after input
+([baseline](editor-performance/styled-baseline-43f66c9.jsonl)). Viewport paint takes
+225–247 ms and complete geometry 1.10–1.88 seconds. A bounded [diagnostic trace](editor-performance/styled-baseline-trace-43f66c9.jsonl)
+still observes 71 input probe entries, with 69 paragraph layout batches; this
+change targets source allocation and does not claim to fix wrapped probe reflow.
+Current source-sharing regression tests cover prepared-source identity, detached
+edits, retained saved versions, late acknowledgements and undo. All 469 native
+core tests pass, including unchanged projection, history, recovery and composition
+contracts. All 174 editor browser tests (both font matrices included), 128 native
+frontend tests and strict native-core/optimized frontend WASM lint pass
+([record](editor-performance/shared-saved-source-browser.jsonl)).
+
+Sixteen fresh release samples cover actual near-1-MiB String styling and
+near-8-MiB files, both modes, wrapping on/off and two repetitions per combination
+([record](editor-performance/shared-saved-source-production.jsonl)). Every sample
+verifies source caret zero before insertion, exact complete recovered source after
+insertion and the existing observed peak/final Chrome PSS requirement. Resource
+limits remain four CPUs, 10 GiB container memory and 1 GiB shared memory; source
+checks do not prove physical FSA permissions or real IME input.
+
+| Fixture | Wrapping | Startup ms | Input viewport ms | Input complete geometry ms |
+| --- | --- | --- | --- | --- |
+| Styled long line | On | 2588–2638 | 251–262 | 1206–1247 |
+| Styled long line | Off | 3343–3980 | 148–151 | 148–152 |
+| Byte limit | On | 1513–1788 | 170–203 | 170–203 |
+| Byte limit | Off | 1553–1675 | 141–182 | 141–182 |
+
+In the wrapped styled cohort, cold committed WASM memory is 32.31 MiB, versus
+33.44–34.56 MiB in the preceding same-fixture baseline; after input it is 40.94 MiB,
+versus 42.06–43.13 MiB. These are linear-memory high-water observations, not
+per-object allocation measurements. The core identity regression directly proves
+that the prepared saved baseline shares source. Observed peak Chrome PSS across
+all current samples is 697–854 MiB; variation does not establish a process-memory
+improvement. Wrapped styled complete geometry remains over one second, startup
+remains multi-second, and no latency improvement is established. The byte-limit
+beginning edits additionally verify complete source, so their positions differ
+from the preceding scrolled-window cohort. Full responsiveness, memory, unsupported
+shaping and physical PWA release gates remain open.
