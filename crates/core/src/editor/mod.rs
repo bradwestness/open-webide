@@ -62,8 +62,8 @@ mod folds;
 pub use folds::{FoldCommand, FoldRange, FoldState, normalize_folds};
 mod capacity;
 pub use capacity::{
-    EditorLimit, MAX_EDITOR_BYTES, MAX_EDITOR_LINE_BYTES, MAX_EDITOR_LINES, TEXT_PAGE_BYTES,
-    TextPage, editor_limit,
+    EditorAdmission, EditorLimit, MAX_EDITOR_BYTES, MAX_EDITOR_LINE_BYTES, MAX_EDITOR_LINES,
+    TEXT_PAGE_BYTES, TextPage, editor_limit,
 };
 mod paint;
 pub use paint::{PaintCoverage, PaintPosition, PaintSelection, retained_paint_ranges};

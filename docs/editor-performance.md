@@ -4484,3 +4484,29 @@ records source/artifact hashes and complete output. Workspace reads and recovery
 still need to await this builder with ownership cancellation and draft protection.
 Metadata vector growth, saved-source allocation and final publication costs remain
 responsiveness/memory targets; these primitive checks do not complete those gates.
+
+## Cooperative incoming files
+
+The shared editor facade now prepares incoming files before publishing their
+source. Allocation-free admission advances through at most 8 KiB per unit, rejects
+byte limits immediately, and retains CRLF/standalone-CR and first-error ordering.
+Normal and lossy workspace reads await admission and complete document indexes;
+both filesystem adapters use the same preparation and publication policy. Every
+yield checks account, project, read revision, root guard, source revision and draft
+ownership. Publication installs the completed document and source together;
+over-limit sources retain the existing bounded read-only view. Unchanged files
+retain their existing selections, folds, history and source allocation.
+
+Recovery and other synchronous document callers still need this integration.
+Capacity memoization, metadata growth, saved-source allocation and final equality
+checks/publication remain responsiveness targets; these changes do not establish
+production latency or memory gates.
+
+All 261 native editor tests pass, including exact admission comparisons across
+Unicode/CRLF byte seams and first-error precedence. Strict optimized core and
+frontend WASM lint passes. All 19 editor library browser tests pass on macOS and
+Linux Chrome; the extended file-switching test passes through both filesystem
+adapters on both platforms, including normal and lossy prepared reads.
+[Browser evidence](editor-performance/cooperative-read-browser.jsonl) records
+source/artifact hashes and complete output. Assertions, the three-second readiness
+limit and the 300-second browser runner timeout remain unchanged.

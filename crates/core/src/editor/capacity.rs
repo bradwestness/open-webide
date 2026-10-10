@@ -26,7 +26,46 @@ impl std::fmt::Display for EditorLimit {
 /// count as display breaks; CRLF counts once. The scan allocates no metadata and
 /// stops at the first exceeded limit.
 pub fn editor_limit(source: &str) -> Option<EditorLimit> {
-    editor_limit_parts(&[source])
+    let mut preparation = EditorAdmission::new(source);
+    preparation.advance(usize::MAX);
+    preparation.finish().unwrap()
+}
+
+/// Allocation-free, complete-only interactive admission. Each unit inspects at
+/// most 8 KiB; byte limits reject immediately before building any row metadata.
+pub struct EditorAdmission<'a> {
+    source: &'a str,
+    scan: AdmissionScan,
+    next: usize,
+    result: Option<Option<EditorLimit>>,
+}
+impl<'a> EditorAdmission<'a> {
+    pub fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            scan: AdmissionScan::default(),
+            next: 0,
+            result: (source.len() > MAX_EDITOR_BYTES).then_some(Some(EditorLimit::Bytes)),
+        }
+    }
+    pub fn advance(&mut self, budget: usize) -> bool {
+        for _ in 0..budget {
+            if self.result.is_some() {
+                break;
+            }
+            let end = self.next.saturating_add(8192).min(self.source.len());
+            let limit = self.scan.bytes(&self.source.as_bytes()[self.next..end]);
+            self.next = end;
+            if limit.is_some() || end == self.source.len() {
+                self.result = Some(limit);
+            }
+        }
+        self.result.is_some()
+    }
+    /// `None` is pending; `Some(None)` is admitted without a limit.
+    pub fn finish(self) -> Option<Option<EditorLimit>> {
+        self.result
+    }
 }
 
 /// Validate a proposed transaction without joining its unchanged source pieces.
@@ -88,7 +127,11 @@ impl Default for AdmissionScan {
 }
 impl AdmissionScan {
     fn text(&mut self, text: &str) -> Option<EditorLimit> {
-        for byte in text.bytes() {
+        self.bytes(text.as_bytes())
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) -> Option<EditorLimit> {
+        for &byte in bytes {
             #[cfg(test)]
             {
                 self.scanned += 1;
@@ -212,6 +255,39 @@ impl TextPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cooperative_admission_preserves_limits_across_byte_and_crlf_seams() {
+        let sources = [
+            String::new(),
+            format!("x{}\r\n{}", "é".repeat(4095), "文😀".repeat(9000)),
+            "x".repeat(MAX_EDITOR_BYTES + 1),
+            "x".repeat(MAX_EDITOR_LINE_BYTES + 1),
+            "\r\n".repeat(MAX_EDITOR_LINES),
+            format!(
+                "{}\n{}",
+                "x".repeat(MAX_EDITOR_LINE_BYTES + 1),
+                "\n".repeat(MAX_EDITOR_LINES)
+            ),
+            format!(
+                "{}{}",
+                "\n".repeat(MAX_EDITOR_LINES),
+                "x".repeat(MAX_EDITOR_LINE_BYTES + 1)
+            ),
+        ];
+        for source in sources {
+            let expected = editor_limit_parts(&[&source]);
+            for budget in [1, 8, 64] {
+                let mut preparation = EditorAdmission::new(&source);
+                while !preparation.advance(budget) {
+                    assert_eq!(preparation.result, None);
+                    assert!(preparation.next < source.len());
+                }
+                assert_eq!(preparation.finish(), Some(expected));
+            }
+        }
+        assert_eq!(EditorAdmission::new("pending").finish(), None);
+    }
+
     #[test]
     fn indexed_admission_matches_full_scan_at_unicode_and_newline_joins() {
         use super::super::{Edit, index::LineIndex};

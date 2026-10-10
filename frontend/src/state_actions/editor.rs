@@ -30,6 +30,7 @@ pub use decorations::EditorDecorations;
 mod input;
 mod motion;
 pub use input::{EditorNativeCommit, EditorNativeContext};
+mod loading;
 mod preparation;
 mod rows;
 #[cfg(feature = "test-support")]

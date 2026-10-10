@@ -128,9 +128,10 @@ tracks the remaining work rather than every optimization already shipped.
   lookahead through an already indexed large grapheme; initial index construction
   now exposes a resumable builder using the same bounded Unicode scanner as paint
   segmentation. Native/row/admission index construction now also has a complete-only
-  cooperative document builder. Wire completed preparation into workspace reads
-  and recovery, with cancellation and draft protection; current document callers
-  still consume that shared implementation synchronously. Finish metadata capacity
+  cooperative document builder. Normal and lossy workspace reads now prepare
+  admission and complete indexes cooperatively through the shared editor facade,
+  with cancellation and draft protection. Wire this into recovery and remaining
+  synchronous document callers. Finish admission-cache reuse, metadata capacity
   growth, saved-source allocation and final publication costs.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
