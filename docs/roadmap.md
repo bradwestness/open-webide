@@ -85,7 +85,8 @@ tracks the remaining work rather than every optimization already shipped.
   with fresh terminal dimensions. Changed incoming prefixes can reconnect cached
   tails at whole words using their already measured geometry and extents, including
   hanging glyph ranges. Native range reads are now batched, with independent
-  per-range browser oracles; this does not resolve probe reflow costs. Finish
+  per-range browser oracles; this does not resolve probe reflow costs. Whole-probe
+  and exact differential DOM-retention experiments do not remove that cost. Finish
   nonreconnecting wrapped updates: the
   near-limit beginning-edit trace matches source/run boundaries but rejects changed
   incoming wrapping phases through first-row overflow and dense overlap; the latest

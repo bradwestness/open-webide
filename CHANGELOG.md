@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Require every requested browser component-test filter to match a real WASM test, preventing partial contract selections from reporting success.
+
 - Batch exact native paragraph range reads through the browser adapter, keeping geometry policy in Rust and independent full-renderer checks. Make the measured-prefix regression fixture portable across Linux font configurations.
 
 - Reuse wrapped paragraph tails after a freshly measured incoming prefix reconnects at a complete word, preserving exact overlap and dimensions, source/style ownership, cancellation and full-layout fallback in both workspace modes.

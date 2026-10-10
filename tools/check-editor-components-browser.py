@@ -42,7 +42,8 @@ def main():
             }
             const filters = FILTERS;
             const names = Object.keys(wasm).filter(name => name.startsWith('__wbgt_') && filters.some(filter => name.includes(filter)));
-            if (!names.length) throw new Error('No matching WASM test exports');
+            const missing = filters.filter(filter => !names.some(name => name.includes(filter)));
+            if (missing.length) throw new Error('No matching WASM test exports for: ' + missing.join(', '));
             window.editorComponentNames = names;
             const context = new bindings.WasmBindgenTestContext(false);
             window.editorComponentResult = await context.run(names.map(name => wasm[name]));

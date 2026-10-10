@@ -3818,6 +3818,10 @@ For cross-host reproduction, generate web bindings from the built component-test
 WASM with `wasm-bindgen --target web --out-name tests --out-dir DIR COMPONENTS.wasm`.
 Run `python3 tools/check-editor-components-browser.py DIR FILTER [FILTER ...]`.
 The tool uses the standard wasm-bindgen test context and actual raw test exports.
+Every requested filter must match at least one export; a valid filter paired with
+a nonexistent contract now [fails before execution](editor-performance/component-missing-filter-linux.jsonl),
+rather than reporting a partial pass. The [valid two-filter run](editor-performance/component-strict-filters-linux.jsonl)
+executes and passes both contracts.
 The existing Linux measurement image accepts read-only repository and binding
 mounts with `--entrypoint python3`; no second Cargo target or image is needed.
 For the reduced-font run, mount
@@ -3839,3 +3843,46 @@ Beginning edits take 1081.7–1108.8 ms with the same 70 fresh probes; end edits
 bounding-box/reflow time remains 764.2–784.0 ms, dominating native range reads
 at 109.1–115.8 ms. The samples do not establish a consistent overall latency or
 memory improvement. The principal reflow stall and remaining editor gates stay open.
+
+
+### Probe DOM retention experiments
+
+Two disposable browser-only experiments use the same production range-batch bundle,
+Linux image, frozen backend and resource limits above. They change only hidden
+measurement probes, do not modify the shipped adapter and run one beginning-edit
+sample per mode. Reproduction scripts are archived with the results; their
+JavaScript hooks are experimental DOM primitives, not replacement editor policy.
+No builds or other local browser measurements ran concurrently. These samples
+preserve actual 1,048,567-byte String styling, complete source after input,
+exact beginning caret and 547,721 × 264 extents.
+
+The [whole-probe script](editor-performance/retained-probe-experiment.py) retains
+text children only when the incoming rendered inner markup is identical, while
+updating source metadata and the measured incoming gap. The
+[results](editor-performance/retained-probe-experiment-linux.jsonl) show zero
+identical-probe hits in either mode; beginning edits take 1226.1 and 1263.4 ms.
+Parsing and comparison add work without avoiding layout for this workload.
+
+The [differential script](editor-performance/differential-probe-experiment.py)
+keeps equal subtrees, updates changed text/attributes in place and requires every
+resulting DOM to serialize exactly to the incoming rendered HTML before native
+measurement. The [results](editor-performance/differential-probe-experiment-linux.jsonl)
+show 3910 equal-subtree hits and eight node replacements in each mode, but
+beginning edits still take 1114.4 and 1116.9 ms, with 779.4 and 776.6 ms in
+bounding-box/reflow reads. Preserving DOM subtrees does not eliminate the principal
+changed-gap layout work. Neither experiment is adopted; they are diagnostic
+samples, not full geometry contracts or a responsiveness gate pass. The next
+implementation must address exact layout/reconnection across changed wrapping
+phases rather than rely on retained DOM alone.
+
+
+A separate [probe-size microbenchmark](editor-performance/probe-size-experiment.py)
+clones the real hidden-probe font/style and measures fresh wrapped String markup
+at 2, 4, 8 and 16 KiB with three incoming gap positions. The
+[raw results](editor-performance/probe-size-experiment-linux.jsonl) include the
+production run and 24 native reflow samples per size. After the first three
+samples, mean reflow times are 1.41, 2.70, 5.50 and 11.02 ms respectively: cost
+scales approximately with text bytes. Smaller probes would add dense-overlap and
+scheduling work without eliminating the total shaping cost; these diagnostic
+results do not justify changing the probe cap or accepting approximate geometry.
+This synthetic native primitive check is not a both-mode full-renderer contract.
