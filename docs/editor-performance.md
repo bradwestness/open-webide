@@ -3652,7 +3652,36 @@ geometry (24.50 s), cancellation (0.58 s), and near-limit bounded native startup
 (10.58 s).
 
 No production latency or memory improvement is claimed for this checkpoint.
-Repeat quiet Linux beginning/end input traces against the preceding prefix-batch
-baseline after resuming. A single indivisible grapheme can exceed the ordinary run
+The quiet Linux beginning/end input traces below compare with the preceding
+prefix-batch baseline. A single indivisible grapheme can exceed the ordinary run
 size; unsupported and uncapped synchronous construction paths, nonreconnecting
 wrapped reflow, startup/memory and physical-device completion gates remain open.
+
+Quiet Linux production samples for this checkpoint use the same frozen backend,
+Chromium image, 4 CPUs, 10 GiB memory and 1 GiB shared memory as the preceding
+prefix-batch baseline. No local builds or browser checks ran during measurement.
+Both positions retain actual 1,048,567-byte String styling, exact boundary carets,
+complete source after input and complete 547,721 × 264 extents, without truncated
+traces. The candidate module is `openwebide-frontend-3115e25d7ada20e1.js`.
+Raw traces: [beginning](editor-performance/paint-runs-beginning-linux.jsonl)
+and [end](editor-performance/paint-runs-end-linux.jsonl).
+
+| Position | Mode / repetition | Load ms | Input ms | Scroll ms | Largest frame ms | Fresh input probes | Peak Chrome PSS KiB |
+|---|---|---:|---:|---:|---:|---:|---:|
+| beginning | local 1 | 2384.5 | 1109.0 | 40.7 | 166.7 | 70 | 726093 |
+| beginning | local 2 | 2454.4 | 1187.4 | 45.4 | 150.0 | 70 | 735538 |
+| beginning | remote 1 | 2494.5 | 1224.6 | 39.9 | 150.0 | 70 | 725524 |
+| beginning | remote 2 | 2377.2 | 1145.5 | 42.4 | 150.0 | 70 | 738874 |
+| end | local 1 | 2409.4 | 129.2 | 30.0 | 150.0 | 2 | 729530 |
+| end | local 2 | 2362.5 | 117.4 | 33.5 | 150.1 | 2 | 724644 |
+| end | remote 1 | 2444.8 | 125.0 | 32.5 | 149.9 | 2 | 715041 |
+| end | remote 2 | 2451.2 | 125.8 | 35.8 | 150.0 | 2 | 699650 |
+
+Beginning input remains 1109.0–1224.6 ms, compared with 1131.1–1206.8 ms in
+the preceding baseline. End input remains 117.4–129.2 ms, compared with
+113.8–125.6 ms. These samples show no consistent latency improvement. Beginning
+edits still measure 70 fresh probes; their traced browser bounds calls total
+762.8–832.7 ms. Changed long-token run boundaries and nonreconnecting wrapped
+reflow remain optimization targets. The PSS samples do not establish a general
+memory improvement. The bundle also includes the intervening status ordering and
+browser-fixture fixes, so the comparison does not isolate run preparation alone.
