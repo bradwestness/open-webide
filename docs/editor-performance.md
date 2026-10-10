@@ -4127,3 +4127,37 @@ Strict optimized WASM lint, formatting and Python compilation also pass. The
 previous two-contract Linux check is retained as
 [focused offset evidence](editor-performance/partial-coverage-offset-linux.jsonl).
 A successful new full CI run remains required.
+
+
+### One-pass uncapped unwrapped run preparation
+
+The shared `EditorActions::prepare_paragraph_measurements_cooperatively` facade
+now prepares a fresh styled table once with the existing cooperative core iterator.
+It retains the completed table only when it fits the existing cache limit; otherwise
+it publishes the same scoped negative retention entry and passes the ephemeral
+complete table to the measurement plan. Existing negative entries still allow
+complete preparation. This removes the initial capped pass followed by a restart
+without enlarging the retained cache or changing browser geometry contracts.
+Both filesystem modes use this facade and the same DOM measurement adapter.
+
+The fresh/negative-cache regression checks one preparation, yielding before
+publication, exact comparison with the previous synchronous plan, and source,
+read, project, account and disposal cancellation. All nine shared row-preparation
+regressions pass in macOS Chrome (0.09 seconds). The both-mode component contract
+now requires exactly one complete segmentation on the first request as well as
+subsequent requests, while retaining bounded negative metadata and stale-project
+rejection. Strict optimized WASM library/test lint also passes.
+
+The raw-bindings Linux harness cannot run the mixed library artifact: module
+initialization invokes an unrelated native notification test before the WASM
+browser harness can start. That attempt is not evidence of a passing library
+partition; the supported WASM runner provides the library result above, and Linux
+verification uses the component artifact. This checkpoint makes no new latency
+or process-memory claim. Repeated over-limit requests still reconstruct an
+ephemeral full table; remaining paragraph costs and full editor gates stay open.
+
+The updated both-mode component contract passes in macOS Chrome (0.05 seconds).
+All 149 Linux editor-partition contracts also pass with the existing font-matrix
+exclusions and unchanged deadline; see
+[one-pass Linux evidence](editor-performance/one-pass-unwrapped-runs-linux.jsonl).
+Full CI for the new checkpoint remains required.

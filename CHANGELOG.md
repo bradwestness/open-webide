@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Prepare unwrapped styled paragraph runs in one cooperative pass, retaining only bounded tables and rejecting stale preparation without restarting the over-budget prefix.
+
 - Keep partial wrapped editor paint separate from complete document heights, and show proved viewport coverage at small positive scroll offsets while full geometry prepares in both workspace modes.
 
 - Resolve Linux compiler alternative symlinks inside isolated plugin builds, preserving source immutability and network isolation.

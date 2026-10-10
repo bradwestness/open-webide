@@ -182,6 +182,8 @@ fn paint_suffix_start(old: &PaintRow<'_>, new: &PaintRow<'_>) -> Option<usize> {
 const MAX_PAINT_RUN_ROWS: usize = 8;
 const MAX_RETAINED_PAINT_RUNS: usize = 16 * 1024;
 #[cfg(feature = "test-support")]
+thread_local! { static PAINT_RUN_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(feature = "test-support")]
 thread_local! { static PAINT_RUN_SEGMENT_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 #[cfg(feature = "test-support")]
 pub(super) fn take_paint_run_segment_bytes() -> usize {
@@ -1160,6 +1162,8 @@ impl EditorActions {
         style: &PaintRow<'_>,
         max_runs: usize,
     ) -> Result<Option<Arc<[usize]>>, ()> {
+        #[cfg(feature = "test-support")]
+        PAINT_RUN_PREPARATIONS.set(PAINT_RUN_PREPARATIONS.get() + 1);
         let mut preparation = openwebide_core::editor::PaintRunPreparation::new(
             style.tokens,
             body.len(),
@@ -1201,7 +1205,7 @@ impl EditorActions {
         paint: &'a EditorRowPaint,
         row: usize,
     ) -> Option<openwebide_core::editor::ParagraphMeasurementPlan<'a>> {
-        if !self.prepare_styled_paint_runs(paint, row).await {
+        if !self.row_paint_current(paint) {
             return None;
         }
         let (body, index, style) = unwrapped_paragraph_row(paint, row)?;
@@ -1210,10 +1214,22 @@ impl EditorActions {
         }
         let runs = match self.retained_styled_paint_runs(paint, row) {
             Some(Some(runs)) => runs,
-            _ => self
-                .prepare_row_runs(paint, row, body, &style, usize::MAX)
-                .await
-                .ok()??,
+            _ => {
+                // Build once even when the complete table exceeds retention.
+                // A negative cache entry limits retention, not the ephemeral plan.
+                let runs = self
+                    .prepare_row_runs(paint, row, body, &style, usize::MAX)
+                    .await
+                    .ok()??;
+                if cacheable_styled_row(paint, row).is_some() {
+                    self.retain_styled_paint_runs(
+                        paint,
+                        row,
+                        (runs.len() <= MAX_RETAINED_PAINT_RUNS).then(|| runs.clone()),
+                    );
+                }
+                runs
+            }
         };
         openwebide_core::editor::ParagraphMeasurementPlan::with_shared_run_boundaries(
             body, index, runs,
@@ -1453,69 +1469,80 @@ mod tests {
             future::Future,
             task::{Context, Poll, Waker},
         };
-        for stale in [
-            "complete", "source", "read", "project", "account", "dispose",
-        ] {
-            let owner = Owner::new();
-            let (workspace, auth, actions, paint) = owner.with(|| {
-                let auth = crate::state::auth::AuthState::new();
-                provide_context(auth);
-                let workspace = crate::state::workspace::WorkspaceState::new();
-                workspace.active_project.set(Some(1));
-                workspace.open_file.set(Some("uncapped.rs".into()));
-                let tokens = vec![
-                    Token {
-                        kind: TokenKind::Keyword,
-                        text: "word".into()
-                    };
-                    MAX_RETAINED_PAINT_RUNS + 1000
-                ];
-                let body = "word".repeat(tokens.len());
-                workspace.content.set(body.clone().into());
-                let actions = EditorActions::new(workspace);
-                let paint = actions
-                    .row_paint_snapshot(
-                        "font metrics".into(),
-                        FoldProjection::new(&body, &Default::default()),
-                        (true, Arc::new(vec![tokens.into()])),
-                        Arc::from([]),
-                        Indentation::default(),
-                        false,
-                    )
-                    .unwrap();
-                (workspace, auth, actions, paint)
-            });
-            // Publish the existing negative cache first, so the first Pending
-            // below proves that the uncapped fallback itself yields.
-            assert!(actions.prepare_styled_paint_runs(&paint, 0).await);
-            assert_eq!(actions.retained_styled_paint_runs(&paint, 0), Some(None));
-            let mut preparation =
-                Box::pin(actions.prepare_paragraph_measurements_cooperatively(&paint, 0));
-            assert!(matches!(
-                preparation
-                    .as_mut()
-                    .poll(&mut Context::from_waker(Waker::noop())),
-                Poll::Pending
-            ));
-            match stale {
-                "source" => workspace.pending_epoch.update(|epoch| *epoch += 1),
-                "read" => workspace
-                    .editor_read_revision
-                    .update(|revision| *revision += 1),
-                "project" => workspace.active_project.set(Some(2)),
-                "account" => auth.generation.update(|generation| *generation += 1),
-                "dispose" => owner.cleanup(),
-                _ => {}
-            }
-            let plan = preparation.await;
-            assert_eq!(plan.is_some(), stale == "complete");
-            if let Some(plan) = plan {
-                let expected = EditorActions::paragraph_measurements(&paint, 0).unwrap();
-                assert_eq!(plan.probe().unwrap().bytes, expected.probe().unwrap().bytes);
-                assert_eq!(plan.targets(), expected.targets());
-            }
-            if stale != "dispose" {
-                assert_eq!(actions.retained_styled_paint_runs(&paint, 0), Some(None));
+        for negative_cached in [false, true] {
+            for stale in [
+                "complete", "source", "read", "project", "account", "dispose",
+            ] {
+                let owner = Owner::new();
+                let (workspace, auth, actions, paint) = owner.with(|| {
+                    let auth = crate::state::auth::AuthState::new();
+                    provide_context(auth);
+                    let workspace = crate::state::workspace::WorkspaceState::new();
+                    workspace.active_project.set(Some(1));
+                    workspace.open_file.set(Some("uncapped.rs".into()));
+                    let tokens = vec![
+                        Token {
+                            kind: TokenKind::Keyword,
+                            text: "word".into()
+                        };
+                        MAX_RETAINED_PAINT_RUNS + 1000
+                    ];
+                    let body = "word".repeat(tokens.len());
+                    workspace.content.set(body.clone().into());
+                    let actions = EditorActions::new(workspace);
+                    let paint = actions
+                        .row_paint_snapshot(
+                            "font metrics".into(),
+                            FoldProjection::new(&body, &Default::default()),
+                            (true, Arc::new(vec![tokens.into()])),
+                            Arc::from([]),
+                            Indentation::default(),
+                            false,
+                        )
+                        .unwrap();
+                    (workspace, auth, actions, paint)
+                });
+                if negative_cached {
+                    assert!(actions.prepare_styled_paint_runs(&paint, 0).await);
+                    assert_eq!(actions.retained_styled_paint_runs(&paint, 0), Some(None));
+                }
+                PAINT_RUN_PREPARATIONS.set(0);
+                let mut preparation =
+                    Box::pin(actions.prepare_paragraph_measurements_cooperatively(&paint, 0));
+                assert!(matches!(
+                    preparation
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop())),
+                    Poll::Pending
+                ));
+                assert_eq!(PAINT_RUN_PREPARATIONS.get(), 1);
+                if !negative_cached {
+                    assert!(actions.retained_styled_paint_runs(&paint, 0).is_none());
+                }
+                match stale {
+                    "source" => workspace.pending_epoch.update(|epoch| *epoch += 1),
+                    "read" => workspace
+                        .editor_read_revision
+                        .update(|revision| *revision += 1),
+                    "project" => workspace.active_project.set(Some(2)),
+                    "account" => auth.generation.update(|generation| *generation += 1),
+                    "dispose" => owner.cleanup(),
+                    _ => {}
+                }
+                let plan = preparation.await;
+                assert_eq!(plan.is_some(), stale == "complete");
+                if let Some(plan) = plan {
+                    let expected = EditorActions::paragraph_measurements(&paint, 0).unwrap();
+                    assert_eq!(plan.probe().unwrap().bytes, expected.probe().unwrap().bytes);
+                    assert_eq!(plan.targets(), expected.targets());
+                }
+                if stale != "dispose" {
+                    assert_eq!(
+                        actions.retained_styled_paint_runs(&paint, 0),
+                        (negative_cached || stale == "complete").then_some(None),
+                    );
+                    assert_eq!(PAINT_RUN_PREPARATIONS.get(), 1);
+                }
             }
         }
     }

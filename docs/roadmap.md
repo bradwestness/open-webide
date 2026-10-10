@@ -112,7 +112,9 @@ tracks the remaining work rather than every optimization already shipped.
   shifted suffix reuse to changed long-token and plain-run boundaries; avoid repeated prefix
   segmentation for over-limit styled run tables. Eligible styled measurement paths
   now prepare run tables in yielding batches, including uncapped unwrapped
-  measurement fallback after the retained cache limit. Finish other initial
+  measurement fallback after the retained cache limit. Unwrapped preparation now
+  builds the complete table once, retaining it only within the existing cache limit;
+  it no longer restarts after a capped initial pass. Finish other initial
   run-table construction and unsupported-boundary fallbacks that still segment
   complete rows; avoid repeated over-limit fallback reconstruction.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,

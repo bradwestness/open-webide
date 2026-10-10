@@ -14408,9 +14408,9 @@ async fn unavailable_styled_runs_skip_capped_rescans_but_prepare_paragraphs_in_b
                 .is_some()
         );
         let initial = take_paint_run_segment_bytes();
-        assert!(
-            initial > complete_segment_bytes,
-            "{mode:?}: first attempt includes capped and complete tables"
+        assert_eq!(
+            initial, complete_segment_bytes,
+            "{mode:?}: fresh preparation segments the complete table exactly once"
         );
         for _ in 0..3 {
             assert!(
