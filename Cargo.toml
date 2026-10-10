@@ -8,6 +8,8 @@ members = [
     "crates/auth",
     "crates/core",
     "crates/llm",
+    "crates/plugin-sdk",
+    "crates/plugin-runtime",
     "crates/storage",
     "frontend",
     "tools/editor-bench",

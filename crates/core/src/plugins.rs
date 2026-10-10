@@ -90,6 +90,8 @@ pub struct PluginManifest {
     pub readme: Option<String>,
     pub compatibility: PluginCompatibility,
     pub contributions: PluginContributions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<RustPlugin>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +103,8 @@ pub struct PluginCompatibility {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginContributions {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<PluginTool>,
     #[serde(default, rename = "toolGroups", skip_serializing_if = "Vec::is_empty")]
     pub tool_groups: Vec<PluginToolGroup>,
     #[serde(default)]
@@ -112,6 +116,25 @@ pub struct PluginSkill {
     pub path: String,
 }
 
+/// API 3 source package. The host provides this pinned SDK and compiler.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RustPlugin {
+    pub manifest: String,
+    pub library: String,
+    #[serde(rename = "sdkVersion")]
+    pub sdk_version: String,
+    pub capabilities: Vec<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginTool {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+    pub requires_approval: bool,
+}
+
 impl PluginManifest {
     pub fn validate(&self) -> Result<(), PluginError> {
         static VERSION: LazyLock<Regex> = LazyLock::new(|| {
@@ -120,7 +143,7 @@ impl PluginManifest {
         ).expect("static SemVer pattern")
         });
         if self.schema_version != 1
-            || !matches!(self.compatibility.plugin_api, 1 | 2)
+            || !matches!(self.compatibility.plugin_api, 1..=3)
             || self
                 .schema
                 .as_deref()
@@ -161,7 +184,9 @@ impl PluginManifest {
         if let Some(readme) = &self.readme {
             package_path(readme)?;
         }
-        if (self.contributions.skills.is_empty() && self.contributions.tool_groups.is_empty())
+        if (self.contributions.skills.is_empty()
+            && self.contributions.tool_groups.is_empty()
+            && self.contributions.tools.is_empty())
             || self.contributions.skills.len() > crate::skills::MAX_SKILLS
             || self.contributions.tool_groups.len() > 4
             || self
@@ -176,6 +201,57 @@ impl PluginManifest {
             return Err(invalid(
                 "Plugins require skills or unique supported tool groups; tool groups need plugin API 2.",
             ));
+        }
+        let executable = self.executable.as_ref();
+        if executable.is_some() != (self.compatibility.plugin_api == 3)
+            || (executable.is_none() && !self.contributions.tools.is_empty())
+            || self.contributions.tools.len() > 100
+        {
+            return Err(invalid(
+                "Executable tools require a Rust plugin using API 3.",
+            ));
+        }
+        if let Some(rust) = executable
+            && (rust.manifest != "Cargo.toml"
+                || rust.sdk_version != "0.1.0"
+                || rust.library.is_empty()
+                || rust.library.len() > 64
+                || !rust
+                    .library
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                || rust.capabilities.len() > 5
+                || rust.capabilities.iter().any(|name| {
+                    !["http", "records", "jobs", "workspace", "clock"].contains(&name.as_str())
+                })
+                || rust
+                    .capabilities
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != rust.capabilities.len()
+                || self.contributions.tools.is_empty()
+                || !self.contributions.tool_groups.is_empty())
+            {
+                return Err(invalid(
+                    "Unsupported Rust SDK, capability or library declaration.",
+                ));
+            }
+        let mut names = std::collections::BTreeSet::new();
+        for tool in &self.contributions.tools {
+            if tool.name.is_empty()
+                || tool.name.len() > 64
+                || !tool
+                    .name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                || !names.insert(&tool.name)
+                || tool.description.trim().is_empty()
+                || tool.description.len() > 4096
+                || tool.parameters.get("type").and_then(|value| value.as_str()) != Some("object")
+            {
+                return Err(invalid("Invalid executable plugin tool declaration."));
+            }
         }
         let mut paths = std::collections::BTreeSet::new();
         for skill in &self.contributions.skills {
@@ -297,6 +373,18 @@ pub trait PluginHost: Send + Sync {
         files: &'a [PackageFile],
     ) -> PluginFuture<'a, ()>;
     fn host_id(&self) -> String;
+    fn compile<'a>(
+        &'a self,
+        _source: &'a PluginSource,
+        _digest: &'a str,
+        _manifest: &'a PluginManifest,
+    ) -> PluginFuture<'a, ()> {
+        Box::pin(async {
+            Err(PluginError::Host(
+                "Executable plugins are not supported on this host.".into(),
+            ))
+        })
+    }
 }
 
 /// Fetch, validate, import-check and atomically publish once, in either project mode.
@@ -313,6 +401,9 @@ pub async fn prepare_plugin(
     let manifest = validate_files(&files)?;
     let digest = package_digest(&files);
     host.publish(source, &digest, &files).await?;
+    if manifest.executable.is_some() {
+        host.compile(source, &digest, &manifest).await?;
+    }
     let prepared = PreparedPlugin {
         source: source.clone(),
         manifest,
@@ -420,6 +511,13 @@ pub fn validate_files(files: &[PackageFile]) -> Result<PluginManifest, PluginErr
                 "Skill directory names must match unique frontmatter names.",
             ));
         }
+    }
+    if manifest.executable.is_some()
+        && (!entries.contains_key("Cargo.toml") || !entries.contains_key("Cargo.lock"))
+    {
+        return Err(invalid(
+            "Rust plugins require Cargo.toml and a committed Cargo.lock.",
+        ));
     }
     Ok(manifest)
 }
@@ -684,6 +782,56 @@ mod tests {
                 Ok(())
             })
         }
+    }
+
+    #[test]
+    fn rust_plugin_contract_requires_pinned_sdk_lockfile_and_executable_tools() {
+        let mut value = serde_json::to_value(receipt().manifest).unwrap();
+        value["compatibility"]["pluginApi"] = serde_json::json!(3);
+        value.as_object_mut().unwrap().remove("readme");
+        value["contributions"] = serde_json::json!({"skills":[],"tools":[{
+            "name":"example_tool", "description":"An executable tool",
+            "parameters":{"type":"object"},"requires_approval":true
+        }]});
+        value["executable"] = serde_json::json!({"manifest":"Cargo.toml","library":"example_plugin","sdkVersion":"0.1.0","capabilities":["records"]});
+        let manifest: PluginManifest = serde_json::from_value(value.clone()).unwrap();
+        manifest.validate().unwrap();
+        let mut files = vec![PackageFile {
+            path: "plugin.json".into(),
+            content: serde_json::to_vec(&manifest).unwrap(),
+            kind: PackageFileKind::File,
+        }];
+        assert!(validate_files(&files).is_err());
+        for path in ["Cargo.toml", "Cargo.lock"] {
+            files.push(PackageFile {
+                path: path.into(),
+                content: b"placeholder".to_vec(),
+                kind: PackageFileKind::File,
+            });
+        }
+        validate_files(&files).unwrap();
+        for (field, invalid_value) in [
+            ("sdkVersion", "9.0.0"),
+            ("library", "../escape"),
+            ("manifest", "../Cargo.toml"),
+        ] {
+            let mut invalid = value.clone();
+            invalid["executable"][field] = serde_json::json!(invalid_value);
+            assert!(
+                serde_json::from_value::<PluginManifest>(invalid)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        let mut invalid = value;
+        invalid["executable"]["capabilities"] = serde_json::json!(["built_in_web"]);
+        assert!(
+            serde_json::from_value::<PluginManifest>(invalid)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]

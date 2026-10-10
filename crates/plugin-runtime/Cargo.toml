@@ -1,0 +1,19 @@
+[package]
+name = "openwebide-plugin-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile = "3"
+libc = "0.2"
+openwebide-plugin-sdk = { path = "../plugin-sdk" }
+wasmtime = { version = "38", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
+wasmtime-wasi = { version = "38", default-features = false, features = ["p2"] }
+
+[lints]
+workspace = true

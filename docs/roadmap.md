@@ -397,6 +397,19 @@ Extend agent and editor capabilities through versioned plugin packages that user
 and the agent can manage, without requiring changes to the app for each new
 capability.
 
+- Build a public Rust SDK and versioned WASM component contract for executable
+  plugins, with exported handlers and general host capability imports. Publisher
+  CI builds artifacts; releases record artifact location, checksum, pinned source
+  and host API compatibility. Validate and execute components only on bridge hosts.
+  Provide an authoring example and reusable build/validation workflow for custom
+  marketplaces.
+- Replace transitional first-party tool-group feature switches with plugin-owned
+  implementations, starting with Web, then Memory, Scheduling and Skill Authoring.
+  Require the same public SDK, interfaces and privileges as community plugins:
+  no first-party identity dispatch, built-in feature proxy or fallback. Keep host
+  primitives general and feature policy in plugin code. Verify local/remote
+  execution, cancellation, failures, disablement and updates before declaring
+  these behavior migrations complete.
 - Extend the existing skills and optional platform tool-group contributions with
   arbitrary host tool handlers and MCP servers. Add versioned tool schemas,
   runtime contracts, capability grants and dependency/configuration validation.

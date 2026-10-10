@@ -17,6 +17,13 @@ Instructions, conventions, and architectural principles for AI agents working on
 - **Required verification:** run the same behavioral contract against both adapters, including failures and fallbacks. Add regression coverage when fixing a parity bug; verify stale results cannot update another project/session or account. A feature is incomplete until both modes support it. Report any remaining gap explicitly.
 - **Review gate:** flag duplicated orchestration, mode-specific feature paths, direct calls to a remote-only API from shared UI, and inconsistent limits or error semantics. Before reporting completion or preparing a commit/PR, identify the shared implementation and thin adapters and check the affected callers and parity tests. Do not mark roadmap work complete while a mode is missing support.
 
+### First-Party Plugins Must Use the Public Extension Contract
+- First-party plugins must own their contributed behavior and use the same versioned public SDK, host APIs, artifact format and lifecycle as community plugins.
+- Do not implement a plugin by selecting a built-in feature through its identity, a tool-group flag, a privileged endpoint or a plugin-specific host handler. Do not provide built-in fallbacks for missing, disabled or failed plugin implementations.
+- Host APIs may supply general capabilities such as workspace access, namespaced persistence, HTTP, approved process execution and durable job dispatch. Feature-specific policy, orchestration and result shaping belong in the plugin. A host API that simply performs a particular plugin's feature violates this rule.
+- Bundling and default installation may differ; execution privileges and available interfaces may not. Skill-only plugins may contribute instructions/resources without executable code.
+- The current platform tool-group manifests are transitional feature switches, not completed behavior migrations. Do not claim migration complete until the plugin artifact owns the implementation and the same contract passes in local and remote modes, including disablement, failure and updates.
+
 ### Always Use the Component System for UI Elements
 - **Consistency First**: Always use unified UI component patterns and shared styling classes across the frontend. Never introduce ad-hoc, isolated button/input styles that clash with the rest of the application.
 - **Design Tokens & Theme Variables**: Rely strictly on the established CSS variables defined in `frontend/styles.css`:

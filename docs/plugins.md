@@ -117,11 +117,36 @@ Plugin API 2 adds `contributions.toolGroups`: `web`, `memory`, `scheduling` and
 `skill-authoring`. A plugin can combine these with skills or contribute a tool
 group alone with `skills: []`. These groups use the existing shared platform
 handlers and approval rules. File editing, shell execution, git, questions and
-task coordination remain core tools. The first-party Skill Authoring plugin owns
-the former built-in authoring workflow; discovery/read tools remain available.
+task coordination remain core tools. The first-party Skill Authoring plugin carries the authoring instructions; its
+tool handlers still live in the app. Discovery/read tools remain available.
 Both run adapters apply one contribution policy, and scheduled host adaptation
 preserves the selected tool set.
 
-Choosing which plugins ship installed on fresh accounts remains undecided.
-Arbitrary tool runtimes/MCP servers, dependencies, language, UI and editor
-contributions remain on the roadmap.
+These tool-group manifests are transitional feature switches, not completed
+migrations of executable behavior. The pinned default subset is Web, Project
+Memory, Scheduling and Skill Authoring; PR Review remains optional.
+
+## Executable plugin requirements
+
+First-party plugins must own their behavior and use the same public Rust SDK,
+versioned host interfaces and lifecycle as community plugins. They may use general
+host capabilities such as workspace access, namespaced persistence, HTTP,
+approved process execution and durable job dispatch. Feature-specific policy,
+orchestration and result shaping must live in the plugin; a built-in feature
+hidden behind a host API does not satisfy this requirement. There must be no
+first-party identity dispatch, privileged feature endpoint or built-in fallback
+when a plugin is missing, disabled or fails. Skill-only contributions may remain
+instructions/resources without an executable.
+
+The proposed executable path is Rust source compiled in publisher CI into a WASM
+component. A public SDK and versioned component interfaces define exported handlers
+and imported host capabilities. Releases identify the artifact, checksum, pinned
+source and required host API version. Installation validates and prepares the
+artifact on the execution host; clients never execute it. Bundled plugins may be
+installed by default but receive the same interfaces and privileges.
+
+Prove the contract by moving Web's implementation into the plugins repository,
+then migrate Memory, Scheduling and Skill Authoring. Verify the same behavior in
+local and remote modes, including cancellation, crashes, disablement and updates,
+before calling those migrations complete. Executable runtimes, SDK, MCP servers,
+dependencies, language, UI and editor contributions remain on the roadmap.
