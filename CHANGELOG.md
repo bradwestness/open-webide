@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Paint edits to parser-rejected documents while grammar analysis retries, preserving source ownership and grammar recovery. Restart unfinished wrapped geometry when syntax preparation advances, so rejected-source edits cannot stall after a worker reply.
+
 - Keep neutral editor geometry identity stable when plain fallback preparation completes, while preserving separate preparation readiness and source ownership.
 
 - Retry initial editor input binding when document preparation finishes after mounting, without restarting released geometry fallbacks.

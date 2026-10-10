@@ -993,11 +993,11 @@ impl EditorActions {
         .flatten()
     }
 
-    pub fn preparation_revision(self) {
+    pub fn preparation_revision(self) -> u64 {
         self.workspace.editor_worker_active.track();
         self.workspace.editor_fallback_active.track();
-        self.workspace.editor_preparation_revision.track();
         self.workspace.editor_fallback_paint.track();
+        self.workspace.editor_preparation_revision.get()
     }
 
     pub fn syntax_highlights(

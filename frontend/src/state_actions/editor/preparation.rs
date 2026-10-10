@@ -141,10 +141,35 @@ impl EditorActions {
             && (prepared_source
                 || (has_rows
                     && (!self.full_row_paint_ready()
-                        || self.key().is_some_and(|key| {
+                        || (self.key().is_some_and(|key| {
                             openwebide_core::highlight::language_from_path(&key.1)
                                 != openwebide_core::highlight::Language::Plain
-                        }))))
+                        }) && !self.pending_plain_after_rejection()))))
+    }
+
+    /// A rejected parser result establishes neutral paint for subsequent edits in
+    /// the same document ownership. Retry grammar analysis in the background;
+    /// never carry this policy across a read, project, account or rule change.
+    fn pending_plain_after_rejection(self) -> bool {
+        if !self.worker_syntax_pending() {
+            return false;
+        }
+        self.workspace
+            .editor_preparation
+            .with_untracked(|prepared| {
+                prepared.as_ref().is_some_and(|prepared| {
+                    let scope = &prepared.scope;
+                    prepared.status == openwebide_core::editor::SyntaxStatus::TooLarge
+                        && self.key().as_ref() == Some(&scope.key)
+                        && self.workspace.pending_epoch.get_untracked() == scope.epoch
+                        && self.workspace.editor_read_revision.get_untracked()
+                            == scope.read_revision
+                        && self.account_generation() == scope.account_generation
+                        && self.rules_untracked().indentation.tab_width() == scope.tab_width
+                        && self.workspace.editor_source_revision.get_untracked()
+                            > scope.source_revision
+                })
+            })
     }
 
     /// Initial neutral viewport paint is independent of whole-file fallback tokens.

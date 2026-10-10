@@ -177,18 +177,20 @@ tracks the remaining work rather than every optimization already shipped.
   and Linux Chrome PSS. Require actual near-1-MiB String styling through load,
   scrolling and input, plus repeated startup-scroll, initial-shaping and beginning
   edit samples. Existing multi-second results do not satisfy this gate.
-  Current production repeats cover both modes with wrapping on/off, but still show
-  157–199 ms near-byte-limit input, 707–789 ms long-line input and roughly
-  688–875 MiB peak Chrome PSS. Reduce these costs; successful rendering alone
-  does not satisfy the responsiveness/memory gate.
-  Plain-document edits now paint during pending worker analysis. Rust long-line
-  input still repeats parser work-budget exhaustion before fallback, and near-limit wrapped plain input
-  shows no material latency improvement. Remove those remaining waits while
-  preserving grammar paint coalescing, localized row reuse, file-switch
-  cancellation and bounded terminal fallback.
-  Neutral rendering now borrows immutable projection rows with a stable cache
-  identity; fallback completion remains a separate readiness condition. Verify
-  production boundary timings and memory before crediting this with lower stalls.
+  Current production repeats cover both modes with wrapping on/off: near-byte-limit
+  input takes 169–210 ms and rejected Rust long-line input 109–154 ms, with roughly
+  741–858 MiB peak Chrome PSS ([record](editor-performance/rejected-source-production.jsonl)).
+  Long-line input improves over the preceding 674–713 ms cohort, but cold startup
+  still takes 1.45–3.95 seconds; these scrolled native-window samples do not verify
+  complete source after input or clear the responsiveness/memory gate.
+  Plain documents and same-owner parser-rejected documents now paint edits during
+  pending worker analysis; grammar retries and recovery remain active. Unfinished
+  wrapped geometry restarts when syntax preparation advances. Reduce remaining
+  source, layout and memory costs while preserving grammar paint coalescing,
+  localized row reuse, cancellation and bounded terminal fallback.
+  Neutral rendering borrows immutable projection rows with a stable cache identity;
+  fallback completion remains a separate readiness condition. Verify styled-boundary
+  and beginning-edit production workloads before crediting broader improvements.
 - [ ] **Exact geometry and fallbacks:** retain complete-renderer extent/anchor/hit
   comparisons, font/feature/whitespace matrices, Unicode/caret mapping and failed-proof
   fallback contracts. Current painted coverage and exact retained caret anchors,
@@ -227,8 +229,13 @@ tracks the remaining work rather than every optimization already shipped.
   The input-readiness checkpoint `3017d5a` then passed all five CI jobs
   ([receipt](editor-performance/grouped-ci-3017d5a.json)). Neutral rendering
   identity changes pass all 173 editor browser tests with unchanged paint/probe
-  count limits ([record](editor-performance/neutral-render-identity-browser.jsonl));
-  current hosted verification, repeated reliability and the broader gates remain open.
+  count limits ([record](editor-performance/neutral-render-identity-browser.jsonl)).
+  The neutral-identity checkpoint `e2ec3f5` passed all five CI jobs
+  ([receipt](editor-performance/grouped-ci-e2ec3f5.json)). Rejected-source early
+  paint and wrapped geometry restart pass all 174 editor browser tests on two-CPU
+  Linux arm64 with unchanged readiness deadlines and paint/probe limits
+  ([record](editor-performance/rejected-source-browser.jsonl)); current hosted
+  verification, repeated reliability and the broader gates remain open.
   Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving

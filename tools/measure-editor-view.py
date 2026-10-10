@@ -211,6 +211,15 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                         inputPreviousScope: null, inputScrollTop: null, inputScrollLeft: null,
                         longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0, longTaskEvents: [], phase: "cold", probes: [], batches: [], workers: [], fonts: [], nativeEvents: [], traceTruncated: false};
                     if (__TRACE__) {
+                        editorViewMeasurement.runtimeErrors = [];
+                        const recordError = text => {
+                            if (editorViewMeasurement.runtimeErrors.length < 16)
+                                editorViewMeasurement.runtimeErrors.push(String(text).slice(0,1024));
+                            else editorViewMeasurement.traceTruncated = true;
+                        };
+                        window.addEventListener('error', event => recordError(event.message));
+                        const originalError = console.error.bind(console);
+                        console.error = (...args) => { recordError(args.map(String).join(' ')); originalError(...args); };
                         const batches = new WeakMap();
                         window.__openwebideEditorProbeTiming = (paint, phase, elapsedMs, units) => {
                             let record = batches.get(paint);
@@ -546,8 +555,34 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
         except (AssertionError, TimeoutError, RuntimeError) as error:
             observed = samples.finish() if samples else {}
             samples = None
+            diagnostics = {}
+            if trace and browser:
+                try:
+                    diagnostics = browser.call("POST", "/execute/sync", {"script": """
+                        const state=globalThis.editorViewMeasurement ?? {};
+                        const input=document.querySelector('textarea[data-editor-path]');
+                        const paint=document.querySelector('.editor-highlight-content');
+                        const extent=input?.parentElement.querySelector('.editor-scroll-extent');
+                        return {failureState:{nativeLength:input?.value.length,
+                            nativeStartsWithMarker:input?.value.startsWith('z'),
+                            inputScope:input?.dataset.editorScope,paintScope:paint?.dataset.editorScope,
+                            extentScope:extent?.dataset.editorScope,sourceHeight:extent?.dataset.sourceHeight,
+                            highlightReady:input?.parentElement.classList.contains('highlight-ready'),
+                            alerts:[...document.querySelectorAll('[role="alert"],.notice.error')].map(node=>node.textContent.slice(0,512))},
+                            layoutProbes:state.probes,preparationBatches:state.batches,workerEvents:state.workers,
+                            nativeEvents:state.nativeEvents,fontEvents:state.fonts,runtimeErrors:state.runtimeErrors,traceTruncated:state.traceTruncated};
+                    """, "args": []}, timeout=5)
+                except (OSError, ValueError, RuntimeError) as diagnostic_error:
+                    diagnostics = {"failureDiagnosticError": type(diagnostic_error).__name__}
+                try:
+                    recovered = runtime.request("GET", f"/api/projects/{project['id']}/editor-recovery")
+                    actual = base64.b64decode(recovered["state"]["files"][0]["document"]["text"]).decode()
+                    diagnostics["failureRecovery"] = {"sourceBytes": len(actual.encode()),
+                        "unchanged": actual == source, "markerDelta": actual.count("z") - source.count("z")}
+                except (OSError, ValueError, RuntimeError, KeyError, IndexError) as diagnostic_error:
+                    diagnostics["failureRecoveryError"] = type(diagnostic_error).__name__
             print(json.dumps({"case": case, "fileName": file_name, "mode": mode, "wrap": wrapped, "repetition": repetition, "sourceBytes": len(source.encode()),
-                              "failedPhase": phase, "failure": type(error).__name__, **observed}), flush=True)
+                              "failedPhase": phase, "failure": type(error).__name__, **observed, **diagnostics}), flush=True)
             raise
         finally:
             try:

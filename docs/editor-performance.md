@@ -4752,3 +4752,47 @@ after-input verification is explicitly false. They do not establish a latency or
 memory improvement and still fail the broader responsiveness gate. Repeated
 parser rejection waits, styled boundaries, beginning edits and physical PWA/input
 verification remain required.
+
+
+## Rejected-source paint and wrapped geometry restart
+
+The shared editor facade now publishes neutral edits while retrying grammar
+analysis after a typed `TooLarge` result. The prior rejection must match project,
+path, epoch, read revision, account and tab width; cancelled results and foreign
+ownership cannot enable early paint. Grammar analysis still runs and a later valid
+source recovers real highlighting. Local and remote projects use this same policy.
+
+The first candidate exposed a wrapped geometry stall: completing syntax preparation
+invalidated an unfinished measurement job, but unchanged neutral token identity
+prevented its replacement from starting. The component's in-flight batch key now
+includes the facade's preparation revision. Existing completed neutral geometry
+remains reusable, and the source/syntax ownership checks remain intact. A regression
+holds animation frames across the worker reply and proves geometry completes with
+exact complete source and native mapping in both modes.
+
+All 174 editor browser tests pass on two-CPU Linux arm64, including both font
+matrices and the new restart regression
+([record](editor-performance/rejected-source-browser.jsonl)). The literal-context
+contract now retries the optional bounded syntax query within its existing
+three-second readiness deadline; all literal/code-region and color assertions
+remain unchanged. All 128 native frontend tests, strict optimized frontend WASM
+lint, production build and four measurement-memory tests pass. Trace-only failure
+diagnostics capture bounded geometry/runtime metadata and recovery source length
+without logging document text or extending readiness deadlines.
+
+The preceding `e2ec3f5` checkpoint passed all five hosted CI jobs
+([receipt](editor-performance/grouped-ci-e2ec3f5.json)). Current hosted CI and
+repeated release/PWA, styled-boundary, beginning-edit, responsiveness and memory
+checks remain required.
+
+Sixteen fresh release samples cover near-byte-limit and 1-MiB Unicode long-line
+Rust fixtures, both modes, wrapping on/off and two repetitions per combination
+([record](editor-performance/rejected-source-production.jsonl)). Every sample
+passes the existing peak/final Chrome PSS requirement. Near-byte-limit input takes
+168.5–209.9 ms; long-line input takes 108.5–154.0 ms, compared with 674–713 ms in
+the preceding neutral-identity cohort. Peak PSS is 741–858 MiB. Startup remains
+1.45–3.95 seconds; byte-limit latency and memory show no material improvement.
+These are scrolled native-window observations, with complete-source-after-input
+verification explicitly false and no actual String styling. They do not validate
+styled boundaries, beginning edits, physical PWA/FSA permissions or the full
+responsiveness/memory gate. Measurement limits and readiness deadlines are unchanged.

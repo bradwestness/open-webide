@@ -1401,12 +1401,13 @@ fn HighlightOverlay(
     });
     let fragment_cache =
         StoredValue::new(crate::state_actions::editor::EditorFragmentCache::default());
-    let batch_key = StoredValue::new(None::<(u64, String, usize, bool)>);
+    let batch_key = StoredValue::new(None::<(u64, u64, String, usize, bool)>);
     let batch_ticket = StoredValue::new(None::<u64>);
     Effect::new(move || {
         layout_revision.track();
         actions.view_revision();
         actions.preferences();
+        let syntax_revision = actions.preparation_revision();
         // Preparation readiness can advance without changing neutral geometry.
         prepared_paint.track();
         let prepared_tokens = tokens.get();
@@ -1449,6 +1450,7 @@ fn HighlightOverlay(
         let revision = actions.view_revision();
         let key = (
             revision,
+            syntax_revision,
             metrics.clone(),
             std::sync::Arc::as_ptr(&prepared_tokens.1) as usize,
             whitespace,

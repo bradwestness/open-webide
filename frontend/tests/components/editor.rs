@@ -8256,7 +8256,15 @@ async fn literal_contexts_and_paint_preserve_heredocs_and_nested_interpolation_i
             let source = source.replace('\n', "\r\n");
             mounted.state.workspace.open_file.set(Some(path.into()));
             mounted.state.workspace.content.set(source.clone().into());
-            let structure = actions.syntax_structure(|| true).unwrap();
+            let structure = std::cell::RefCell::new(None);
+            wait_until("literal source structure", || {
+                let prepared = actions.syntax_structure(|| true);
+                let ready = prepared.is_some();
+                *structure.borrow_mut() = prepared;
+                ready
+            })
+            .await;
+            let structure = structure.into_inner().unwrap();
             assert!(
                 !structure.is_code(source.find(literal).unwrap()),
                 "{mode:?} {path}"
@@ -9598,6 +9606,64 @@ async fn parser_budget_rejection_preserves_source_and_recovers_in_both_modes() {
             SyntaxStatus::Cancelled
         );
         assert_eq!(actions.source(), source);
+        actions
+            .paste("x ", openwebide_core::editor::Selection::caret(0))
+            .unwrap();
+        let changed = format!("x {source}");
+        wait_until(
+            "rejected source edit paints before another worker reply",
+            || {
+                actions.syntax_is_pending()
+                    && !transport.pending.borrow().is_empty()
+                    && mounted
+                        .root
+                        .query_selector(".editor-source-line[data-line='1']")
+                        .unwrap()
+                        .and_then(|line| line.text_content())
+                        .is_some_and(|text| text.starts_with("x "))
+                    && mounted
+                        .element(".editor-code")
+                        .class_list()
+                        .contains("highlight-ready")
+            },
+        )
+        .await;
+        assert_eq!(actions.source(), changed);
+        assert_editor_native_source(&input, mounted.state.workspace, &changed);
+        assert!(!actions.retain_pending_paint(false, true));
+        let rejected = mounted
+            .state
+            .workspace
+            .editor_preparation
+            .get_untracked()
+            .unwrap();
+        for boundary in 0..7 {
+            let mut stale = rejected.clone();
+            match boundary {
+                0 => stale.scope.key.0 += 1,
+                1 => stale.scope.key.1 = "other.rs".into(),
+                2 => stale.scope.epoch += 1,
+                3 => stale.scope.read_revision += 1,
+                4 => stale.scope.account_generation += 1,
+                5 => stale.scope.tab_width += 1,
+                _ => stale.status = SyntaxStatus::Cancelled,
+            }
+            mounted.state.workspace.editor_preparation.set(Some(stale));
+            assert!(
+                actions.retain_pending_paint(false, true),
+                "{mode:?}: rejected neutral paint must reject stale boundary {boundary}"
+            );
+        }
+        mounted
+            .state
+            .workspace
+            .editor_preparation
+            .set(Some(rejected));
+        transport.respond(true);
+        wait_until("repeated rejection settles", || {
+            !actions.syntax_is_pending()
+        })
+        .await;
         mounted
             .state
             .workspace
@@ -9623,6 +9689,102 @@ async fn parser_budget_rejection_preserves_source_and_recovers_in_both_modes() {
                 .status,
             SyntaxStatus::Ready { .. }
         ));
+    }
+}
+
+#[wasm_bindgen_test]
+async fn rejected_wrapped_geometry_restarts_when_syntax_completes_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{SYNTAX_PROTOCOL_VERSION, Selection, SyntaxReply, SyntaxStatus},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let loaded = load_all_editor_fonts().await;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
+        let source = (0..1200)
+            .map(|row| format!("row {row} words for wrapping and reuse\n"))
+            .collect::<String>();
+        let initial = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state
+                .workspace
+                .open_file
+                .set(Some("rejected-layout.rs".into()));
+            state.workspace.content.set(initial.into());
+            state
+                .settings
+                .editor_preferences
+                .update(|preferences| preferences.word_wrap = true);
+            EditorActions::new(state.workspace).install_syntax_transport(installed);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        let reject = || {
+            let DeferredSyntaxReply { message, sender } =
+                transport.pending.borrow_mut().pop_front().unwrap();
+            let request: serde_json::Value = serde_json::from_str(&message).unwrap();
+            let reply = SyntaxReply {
+                version: SYNTAX_PROTOCOL_VERSION,
+                ticket: u32::try_from(request["ticket"].as_u64().unwrap()).unwrap(),
+                status: SyntaxStatus::TooLarge,
+                analysis: None,
+            };
+            sender
+                .send(Ok(serde_json::to_string(&reply).unwrap()))
+                .unwrap();
+        };
+        wait_until("initial rejected geometry request", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        reject();
+        wait_until("initial rejected wrapped geometry", || {
+            !actions.syntax_is_pending() && actions.measured_rows().is_some()
+        })
+        .await;
+        frame().await;
+        let frames = ResumeTasks(pause_initial_editor_frames());
+        actions.paste("changed ", Selection::caret(0)).unwrap();
+        openwebide_frontend::util::yield_task().await;
+        settle().await;
+        assert!(!transport.pending.borrow().is_empty());
+        assert!(
+            actions.row_geometry_is_pending(),
+            "{mode:?}: geometry must be in flight before the reply"
+        );
+        reject();
+        openwebide_frontend::util::yield_task().await;
+        settle().await;
+        drop(frames);
+        wait_until(
+            "wrapped geometry completes after syntax revision changes",
+            || {
+                !actions.syntax_is_pending()
+                    && actions.measured_rows().is_some()
+                    && mounted
+                        .element(".editor-code")
+                        .class_list()
+                        .contains("highlight-ready")
+            },
+        )
+        .await;
+        assert_eq!(actions.source(), format!("changed {source}"));
+        let input = mounted.element(".editor-textarea").unchecked_into();
+        assert_editor_native_source(
+            &input,
+            mounted.state.workspace,
+            &format!("changed {source}"),
+        );
+    }
+    for font in loaded {
+        removeEditorFont(&font);
     }
 }
 
