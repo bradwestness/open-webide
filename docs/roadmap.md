@@ -207,6 +207,13 @@ tracks the remaining work rather than every optimization already shipped.
   [second receipt](editor-performance/grouped-ci-121fbbb.json),
   [third receipt](editor-performance/grouped-ci-c42bc47.json)); repeated complete
   verification and the production responsiveness/memory gates remain required.
+  CI run `38051791475` at `3afca61` subsequently failed wrapped startup,
+  long wrapped cursor measurement and horizontal fragment assertions
+  ([receipt](editor-performance/grouped-ci-3afca61.json)). Its exact 50-test
+  selection passes with two CPUs on the current Linux arm64 build
+  ([record](editor-performance/ci-3afca61-group-current.jsonl)); this does not
+  prove the hosted x64 failure is fixed. Investigate the first startup failure
+  and any subsequent probe contamination before declaring CI reliable.
   Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving

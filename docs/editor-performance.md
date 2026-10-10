@@ -4685,3 +4685,13 @@ inventoried browser runs. The new browser regression checks rejection, complete
 source retention, native mapping, explicit cancellation and recovery in both modes.
 The [preceding checkpoint](editor-performance/grouped-ci-c42bc47.json) passed
 all five CI jobs; current full CI remains required.
+
+The subsequent [plain-paint CI run](editor-performance/grouped-ci-3afca61.json)
+failed wrapped startup readiness, the long wrapped cursor probe bound and a
+horizontal fragment cleanup assertion. The exact 50-test selection passes on
+the current arm64 artifact with two CPUs and unchanged deadlines
+([record](editor-performance/ci-3afca61-group-current.jsonl)). Hosted x64 failure
+remains unresolved. Check whether the first startup timeout leaves probe/state
+behind and contaminates later assertions; the local selection pass does not
+prove either cause or a fix. Current CI and reliable repeated verification remain
+required.
