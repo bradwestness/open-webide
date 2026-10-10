@@ -4372,7 +4372,10 @@ in 99.38/33.65/37.00 seconds, font matrices pass in 22.06/14.97 seconds, and 16
 editor unit tests pass in 0.18 seconds. Artifacts/script hashes, official runner
 version/checksum provenance, existing image and unchanged four-CPU/10-GiB limits
 are recorded. This verifies the actual grouping/runner; full CI with the new
-grouping remains required.
+grouping subsequently passed all five jobs at `2eab2c2`. The
+[complete CI receipt](editor-performance/grouped-ci-2eab2c2.json) includes every
+planned group, both font matrices, the ordinary UI partition and browser storage
+workloads. Later implementation checkpoints still require complete verification.
 
 Fresh production cohorts compare the previous `7ea1367` frontend with the
 combined-pass frontend, four local/remote repetitions each. No host build
@@ -4415,3 +4418,23 @@ records exact source/artifact hashes, selection, limits and complete console out
 These are scoped correctness/yielding checks, not production responsiveness or
 memory measurements. Synchronous coordinate/anchor construction, other complete
 fallbacks and the full release/device gates remain unfinished.
+
+## Indexed long-cluster queries
+
+The completed visual index now retains the byte end and exact starting
+byte/UTF-16/glyph coordinates of clusters longer than 512 bytes, during its
+existing construction pass. Original paint checkpoints remain separate and
+unchanged. Anchor/interior queries skip indexed cluster interiors; caret lookahead
+stops at their known start instead of materializing the next large cluster.
+Retained-memory accounting includes the sparse metadata allocation. Initial
+coordinate construction and other whole-source preparation remain synchronous.
+
+All 257 shared editor tests pass. Combining, emoji-join and Indic clusters with
+prefix lengths around the 512-byte seams compare every glyph coordinate and
+original paint boundary with complete segmentation, including interior and EOF
+queries. Strict optimized core/frontend WASM lint passes. The same final WASM
+artifact passes all 16 editor library tests in macOS and Linux Chrome, including
+exact giant-cluster coordinate comparisons through the existing editor tests.
+[Browser evidence](editor-performance/long-cluster-query-browser.jsonl) records
+source/artifact hashes, unchanged limits and complete runner output. These scoped
+checks do not establish full production latency or memory gates.

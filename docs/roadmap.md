@@ -123,7 +123,10 @@ tracks the remaining work rather than every optimization already shipped.
   styled-run preparation now suspends inside large Unicode graphemes using
   bounded forward/context chunks, preserving the original paint boundaries;
   synchronous coordinate, glyph-anchor and complete-layout construction still
-  require bounded preparation.
+  require bounded preparation. Completed visual indexes now retain sparse long-cluster
+  boundaries so caret and paint-boundary queries skip their interiors and avoid
+  lookahead through an already indexed large grapheme; initial index construction
+  still needs cooperative preparation.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   parser context/selection-list extraction and final paint publication. Finish
@@ -188,8 +191,9 @@ tracks the remaining work rather than every optimization already shipped.
   individual assertion failure. CI now inventories current compiled artifacts and
   checks complete, disjoint groups of at most 64 editor tests, preserving the
   300-second browser deadline and separate font matrices. All 167 editor tests
-  pass in the official Linux runner; repeat full CI with the new grouping remains
-  required.
+  pass in the official Linux runner. The grouping checkpoint (`2eab2c2`) passed
+  all five CI jobs, including every browser group and both font matrices; repeat
+  full CI for subsequent implementations remains required.
   Current checkpoints and measured results are in [performance evidence](editor-performance.md).
 - [ ] **Physical Chrome/Edge PWA input:** verify real input-method commit/cancel,
   Unicode and LF/CRLF undo/redo, multiple-cursor clipboard behavior and touch input

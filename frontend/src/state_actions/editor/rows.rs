@@ -1447,6 +1447,15 @@ mod tests {
                 } else {
                     "word 文😀e\u{301} ".repeat(6000)
                 };
+                if giant {
+                    let index = openwebide_core::editor::VisualLineIndex::new(&body).unwrap();
+                    let expected = openwebide_core::editor::visual_line_offsets(&body).unwrap();
+                    for (glyph, &(byte, native)) in expected.iter().enumerate() {
+                        assert_eq!(index.at(&body, glyph), Some((byte, native)));
+                        assert_eq!(index.index_at_byte(&body, byte), Some(glyph));
+                    }
+                    assert_eq!(index.index_at_byte(&body, body.len() / 2), Some(0));
+                }
                 let (workspace, auth, actions, paint, expected) = owner.with(|| {
                     let auth = crate::state::auth::AuthState::new();
                     provide_context(auth);
