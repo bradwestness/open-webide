@@ -534,6 +534,22 @@ impl EditorActions {
             return None;
         }
         let projection = self.projection()?;
+        if row == 0
+            && self.measured_rows().is_none()
+            && let Some(coverage) = self.paragraph_coverage()
+        {
+            let window = openwebide_core::editor::wrapped_paint_window(
+                projection.lines().get(row)?.source.len(),
+                coverage.coverage.covered_height(),
+                line_height,
+                scroll,
+                viewport_height,
+            )?;
+            coverage.coverage.source_interval(
+                window.rows.start as f64 * line_height..window.rows.end as f64 * line_height,
+            )?;
+            return Some(window);
+        }
         let rows = self
             .measured_rows()
             .map(|measured| measured.rows)
@@ -921,7 +937,20 @@ impl EditorActions {
         {
             return None;
         }
-        let at = cache.geometry.iter().position(|(index, _)| *index == row)?;
+        let Some(at) = cache.geometry.iter().position(|(index, _)| *index == row) else {
+            let coverage = self.paragraph_coverage()?;
+            if row != 0
+                || !same_paint_scope(paint, &coverage.paint)
+                || !paint
+                    .projection
+                    .shares_text_version(&coverage.paint.projection)
+            {
+                return None;
+            }
+            return Some(Arc::new(
+                openwebide_core::editor::MeasuredRowGeometry::WrappedCoverage(coverage.coverage),
+            ));
+        };
         let entry = cache.geometry.remove(at)?;
         let result = entry.1.clone();
         cache.geometry.push_back(entry);
@@ -996,6 +1025,7 @@ impl EditorActions {
         if matches!(
             geometry.as_ref(),
             openwebide_core::editor::MeasuredRowGeometry::Wrapped(_)
+                | openwebide_core::editor::MeasuredRowGeometry::WrappedCoverage(_)
         ) != self.preferences().word_wrap
         {
             return None;
@@ -1237,6 +1267,17 @@ impl EditorActions {
     }
     pub fn forget_measured_row_geometry(self, cache: &mut EditorFragmentCache, row: usize) {
         cache.geometry.retain(|(index, _)| *index != row);
+        if row == 0
+            && let Some((paint, _, _)) = cache.scope.as_ref()
+            && let Some(coverage) = self.paragraph_coverage()
+            && same_paint_scope(paint, &coverage.paint)
+        {
+            self.workspace.editor_row_preparation.update(|preparation| {
+                if let Some(preparation) = preparation {
+                    preparation.paragraph_coverage = None;
+                }
+            });
+        }
     }
     pub fn retain_measured_row_geometry(
         self,
@@ -1256,12 +1297,24 @@ impl EditorActions {
         if matches!(
             geometry,
             openwebide_core::editor::MeasuredRowGeometry::Wrapped(_)
+                | openwebide_core::editor::MeasuredRowGeometry::WrappedCoverage(_)
         ) && !paint
             .projection
             .visual_line_index(row)
             .is_some_and(|index| index.source_paint_eligible())
         {
             return;
+        }
+        if !cache
+            .geometry
+            .iter()
+            .any(|(index, old)| *index == row && old.as_ref() == &geometry)
+            && let Some(line) = paint.projection.lines().get(row)
+        {
+            let source_line = line.source_line;
+            cache
+                .paint
+                .retain(|window| !window.rows.contains(&source_line));
         }
         cache.geometry.retain(|(index, _)| *index != row);
         if cache.geometry.len() == 8 {

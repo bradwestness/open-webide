@@ -9,11 +9,13 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Show exactly measured origin paint while eligible wrapped paragraphs continue preparing complete geometry. Reject uncovered carets and failed crop proofs, and refresh affected fragments when complete geometry replaces partial coverage in both workspace modes.
+
 - Retry transient Chrome/ChromeDriver setup failures up to three times in both frontend CI jobs, requiring executable browser and driver paths before testing.
 
-- Retain partial wrapped-paragraph coverage through the shared editor facade with current source, ticket, syntax, file, project, account, font and layout ownership. Reuse immutable anchors and hide coverage during composition; browser publication remains unfinished.
+- Retain partial wrapped-paragraph coverage through the shared editor facade with current source, ticket, syntax, file, project, account, font and layout ownership. Reuse immutable anchors and hide coverage during composition.
 
-- Add a shared Rust primitive for measured wrapped-paragraph coverage, rejecting uncovered rows and partial endpoint carets. Browser publication remains roadmap work.
+- Add a shared Rust primitive for measured wrapped-paragraph coverage, rejecting uncovered rows and partial endpoint carets. Publish only proved coverage while complete extents continue preparing.
 
 - Record exact changed-phase wrapped-editor proof samples in both modes; archive the diagnostic patch separately from production code and retain the outstanding responsiveness work on the roadmap.
 

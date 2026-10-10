@@ -12522,8 +12522,20 @@ async fn wrapped_fragment_scroll_and_find_preserve_source_coordinates_in_both_mo
                 .query_selector(".editor-source-line[data-paint-top]")
                 .unwrap()
                 .is_some()
+                && mounted
+                    .state
+                    .workspace
+                    .editor_rows
+                    .get_untracked()
+                    .is_some()
+                && mounted
+                    .root
+                    .query_selector("[data-source-height]")
+                    .unwrap()
+                    .is_some()
         })
         .await;
+        frame().await;
         let input: web_sys::HtmlTextAreaElement =
             mounted.element(".editor-textarea").unchecked_into();
         let height = mounted
@@ -13453,6 +13465,250 @@ fn partial_paragraph_coverage_requires_current_ownership_in_both_modes() {
                 );
             }
         }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn wrapped_origin_paint_precedes_complete_geometry_in_both_modes() {
+    #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+    export function holdPreparedWrappedContinuation(failCrop = false) {
+        const sink = window.__openwebideEditorProbeTiming;
+        const scheduler = globalThis.scheduler, yieldTask = scheduler?.yield;
+        const post = MessagePort.prototype.postMessage, rectangles = Range.prototype.getClientRects;
+        let held = false, active = true, failed = false;
+        const waiting = [];
+        window.__openwebideEditorProbeTiming = (paint, phase, elapsed, units) => {
+            if (phase === 'paragraph-geometry' && paint.parentElement?.getAttribute('data-measure-prepared') === 'true') held = true;
+            sink?.(paint, phase, elapsed, units);
+        };
+        if (yieldTask) scheduler.yield = function() {
+            if (active && held) return new Promise(resolve => waiting.push(() => yieldTask.call(this).then(resolve)));
+            return yieldTask.call(this);
+        };
+        MessagePort.prototype.postMessage = function(...args) {
+            if (active && held) { waiting.push(() => post.apply(this,args)); return; }
+            return post.apply(this,args);
+        };
+        Range.prototype.getClientRects = function(...args) {
+            const node = this.startContainer;
+            const element = node.nodeType === 1 ? node : node.parentElement;
+            if (failCrop && held && element?.closest('.editor-row-measure:not(.editor-height-measure) .editor-source-fragment')) {
+                failed = true;
+                return {length:0,item() {return null;}};
+            }
+            return rectangles.apply(this,args);
+        };
+        const restore = () => {
+            if (!active) return;
+            active = false;
+            if (yieldTask) scheduler.yield = yieldTask;
+            MessagePort.prototype.postMessage = post;
+            Range.prototype.getClientRects = rectangles;
+            if (sink === undefined) delete window.__openwebideEditorProbeTiming;
+            else window.__openwebideEditorProbeTiming = sink;
+            for (const callback of waiting) callback();
+            waiting.length = 0;
+        };
+        Object.defineProperty(restore, 'failed', {get:() => failed});
+        return restore;
+    }
+    "#)]
+    extern "C" {
+        fn holdPreparedWrappedContinuation(fail_crop: bool) -> js_sys::Function;
+    }
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::{
+        components::{bounded_wrapped_matches_complete, wrapped_coverage_matches_complete},
+        state_actions::editor::EditorActions,
+    };
+    use std::{cell::Cell, rc::Rc};
+
+    let loaded = load_all_editor_fonts().await;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for body in [
+            "word != -> ".repeat(16_000),
+            "word 文😀e\u{301} != -> café ".repeat(8_000),
+        ] {
+            let original = format!("let value = \"{body}\";");
+            let transport = Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let slot = Rc::new(Cell::new(None));
+            let capture = slot.clone();
+            let restore = holdPreparedWrappedContinuation(false);
+            let mounted = mount_test({
+                let source = original.clone();
+                move |state| {
+                    state.seed_project();
+                    state
+                        .projects
+                        .projects
+                        .update(|projects| projects[0].mode = mode);
+                    state
+                        .settings
+                        .editor_preferences
+                        .update(|preferences| preferences.word_wrap = true);
+                    state.workspace.open_file.set(Some("coverage.rs".into()));
+                    state.workspace.content.set(source.into());
+                    let actions = EditorActions::new(state.workspace);
+                    actions.install_syntax_transport(installed);
+                    capture.set(Some(actions));
+                    view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+                }
+            });
+            let actions = slot.get().unwrap();
+            for phase in 0..3 {
+                let restore = if phase == 0 {
+                    restore.clone()
+                } else {
+                    holdPreparedWrappedContinuation(phase == 2)
+                };
+                let expected = if phase == 0 {
+                    original.clone()
+                } else {
+                    "x".repeat(phase) + &original
+                };
+                if phase != 0 {
+                    actions
+                        .native_input(expected.clone(), Selection::caret(phase), "insertText", 1.0)
+                        .unwrap();
+                }
+                // Timers and real frames remain active. Hold browser task yielding
+                // after the first committed styled probe.
+                for _ in 0..300 {
+                    if !transport.pending.borrow().is_empty() {
+                        transport.respond(true);
+                    }
+                    let failed = js_sys::Reflect::get(restore.as_ref(), &"failed".into())
+                        .ok()
+                        .and_then(|value| value.as_bool())
+                        == Some(true);
+                    if (phase == 2 && failed && actions.paragraph_coverage().is_none())
+                        || (actions.paragraph_coverage().is_some()
+                            && mounted
+                                .root
+                                .query_selector(
+                                    ".editor-code.highlight-ready .editor-source-fragment",
+                                )
+                                .ok()
+                                .flatten()
+                                .is_some())
+                    {
+                        break;
+                    }
+                    openwebide_frontend::util::sleep_ms(10).await;
+                }
+                let snapshot = actions.paragraph_coverage();
+                let input = mounted
+                    .root
+                    .query_selector(".editor-textarea")
+                    .ok()
+                    .flatten()
+                    .map(JsCast::unchecked_into::<web_sys::HtmlTextAreaElement>);
+                let complete_missing = actions.measured_rows().is_none();
+                let extent_missing = mounted
+                    .root
+                    .query_selector("[data-source-height]")
+                    .ok()
+                    .flatten()
+                    .is_none();
+                let styled = mounted
+                    .root
+                    .query_selector(
+                        ".editor-code.highlight-ready .editor-source-fragment .tok-string",
+                    )
+                    .ok()
+                    .flatten()
+                    .is_some();
+                let oracle =
+                    snapshot
+                        .as_ref()
+                        .zip(input.as_ref())
+                        .is_some_and(|(snapshot, input)| {
+                            wrapped_coverage_matches_complete(input, snapshot)
+                        });
+                let current_source = actions.source();
+                let failed_proof = js_sys::Reflect::get(restore.as_ref(), &"failed".into())
+                    .ok()
+                    .and_then(|value| value.as_bool())
+                    == Some(true);
+                // Restore hooks before assertions so failures cannot strand the
+                // other mounted tests behind a held task queue.
+                restore.call0(&wasm_bindgen::JsValue::NULL).unwrap();
+                assert!(
+                    complete_missing && extent_missing,
+                    "coverage cannot publish complete extents"
+                );
+                if phase == 2 {
+                    assert!(
+                        failed_proof && snapshot.is_none(),
+                        "{mode:?}: failed crop discards partial coverage"
+                    );
+                    assert!(!styled, "failed proof cannot publish bounded String paint");
+                } else {
+                    assert!(
+                        snapshot.is_some(),
+                        "{mode:?}, phase {phase}: committed partial coverage"
+                    );
+                    assert!(
+                        styled,
+                        "{mode:?}, phase {phase}: current String paint before completion"
+                    );
+                    assert!(
+                        oracle,
+                        "{mode:?}, phase {phase}: complete-renderer anchor parity"
+                    );
+                    let snapshot = snapshot.unwrap();
+                    assert!(
+                        snapshot
+                            .coverage
+                            .caret(snapshot.coverage.glyph_end() - 1)
+                            .is_none()
+                    );
+                }
+                assert_eq!(current_source, expected);
+                wait_until("complete geometry after held origin publication", || {
+                    if !transport.pending.borrow().is_empty() {
+                        transport.respond(true);
+                    }
+                    actions.measured_rows().is_some() && !actions.native_geometry_pending()
+                })
+                .await;
+                let input = input.unwrap();
+                wait_until(
+                    "complete row paint replaces provisional cached height",
+                    || {
+                        let Some(measured) = actions.measured_rows() else {
+                            return false;
+                        };
+                        let Some(height) = measured.rows.top(1) else {
+                            return false;
+                        };
+                        mounted
+                            .root
+                            .query_selector(".editor-source-line")
+                            .ok()
+                            .flatten()
+                            .is_some_and(|row| {
+                                (row.get_bounding_client_rect().height() - height).abs() <= 0.5
+                            })
+                    },
+                )
+                .await;
+                let scope = mounted
+                    .state
+                    .workspace
+                    .editor_row_cache
+                    .get_untracked()
+                    .unwrap()
+                    .paint;
+                assert!(bounded_wrapped_matches_complete(&input, &scope, actions).await);
+                assert!(actions.paragraph_coverage().is_none());
+                assert_eq!(actions.source(), expected);
+            }
+        }
+    }
+    for font in loaded {
+        removeEditorFont(&font);
     }
 }
 

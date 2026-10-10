@@ -836,6 +836,29 @@ pub fn take_paragraph_prefix_reconciliations() -> usize {
 }
 
 #[cfg(feature = "test-support")]
+pub fn wrapped_coverage_matches_complete(
+    input: &web_sys::HtmlTextAreaElement,
+    snapshot: &crate::state::workspace::EditorParagraphCoverage,
+) -> bool {
+    let paint = &snapshot.paint;
+    let html = highlight_html(
+        &paint.tokens,
+        paint.prepared_source,
+        &paint.guides,
+        PaintRows {
+            indices: &[0],
+            projection: None,
+            source: Some(&paint.projection),
+            source_slices: &[],
+        },
+        paint.indentation,
+        paint.whitespace,
+        false,
+    );
+    super::editor_rows::check_wrapped_coverage_geometry(input, snapshot, &html).unwrap_or(false)
+}
+
+#[cfg(feature = "test-support")]
 pub async fn bounded_wrapped_matches_complete(
     input: &web_sys::HtmlTextAreaElement,
     scope: &crate::state::workspace::EditorRowPaint,
@@ -1504,6 +1527,13 @@ fn HighlightOverlay(
                 },
                 move |row, geometry| {
                     if actions.row_preparation_current(ticket) && !fragment_cache.is_disposed() {
+                        if let openwebide_core::editor::MeasuredRowGeometry::WrappedCoverage(
+                            prefix,
+                        ) = geometry
+                        {
+                            actions.retain_paragraph_coverage(ticket, &geometry_paint, row, prefix);
+                            return;
+                        }
                         fragment_cache.update_value(|cache| {
                             actions.retain_preparation_geometry(
                                 cache,
@@ -1581,6 +1611,7 @@ fn HighlightOverlay(
         !fragment_windows.with(Vec::is_empty)
             && actions.row_geometry_is_pending()
             && actions.measured_prefix().is_none()
+            && actions.paragraph_coverage().is_none()
     });
     let partial_geometry = Memo::new(move |_| {
         actions.measured_rows().is_none()
@@ -1671,7 +1702,9 @@ fn HighlightOverlay(
                 }
             });
         }
-        let html = cached.unwrap_or_else(|| {
+        let partial_paragraph =
+            actions.measured_rows().is_none() && actions.paragraph_coverage().is_some();
+        let html = cached.map(Some).unwrap_or_else(|| {
             let fragment = input.as_ref().and_then(|input| {
                 let mut result = None;
                 fragment_cache.update_value(|cache| {
@@ -1682,17 +1715,24 @@ fn HighlightOverlay(
                 result
             });
             fragment.map_or_else(
-                || render(&[]),
+                || (!partial_paragraph).then(|| render(&[])),
                 |fragment| {
                     if let Some(key) = cache_window {
                         fragment_cache.update_value(|cache| {
                             actions.retain_fragment(cache, key, fragment.clone());
                         });
                     }
-                    fragment
+                    Some(fragment)
                 },
             )
         });
+        let Some(html) = html else {
+            // A failed partial shaping proof waits for complete geometry. It
+            // cannot turn bounded preparation into synchronous full-row paint.
+            ready.set(false);
+            presentation.set(false);
+            return;
+        };
         if immediate && let Some(overlay) = node_ref.get_untracked() {
             if let Ok(Some(content)) = overlay.query_selector(".editor-highlight-content") {
                 content.set_inner_html(&html);
@@ -2510,6 +2550,22 @@ pub fn Editor(
                     f64::from(crate::viewport::editor_scroll(&input).client_height()),
                     12.0,
                 );
+            }
+            if editor_actions.scroll().top == 0.0
+                && editor_actions.scroll().left == 0.0
+                && let Some(coverage) = editor_actions.paragraph_coverage()
+                && let Some(input) = ta.get()
+                && current_editor_target(editor_actions, &input)
+                && super::editor_rows::metrics_identity(&input).as_ref()
+                    == Some(&coverage.paint.metrics)
+                && coverage.coverage.covered_height()
+                    > f64::from(crate::viewport::editor_scroll(&input).client_height()) + 24.0
+            {
+                return openwebide_core::editor::EditorViewport {
+                    rows: 0..1,
+                    top: 0.0,
+                    height: coverage.coverage.covered_height(),
+                };
             }
             let batched = projection.with(|view| {
                 openwebide_core::editor::needs_measured_batches(rows, view.text().len())

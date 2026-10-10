@@ -101,8 +101,11 @@ tracks the remaining work rather than every optimization already shipped.
   fallbacks. The shared core now exposes conservative measured coverage with
   endpoint rejection. The shared facade now retains coverage under the same
   source/style ownership policy as completed prefixes, with shared anchors and
-  composition fallback. Browser publication, independent renderer parity and
-  latency measurements remain unfinished. Extend
+  composition fallback. Eligible origin viewports now publish proved partial paint before complete
+  extents, with independent full-renderer checks, failed-proof fallback and
+  partial-to-complete cache invalidation in both modes. Production boundary
+  latency and memory measurements, nonorigin coverage and the remaining full
+  measurement costs are still unfinished. Extend
   shifted suffix reuse to changed long-token and plain-run boundaries; avoid repeated prefix
   segmentation for over-limit styled run tables. Eligible styled measurement paths
   now prepare run tables in yielding batches, including uncapped unwrapped
