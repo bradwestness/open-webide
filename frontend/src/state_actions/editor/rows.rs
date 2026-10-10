@@ -734,20 +734,26 @@ impl EditorActions {
     pub fn font_measurements_changed(self, metrics: Option<&str>) -> bool {
         // A source edit invalidates current row geometry, not the measured font
         // identity. Matching trusted notifications must preserve replay candidates.
+        let retained_font_current = |paint: &EditorRowPaint| {
+            paint.font_epoch == self.workspace.editor_font_epoch.get_untracked()
+                && Some(paint.key.clone()) == self.key()
+                && paint.epoch == self.workspace.pending_epoch.get_untracked()
+                && paint.read_revision == self.workspace.editor_read_revision.get_untracked()
+                && paint.account_generation == self.account_generation()
+                && Some(paint.metrics.as_str()) == metrics
+        };
         let retained_font = self
             .workspace
             .editor_paragraph_cache
             .with_untracked(|cache| {
-                cache.as_ref().is_some_and(|cache| {
-                    let paint = &cache.paint;
-                    paint.font_epoch == self.workspace.editor_font_epoch.get_untracked()
-                        && Some(paint.key.clone()) == self.key()
-                        && paint.epoch == self.workspace.pending_epoch.get_untracked()
-                        && paint.read_revision
-                            == self.workspace.editor_read_revision.get_untracked()
-                        && paint.account_generation == self.account_generation()
-                        && Some(paint.metrics.as_str()) == metrics
-                })
+                cache
+                    .as_ref()
+                    .is_some_and(|cache| retained_font_current(&cache.paint))
+            })
+            || self.workspace.editor_row_cache.with_untracked(|cache| {
+                cache
+                    .as_ref()
+                    .is_some_and(|cache| retained_font_current(&cache.paint))
             });
         if retained_font {
             return false;

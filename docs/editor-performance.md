@@ -3923,3 +3923,25 @@ three existing editor probe-count assertions (`measure_highlight_bursts`,
 The application code is identical to green checkpoint `aa6cdea`. Font-notification
 and preparation timing need investigation; the strict reuse-count assertions
 remain unchanged. A single green CI run has not satisfied the reliability gate.
+
+
+### Retained row font ownership
+
+Matching font notifications now consult the ordinary row replay cache as well as
+the paragraph cache through the shared `EditorActions::font_measurements_changed`
+entry point. Source edits intentionally invalidate current geometry while
+retaining replay candidates; a notification arriving before replacement
+preparation previously discarded the ordinary cache despite unchanged metrics.
+Both caches use the same file/project, pending epoch, read revision, account
+generation and font epoch ownership checks. Changed or missing metrics still
+require invalidation. The browser geometry adapter remains shared by both modes.
+
+The regression fails before this change and passes after it in macOS Chromium,
+including seven stale-scope cases in each workspace mode. Both retained-row and
+in-flight ownership contracts also pass in [Linux Chromium](editor-performance/retained-row-font-linux-contracts.jsonl).
+Strict optimized WASM library/test lint, formatting, production Trunk/PWA build
+and the existing settled-font browser contract pass. Linux reproduction of
+the three existing CI probe-count failures confirms timing remains an open
+verification issue. An attempted highlighted-token warm-up condition timed out
+and was discarded; existing performance assertions and deadlines are unchanged.
+The full editor goal and CI reliability gate remain open.

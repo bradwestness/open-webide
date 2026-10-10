@@ -19123,3 +19123,115 @@ async fn cooperative_dom_enumeration_preserves_order_and_cancels_in_both_modes()
         );
     }
 }
+
+#[wasm_bindgen_test]
+fn retained_row_font_metrics_survive_edits_and_reject_stale_scopes_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{Indentation, MeasuredRows, Selection},
+    };
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for change in 0..7 {
+            let slot = Rc::new(Cell::new(None::<EditorActions>));
+            let captured = slot.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state
+                    .workspace
+                    .open_file
+                    .set(Some("retained-font.txt".into()));
+                state.workspace.content.set("value 文😀\n".into());
+                captured.set(Some(EditorActions::new(state.workspace)));
+                view! { <div/> }
+            });
+            let actions = slot.get().unwrap();
+            actions.prepare_edit(Selection::caret(0)).unwrap();
+            let projection = actions.projection().unwrap();
+            let ticket = actions
+                .begin_row_preparation(actions.view_revision(), projection.lines().len())
+                .unwrap();
+            let metrics = "loaded face and exact CSS metrics";
+            let (paint, _) = actions
+                .prepare_row_measurements(
+                    metrics.into(),
+                    projection,
+                    (false, Arc::new(Vec::new())),
+                    Arc::from([0, 0]),
+                    Indentation::default(),
+                    false,
+                )
+                .unwrap();
+            assert!(actions.retain_row_preparation(ticket, &paint));
+            assert!(
+                actions
+                    .finish_row_preparation(
+                        ticket,
+                        paint,
+                        Ok(Some(
+                            MeasuredRows::layout([19.5, 19.5], [40.0, 0.0]).unwrap(),
+                        ))
+                    )
+                    .is_none()
+            );
+            assert!(actions.measured_rows().is_some());
+            assert!(
+                mounted
+                    .state
+                    .workspace
+                    .editor_row_cache
+                    .get_untracked()
+                    .is_some()
+            );
+            assert!(
+                mounted
+                    .state
+                    .workspace
+                    .editor_paragraph_cache
+                    .get_untracked()
+                    .is_none()
+            );
+            actions.paste("edited ", Selection::caret(0)).unwrap();
+            assert!(actions.measured_rows().is_none());
+            assert!(
+                mounted
+                    .state
+                    .workspace
+                    .editor_row_cache
+                    .get_untracked()
+                    .is_some()
+            );
+            assert!(
+                !actions.font_measurements_changed(Some(metrics)),
+                "{mode:?}: matching font notification between edit and replacement preparation must preserve row replay"
+            );
+            assert!(actions.font_measurements_changed(Some("different metrics")));
+            assert!(actions.font_measurements_changed(None));
+            let workspace = mounted.state.workspace;
+            match change {
+                0 => actions.invalidate_measured_font(),
+                1 => {
+                    workspace.begin_editor_read();
+                }
+                2 => workspace.pending_epoch.update(|epoch| *epoch += 1),
+                3 => mounted
+                    .state
+                    .auth
+                    .generation
+                    .update(|generation| *generation += 1),
+                4 => mounted.state.projects.active_project.set(Some(2)),
+                5 => workspace.open_file.set(Some("other.txt".into())),
+                _ => workspace.editor_font_epoch.update(|epoch| *epoch += 1),
+            }
+            assert!(
+                actions.font_measurements_changed(Some(metrics)),
+                "{mode:?}: stale retained font facts change={change}"
+            );
+        }
+    }
+}

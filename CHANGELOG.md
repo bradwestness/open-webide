@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Preserve retained editor row measurements across matching font notifications after an edit, while rejecting stale file, project, account, read and font scopes in both workspace modes.
+
 - Enumerate cold editor geometry text nodes cooperatively, with lazy sibling traversal, cancellation and source revalidation before measurement. Preserve exact native node ordering and UTF-16 offsets in both workspace modes.
 
 - Require every requested browser component-test filter to match a real WASM test, preventing partial contract selections from reporting success.
