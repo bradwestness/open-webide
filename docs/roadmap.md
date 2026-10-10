@@ -144,7 +144,8 @@ tracks the remaining work rather than every optimization already shipped.
   Improvements must preserve source/account/project ownership,
   pending edits, themes, supported previews, agent context and both adapter contracts.
 - [ ] **Reliable CI and release/PWA checks:** pass the complete native/WASI/WASM,
-  platform, browser and release-app checks reliably. Repeat near-limit Linux
+  platform, browser and release-app checks reliably. Validate bounded browser
+  setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving
   source and selection comparisons; verify the complete suite on CI as well.

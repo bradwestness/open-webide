@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Retry transient Chrome/ChromeDriver setup failures up to three times in both frontend CI jobs, requiring executable browser and driver paths before testing.
+
 - Retain partial wrapped-paragraph coverage through the shared editor facade with current source, ticket, syntax, file, project, account, font and layout ownership. Reuse immutable anchors and hide coverage during composition; browser publication remains unfinished.
 
 - Add a shared Rust primitive for measured wrapped-paragraph coverage, rejecting uncovered rows and partial endpoint carets. Browser publication remains roadmap work.

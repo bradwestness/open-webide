@@ -109,11 +109,8 @@ jobs:
       - name: Build frontend
         run: cd frontend && trunk build --release
 
-      - uses: browser-actions/setup-chrome@v1
+      - uses: ./.github/actions/setup-editor-browser
         id: chrome
-        with:
-          chrome-version: stable
-          install-chromedriver: true
 
       - name: Check production Rust/WASM editor worker
         env:
@@ -158,11 +155,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: browser-actions/setup-chrome@v1
+      - uses: ./.github/actions/setup-editor-browser
         id: chrome
-        with:
-          chrome-version: stable
-          install-chromedriver: true
 
       # ChromeDriver otherwise launches the runner's preinstalled Chrome, whose
       # version needn't match the driver setup-chrome installed.

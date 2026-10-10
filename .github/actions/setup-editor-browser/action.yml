@@ -1,0 +1,48 @@
+name: Set up editor browser
+description: Install matching Chrome and ChromeDriver with bounded download retries
+outputs:
+  chrome-path:
+    description: Installed Chrome executable
+    value: ${{ steps.first.outcome == 'success' && steps.first.outputs.chrome-path || steps.second.outcome == 'success' && steps.second.outputs.chrome-path || steps.third.outcome == 'success' && steps.third.outputs.chrome-path }}
+  chromedriver-path:
+    description: Matching ChromeDriver executable
+    value: ${{ steps.first.outcome == 'success' && steps.first.outputs.chromedriver-path || steps.second.outcome == 'success' && steps.second.outputs.chromedriver-path || steps.third.outcome == 'success' && steps.third.outputs.chromedriver-path }}
+runs:
+  using: composite
+  steps:
+    - uses: browser-actions/setup-chrome@v1
+      id: first
+      continue-on-error: true
+      with:
+        chrome-version: stable
+        install-chromedriver: true
+    - uses: browser-actions/setup-chrome@v1
+      id: second
+      if: steps.first.outcome == 'failure'
+      continue-on-error: true
+      with:
+        chrome-version: stable
+        install-chromedriver: true
+    - uses: browser-actions/setup-chrome@v1
+      id: third
+      if: steps.second.outcome == 'failure'
+      continue-on-error: true
+      with:
+        chrome-version: stable
+        install-chromedriver: true
+    - name: Verify matching browser installation
+      shell: bash
+      env:
+        CHROME_PATH: ${{ steps.first.outcome == 'success' && steps.first.outputs.chrome-path || steps.second.outcome == 'success' && steps.second.outputs.chrome-path || steps.third.outcome == 'success' && steps.third.outputs.chrome-path }}
+        DRIVER_PATH: ${{ steps.first.outcome == 'success' && steps.first.outputs.chromedriver-path || steps.second.outcome == 'success' && steps.second.outputs.chromedriver-path || steps.third.outcome == 'success' && steps.third.outputs.chromedriver-path }}
+      run: |
+        test -x "$CHROME_PATH"
+        test -x "$DRIVER_PATH"
+        browser_version=$("$CHROME_PATH" --version)
+        driver_version=$("$DRIVER_PATH" --version)
+        echo "$browser_version"
+        echo "$driver_version"
+        [[ "$browser_version" =~ ([0-9]+)\. ]]
+        browser_major=${BASH_REMATCH[1]}
+        [[ "$driver_version" =~ ([0-9]+)\. ]]
+        test "$browser_major" = "${BASH_REMATCH[1]}"
