@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <dir>/usr/share/fonts/truetype/dejavu</dir>
+  <cachedir>/tmp/editor-font-cache</cachedir>
+</fontconfig>

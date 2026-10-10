@@ -18906,8 +18906,9 @@ async fn measured_wrapped_prefix_reconnection_matches_complete_geometry_in_both_
             let transport = std::rc::Rc::new(DeferredSyntax::default());
             let installed = transport.clone();
             let original = format!(
-                "const VALUE: &str = \"{}antidisestablishmentarianism antidisestablishmentarianism {}\";",
-                "word 文😀e\u{301} != -> café ".repeat(550),
+                "const VALUE: &str = concat! (\"{}\", ident(\"{}antidisestablishmentarianism antidisestablishmentarianism {}\"));",
+                "word 文😀e\u{301} != -> café ".repeat(546),
+                "word 文😀e\u{301} != -> café ".repeat(3),
                 "word 文😀e\u{301} != -> café ".repeat(8000)
             );
             let source = original.clone();
@@ -18959,11 +18960,14 @@ async fn measured_wrapped_prefix_reconnection_matches_complete_geometry_in_both_
             )
             .await;
             take_paragraph_prefix_reconciliations();
-            // A prefix edit shifts the String's original run boundaries intact;
-            // varied words carry the changed phase into the measured overlap.
-            let changed = format!("z{original}");
+            // Edit immediately before the second String, preserving its original
+            // run boundaries. This exercises the incoming overlap without relying
+            // on a wrapping phase surviving 16 KiB of platform font differences.
+            let at = original.find("ident(").unwrap() + 4;
+            let mut changed = original.clone();
+            changed.insert(at, 'z');
             actions
-                .native_input(changed.clone(), Selection::caret(1), "insertText", 1.0)
+                .native_input(changed.clone(), Selection::caret(at + 1), "insertText", 1.0)
                 .unwrap();
             super::support::wait_until_with_timeout(
                 "changed measured-prefix layout",
@@ -18991,6 +18995,92 @@ async fn measured_wrapped_prefix_reconnection_matches_complete_geometry_in_both_
             reconciled > 0,
             "{mode:?}: measured prefix path must execute"
         );
+    }
+    for font in loaded {
+        removeEditorFont(&font);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn paragraph_batches_match_individual_native_ranges_and_failures_in_both_modes() {
+    use openwebide_core::{
+        WorkspaceMode,
+        editor::{EditorFont, EditorPreferences, VisualLineIndex},
+    };
+    use openwebide_frontend::components::paragraph_rectangles_match_individual;
+    let loaded = load_all_editor_fonts().await;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for font in EditorFont::ALL {
+            for (healing, ligatures) in [(false, false), (false, true), (true, false), (true, true)]
+            {
+                for wrapped in [false, true] {
+                    let preferences = EditorPreferences {
+                        font,
+                        texture_healing: healing,
+                        ligatures,
+                        ..EditorPreferences::default()
+                    };
+                    let ending = "😀 words != -> café\tאבג ".repeat(20);
+                    let source = format!("let value = \"e\u{301} 文{ending}\";");
+                    let mounted = mount_test(move |state| {
+                        state.seed_project();
+                        state
+                            .projects
+                            .projects
+                            .update(|projects| projects[0].mode = mode);
+                        view! {
+                            <style>{include_str!("../../styles.css")}</style>
+                            <div style=format!("{};font-family:var(--editor-font);font-feature-settings:var(--editor-font-features);font-variant-ligatures:var(--editor-font-ligatures);font-size:14px", preferences.font_style())>
+                                <div class="editor-source-line" style=format!("width:240px;white-space:{};tab-size:4", if wrapped { "pre-wrap" } else { "pre" })>
+                                    <span class="tok-string">"let value = \"e"</span>
+                                    <span class="tok-string">"\u{301} 文"</span>
+                                    <span class="tok-string">{ending}</span>
+                                    <span class="tok-operator">"\";"</span>
+                                </div>
+                            </div>
+                        }
+                    });
+                    let row = mounted.element(".editor-source-line");
+                    let glyphs = VisualLineIndex::new(&source).unwrap().len() - 1;
+                    let start = 50;
+                    let targets: Vec<_> = (start..start + glyphs).collect();
+                    assert!(
+                        paragraph_rectangles_match_individual(
+                            &row,
+                            &source,
+                            start,
+                            &targets,
+                            Some(targets.len())
+                        ),
+                        "{mode:?} {font:?} healing={healing} ligatures={ligatures} wrapped={wrapped}: native rectangles"
+                    );
+                    for targets in [vec![], vec![start - 1], vec![start + glyphs]] {
+                        assert!(paragraph_rectangles_match_individual(
+                            &row,
+                            &source,
+                            start,
+                            &targets,
+                            targets.is_empty().then_some(0)
+                        ));
+                    }
+                    assert!(paragraph_rectangles_match_individual(
+                        &row,
+                        "wrong source",
+                        start,
+                        &[start],
+                        None
+                    ));
+                    row.set_attribute("style", "display:none").unwrap();
+                    assert!(paragraph_rectangles_match_individual(
+                        &row,
+                        &source,
+                        start,
+                        &[start],
+                        None
+                    ));
+                }
+            }
+        }
     }
     for font in loaded {
         removeEditorFont(&font);

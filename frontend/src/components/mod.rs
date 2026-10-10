@@ -45,7 +45,9 @@ pub use editor::{
     take_paragraph_prefix_reconciliations, take_paragraph_suffix_probes, viewport_highlight_count,
 };
 #[cfg(feature = "test-support")]
-pub use editor_geometry::cooperative_geometry_matches_complete_and_cancels;
+pub use editor_geometry::{
+    cooperative_geometry_matches_complete_and_cancels, paragraph_rectangles_match_individual,
+};
 pub use file_browser::FileBrowser;
 pub use file_tree::{FileTree, SearchPane};
 pub use panel_resizer::PanelResizer;

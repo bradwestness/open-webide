@@ -838,7 +838,7 @@ pub(super) async fn check_wrapped_paragraph_geometry(
     let body = scope.projection.line_body(logical).ok_or(())?;
     let index = scope.projection.visual_line_index(logical).ok_or(())?;
     let actual = bounded.anchors(0..index.len() - 1).ok_or(())?;
-    let Some(expected) = super::editor_geometry::paragraph_rectangles(
+    let Some(expected) = super::editor_geometry::paragraph_rectangles_individual(
         &row,
         body,
         0,

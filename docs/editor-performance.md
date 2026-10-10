@@ -3785,3 +3785,57 @@ the samples. This extends proved reuse but does not resolve the principal
 near-limit beginning-edit stall or establish a latency/memory improvement. The
 remaining responsiveness, physical PWA input, folder recovery and accessibility
 gates stay open.
+
+
+### Batched native paragraph ranges and portable browser contracts
+
+The browser adapter now reads exact native Range rectangles in one call per
+paragraph probe. Rust still selects and validates source/UTF-16 endpoints,
+text-node ownership and targets, constructs the resulting geometry and controls
+fallback. The adapter returns the same first positive-height rectangle as the
+individual reads; limits, density, tolerances and cancellation are unchanged.
+The wrapped full-renderer oracle keeps independent individual native reads.
+
+The new browser contract compares exact rectangles across both modes, all five
+Monaspace families, healing/ligature profiles, wrapped/unwrapped Unicode, combining
+marks split across text nodes, tabs and bidirectional content. Empty targets,
+invalid endpoints, mismatched source and hidden rows retain their failure semantics.
+The 11-test paragraph partition, 16-test wrapped partition, strict optimized WASM
+library/test Clippy and production Trunk/PWA build pass.
+
+Checkpoint `57d4cbb` failed CI run `38013770042` solely in the positive measured-prefix
+browser test: a beginning edit did not preserve the changed wrapping phase into
+the overlap with Linux fonts. The revised fixture edits immediately before a
+nearby String boundary while preserving its original run endpoints. It retains
+the positive-path assertion and complete-geometry comparisons at all seven widths
+in both modes. It passes macOS Chrome and the same compiled WASM in Linux Chrome,
+with both [normal fonts](editor-performance/range-batch-linux-contracts.jsonl)
+and a [DejaVu-only font configuration](editor-performance/range-batch-linux-minimal-fonts.jsonl).
+These two Linux runs also pass the new range contract. Full CI for the repaired
+checkpoint remains a separate gate.
+
+For cross-host reproduction, generate web bindings from the built component-test
+WASM with `wasm-bindgen --target web --out-name tests --out-dir DIR COMPONENTS.wasm`.
+Run `python3 tools/check-editor-components-browser.py DIR FILTER [FILTER ...]`.
+The tool uses the standard wasm-bindgen test context and actual raw test exports.
+The existing Linux measurement image accepts read-only repository and binding
+mounts with `--entrypoint python3`; no second Cargo target or image is needed.
+For the reduced-font run, mount
+[component-minimal-fontconfig.xml](editor-performance/component-minimal-fontconfig.xml)
+and point `FONTCONFIG_FILE` to it. Both recorded runs select
+`measured_wrapped_prefix_reconnection_matches_complete_geometry_in_both_modes`
+and `paragraph_batches_match_individual_native_ranges_and_failures_in_both_modes`.
+
+The production candidate (`openwebide-frontend-fc98197b1f2505ae.js`, based on
+`57d4cbb`) was measured twice per adapter and edit position using the same Linux
+image, frozen backend, 4 CPUs, 10 GiB memory and 1 GiB shared memory. No builds or
+other browser checks ran during measurement. The
+[beginning traces](editor-performance/range-batch-beginning-linux.jsonl) and
+[end traces](editor-performance/range-batch-end-linux.jsonl) preserve actual
+1,048,567-byte String styling, exact source carets, complete source after input,
+547,721 × 264 extents, untruncated traces and Linux Chrome PSS.
+Beginning edits take 1081.7–1108.8 ms with the same 70 fresh probes; end edits take
+120.2–132.1 ms with two fresh probes. Range counts are unchanged. Beginning
+bounding-box/reflow time remains 764.2–784.0 ms, dominating native range reads
+at 109.1–115.8 ms. The samples do not establish a consistent overall latency or
+memory improvement. The principal reflow stall and remaining editor gates stay open.

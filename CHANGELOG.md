@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Batch exact native paragraph range reads through the browser adapter, keeping geometry policy in Rust and independent full-renderer checks. Make the measured-prefix regression fixture portable across Linux font configurations.
+
 - Reuse wrapped paragraph tails after a freshly measured incoming prefix reconnects at a complete word, preserving exact overlap and dimensions, source/style ownership, cancellation and full-layout fallback in both workspace modes.
 
 - Yield while preparing uncapped styled run tables for unwrapped paragraph measurements, preserving the complete fallback after the retained cache limit is reached and rejecting canceled editor scopes.

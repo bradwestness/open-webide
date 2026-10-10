@@ -4,7 +4,42 @@ use crate::state_actions::editor::EditorActions;
 use leptos::prelude::*;
 use openwebide_core::editor::{MAX_VISUAL_CARETS, VisualCaret, VisualLayout, VisualLineIndex};
 use std::collections::BTreeMap;
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, prelude::wasm_bindgen};
+
+// The browser adapter reads native ranges in one call. Source coordinates,
+// target selection, ownership, geometry validation and fallback stay in Rust.
+#[wasm_bindgen(inline_js = r#"
+export function paragraphRangeRectangles(range, nodes, spans) {
+    const values = new Float64Array(spans.length);
+    for (let at = 0; at < spans.length; at += 4) {
+        range.setStart(nodes[spans[at]], spans[at + 1]);
+        range.setEnd(nodes[spans[at + 2]], spans[at + 3]);
+        const rectangles = range.getClientRects();
+        let measured = null;
+        for (let i = 0; i < rectangles.length; ++i) {
+            const rectangle = rectangles.item(i);
+            if (rectangle && rectangle.height > 0) {
+                measured = rectangle;
+                break;
+            }
+        }
+        if (!measured) throw new RangeError('No text rectangle');
+        values[at] = measured.left;
+        values[at + 1] = measured.top;
+        values[at + 2] = measured.width;
+        values[at + 3] = measured.height;
+    }
+    return values;
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(catch, js_name = paragraphRangeRectangles)]
+    fn paragraph_range_rectangles(
+        range: &web_sys::Range,
+        nodes: &js_sys::Array,
+        spans: &js_sys::Uint32Array,
+    ) -> Result<js_sys::Float64Array, wasm_bindgen::JsValue>;
+}
 
 /// Range cloning omits its common ancestor. Preserve every inline paint wrapper
 /// between that ancestor and the logical row, including token color/run spans.
@@ -74,12 +109,17 @@ impl TextNodes {
         Some(Self(result))
     }
     fn position(&self, offset: u32) -> Option<(&web_sys::Node, u32)> {
+        let (index, at) = self.position_index(offset)?;
+        Some((&self.0[index].0, at))
+    }
+    fn position_index(&self, offset: u32) -> Option<(usize, u32)> {
         let index = self
             .0
-            .partition_point(|(_, start, length)| start + length <= offset);
-        let (node, start, length) = self.0.get(index).or_else(|| self.0.last())?;
+            .partition_point(|(_, start, length)| start + length <= offset)
+            .min(self.0.len().checked_sub(1)?);
+        let (_, start, length) = self.0.get(index)?;
         let at = offset.checked_sub(*start)?;
-        (at <= *length).then_some((node, at))
+        (at <= *length).then_some((index, at))
     }
 }
 
@@ -230,6 +270,64 @@ pub(super) fn paragraph_rectangles(
         return None;
     }
     let bounds = row.get_bounding_client_rect();
+    let offsets = openwebide_core::editor::visual_line_offsets(body).ok()?;
+    let nodes = TextNodes::new(row)?;
+    let mut spans = Vec::with_capacity(targets.len().checked_mul(4)?);
+    for glyph in targets {
+        let local = glyph.checked_sub(glyph_start)?;
+        let start = u32::try_from(offsets.get(local)?.1).ok()?;
+        let end = u32::try_from(offsets.get(local.checked_add(1)?)?.1).ok()?;
+        let (start_node, start_at) = nodes.position_index(start)?;
+        let (end_node, end_at) = nodes.position_index(end)?;
+        spans.extend([
+            u32::try_from(start_node).ok()?,
+            start_at,
+            u32::try_from(end_node).ok()?,
+            end_at,
+        ]);
+    }
+    let native_nodes = js_sys::Array::new();
+    for (node, _, _) in &nodes.0 {
+        native_nodes.push(node.as_ref());
+    }
+    let native_spans = js_sys::Uint32Array::from(spans.as_slice());
+    let range = document().create_range().ok()?;
+    let rectangles = paragraph_range_rectangles(&range, &native_nodes, &native_spans)
+        .ok()?
+        .to_vec();
+    if rectangles.len() != spans.len() {
+        return None;
+    }
+    let left = bounds.left();
+    let top = bounds.top();
+    Some(
+        targets
+            .iter()
+            .zip(rectangles.as_chunks::<4>().0)
+            .map(|(glyph, rect)| openwebide_core::editor::GlyphRectangle {
+                glyph: *glyph,
+                left: rect[0] - left,
+                top: rect[1] - top,
+                width: rect[2],
+                height: rect[3],
+            })
+            .collect(),
+    )
+}
+
+/// Independent per-range reads keep browser geometry oracles separate from the
+/// production batch primitive, including DOM exceptions and missing rectangles.
+#[cfg(feature = "test-support")]
+pub(super) fn paragraph_rectangles_individual(
+    row: &web_sys::Element,
+    body: &str,
+    glyph_start: usize,
+    targets: &[usize],
+) -> Option<Vec<openwebide_core::editor::GlyphRectangle>> {
+    if row.text_content()?.as_str() != body {
+        return None;
+    }
+    let bounds = row.get_bounding_client_rect();
     // Continuation probes are bounded, and their overlap targets are dense.
     // Build coordinates once instead of repeatedly segmenting each sparse
     // checkpoint's prefix; keep general viewport queries on the sparse index.
@@ -252,6 +350,19 @@ pub(super) fn paragraph_rectangles(
             })
         })
         .collect()
+}
+
+#[cfg(feature = "test-support")]
+pub fn paragraph_rectangles_match_individual(
+    row: &web_sys::Element,
+    body: &str,
+    glyph_start: usize,
+    targets: &[usize],
+    expected_count: Option<usize>,
+) -> bool {
+    let batched = paragraph_rectangles(row, body, glyph_start, targets);
+    batched.as_ref().map(Vec::len) == expected_count
+        && batched == paragraph_rectangles_individual(row, body, glyph_start, targets)
 }
 
 /// Reuse the styled logical row already laid out by the cold height probe.
