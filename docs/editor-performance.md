@@ -4881,7 +4881,9 @@ The preceding rejected-source checkpoint `43f66c9` passed all five hosted CI job
 ([receipt](editor-performance/grouped-ci-43f66c9.json)). The baseline-sharing
 checkpoint `8a5f1e3` also passed all five hosted CI jobs
 ([receipt](editor-performance/grouped-ci-8a5f1e3.json)); the current save change
-still requires its own hosted verification.
+at `dc49196` also passed all five hosted CI jobs
+([receipt](editor-performance/grouped-ci-dc49196.json)). Later implementation
+checkpoints still require their own hosted verification.
 
 All 470 native core tests, 128 native frontend tests, strict native-core lint
 (including tests) and optimized frontend WASM lint pass. Thirty selected browser
@@ -4931,3 +4933,27 @@ The core contract compares live and persisted decisions across clean/dirty state
 composition, late saved baselines, missing files and capacity rejection.
 Admission scans, persistence serialization, whole-app timing/memory and physical
 permission/input verification remain separate unfinished gates.
+
+## Prepared sources retained by recovered undo history
+
+Recovery's single undo step now retains the complete prepared saved and draft
+source allocations. It no longer clones both full files during final history
+publication. Ordinary editing transactions keep owned replacement spans; their
+source bytes are moved into history, with no new shared allocation per edit.
+History grouping, byte accounting, eviction and replacement application stay in
+the shared core engine. Both representations compare by exact text.
+
+The new core contract checks the recovered transaction's source allocation
+identity, its unchanged byte charge, later edits and independent snapshot
+undo/redo. Existing parity contracts compare prepared recovery with ordinary
+transaction restoration, including selections, folds, revision and saved state.
+All 472 native core tests, 128 native frontend tests, strict native/core and
+optimized frontend WASM lint, and all 175 editor browser tests pass
+([record](editor-performance/shared-recovery-history-browser.jsonl)). The browser
+inventory covers every editor test in six disjoint runs, including both font
+matrices, with unchanged readiness and runner deadlines.
+
+This removes the recovery-specific source copies; it is not a whole-app memory
+or latency claim. Edits can still detach a source retained by immutable history.
+Recovery payload capture/preparation copies, admission validation, full-source
+undo publication and physical-device gates remain unfinished.

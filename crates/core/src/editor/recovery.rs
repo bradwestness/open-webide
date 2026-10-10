@@ -174,8 +174,14 @@ impl DocumentRecovery {
         let after = normalize_selections(&self.text, self.selections.clone())
             .map_err(|error| error.to_string())?;
         if self.text != self.saved {
-            let forward = vec![Edit::replace(0..self.saved.len(), self.text.clone())];
-            let inverse = vec![Edit::replace(0..self.text.len(), self.saved.clone())];
+            let forward = vec![Edit {
+                range: 0..self.saved.len(),
+                text: draft.text.clone(),
+            }];
+            let inverse = vec![Edit {
+                range: 0..self.text.len(),
+                text: document.text.clone(),
+            }];
             document.text = draft.text;
             document.line_index = draft.line_index;
             document.record_transaction(forward, inverse, after, None);
@@ -224,6 +230,60 @@ fn classify_disk(text: &str, saved: &str, disk: Option<&str>) -> Result<Recovery
 #[cfg(test)]
 mod prepared_tests {
     use super::*;
+
+    #[test]
+    fn recovered_history_retains_prepared_sources_through_edits_and_snapshot_undo() {
+        let baseline = Document::for_editor("base 😀\r\n".repeat(20_000)).unwrap();
+        let draft = Document::for_editor(format!("{}tail 文\r\n", baseline.text())).unwrap();
+        let saved_source = baseline.shared_text();
+        let draft_source = draft.shared_text();
+        let recovery = DocumentRecovery {
+            text: draft.text().into(),
+            saved: baseline.text().into(),
+            selections: vec![Selection::caret(draft.text().len())],
+            collapsed: Vec::new(),
+        };
+        let mut restored = recovery.restore_prepared(baseline, draft).unwrap();
+        let transaction = restored.history[0].transactions[0].clone();
+        for (edit, expected) in [
+            (&transaction.forward[0], &draft_source),
+            (&transaction.inverse[0], &saved_source),
+        ] {
+            let super::super::HistoryText::Shared(source) = &edit.text else {
+                panic!("recovery history copied a prepared source");
+            };
+            assert!(std::sync::Arc::ptr_eq(source, expected));
+        }
+        assert_eq!(
+            restored.history_bytes,
+            saved_source.len() + draft_source.len()
+        );
+        assert!(std::sync::Arc::ptr_eq(
+            &restored.shared_text(),
+            &draft_source
+        ));
+        assert!(std::sync::Arc::ptr_eq(&restored.saved, &saved_source));
+        let mut snapshot = restored.clone();
+        restored.replace_selections("new", None).unwrap();
+        assert!(matches!(
+            restored.history[1].transactions[0].forward[0].text,
+            super::super::HistoryText::Owned(_)
+        ));
+        assert_eq!(draft_source.as_str(), recovery.text);
+        assert_eq!(saved_source.as_str(), recovery.saved);
+        assert_eq!(snapshot.text(), recovery.text);
+        assert!(restored.undo());
+        assert_eq!(restored.text(), recovery.text);
+        for document in [&mut restored, &mut snapshot] {
+            assert!(document.undo());
+            assert_eq!(document.text(), recovery.saved);
+            assert!(!document.is_dirty());
+            assert!(document.redo());
+            assert_eq!(document.text(), recovery.text);
+            assert_eq!(document.selections(), recovery.selections);
+            assert!(document.is_dirty());
+        }
+    }
 
     #[test]
     fn prepared_recovery_matches_transaction_restore_and_retains_indexes() {

@@ -241,10 +241,52 @@ impl std::error::Error for EditError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Transaction {
-    forward: Vec<Edit>,
-    inverse: Vec<Edit>,
+    forward: Vec<Edit<HistoryText>>,
+    inverse: Vec<Edit<HistoryText>>,
     before: Vec<Selection>,
     after: Vec<Selection>,
+}
+
+/// Ordinary edits own only their replacement span. Recovery can retain complete
+/// prepared sources without copying them into its single undo transaction.
+#[derive(Clone, Debug, Eq)]
+enum HistoryText {
+    Owned(String),
+    Shared(std::sync::Arc<String>),
+}
+
+impl From<String> for HistoryText {
+    fn from(text: String) -> Self {
+        Self::Owned(text)
+    }
+}
+
+impl From<std::sync::Arc<String>> for HistoryText {
+    fn from(text: std::sync::Arc<String>) -> Self {
+        Self::Shared(text)
+    }
+}
+
+impl std::ops::Deref for HistoryText {
+    type Target = str;
+    fn deref(&self) -> &str {
+        match self {
+            Self::Owned(text) => text,
+            Self::Shared(text) => text,
+        }
+    }
+}
+
+impl AsRef<str> for HistoryText {
+    fn as_ref(&self) -> &str {
+        self
+    }
+}
+
+impl PartialEq for HistoryText {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -662,13 +704,24 @@ impl Document {
     }
 
     // Editing and recovery share history limits, grouping and revision policy.
-    fn record_transaction(
+    fn record_transaction<T: Into<HistoryText>>(
         &mut self,
-        edits: Vec<Edit>,
-        inverse: Vec<Edit>,
+        edits: Vec<Edit<T>>,
+        inverse: Vec<Edit<T>>,
         after: Vec<Selection>,
         group: Option<u64>,
     ) {
+        let retain = |edits: Vec<Edit<T>>| {
+            edits
+                .into_iter()
+                .map(|edit| Edit {
+                    range: edit.range,
+                    text: edit.text.into(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let edits = retain(edits);
+        let inverse = retain(inverse);
         let bytes = edits
             .iter()
             .chain(&inverse)
@@ -823,22 +876,23 @@ fn inverse_edits(text: &str, edits: &[Edit]) -> Vec<Edit> {
     inverse
 }
 
-fn replace_indexed_text(
+fn replace_indexed_text<T: AsRef<str>>(
     text: &mut std::sync::Arc<String>,
     saved: &mut std::sync::Arc<String>,
     index: &mut std::sync::Arc<index::LineIndex>,
     folds: &mut FoldState,
     projection: &mut ProjectionCache,
-    edits: &[Edit],
+    edits: &[Edit<T>],
 ) {
     // No-op ranges must not open folds or discard unchanged row coordinates.
     let edits: Vec<_> = edits
         .iter()
         .filter_map(|edit| {
-            let change = text_change(&text[edit.range.clone()], &edit.text)?;
+            let replacement = edit.text.as_ref();
+            let change = text_change(&text[edit.range.clone()], replacement)?;
             Some(Edit {
                 range: edit.range.start + change.range.start..edit.range.start + change.range.end,
-                text: &edit.text[change.range.start..change.new_end],
+                text: &replacement[change.range.start..change.new_end],
             })
         })
         .collect();

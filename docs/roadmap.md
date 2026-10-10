@@ -150,6 +150,11 @@ tracks the remaining work rather than every optimization already shipped.
   owned read source
   ([both-adapter contracts](editor-performance/live-disk-recovery-browser.jsonl)).
   Admission scans and persistence serialization remain work.
+  Recovered undo steps now retain the prepared saved/draft sources instead of
+  duplicating both full files; ordinary typing history keeps owned replacement
+  spans ([complete editor contracts](editor-performance/shared-recovery-history-browser.jsonl)).
+  Recovery payload copies, full-source undo publication and final hydration
+  validation costs still require work.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,
   warm semantic list assembly, paint-table iteration, shifted suffix metadata,
   parser context/selection-list extraction and final paint publication. Finish
@@ -260,8 +265,9 @@ tracks the remaining work rather than every optimization already shipped.
   Immutable save payload/acknowledgement sharing additionally passes 470 native
   core tests, 128 native frontend tests and 30 selected browser checks, including
   both-adapter save ownership and recovery failures
-  ([record](editor-performance/immutable-save-source-browser.jsonl)); verify the
-  complete hosted suite for this save change.
+  ([record](editor-performance/immutable-save-source-browser.jsonl)); its
+  `dc49196` checkpoint passed all five hosted CI jobs
+  ([receipt](editor-performance/grouped-ci-dc49196.json)).
   Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving
