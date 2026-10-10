@@ -1,0 +1,153 @@
+diff --git a/crates/core/src/editor/wrapped_paragraph.rs b/crates/core/src/editor/wrapped_paragraph.rs
+index da60837..d64691d 100644
+--- a/crates/core/src/editor/wrapped_paragraph.rs
++++ b/crates/core/src/editor/wrapped_paragraph.rs
+@@ -27,6 +27,8 @@ pub struct WrappedParagraphPreparation<'a> {
+     scroll_width: f64,
+     height: Option<f64>,
+     complete: bool,
++    diagnostic_budget: usize,
++    replay_diagnostic: Option<String>,
+     #[cfg(any(test, feature = "test-support"))]
+     reconciled_prefixes: usize,
+ }
+@@ -67,6 +69,8 @@ impl<'a> WrappedParagraphPreparation<'a> {
+             scroll_width: 0.0,
+             height: None,
+             complete: false,
++            diagnostic_budget: 0,
++            replay_diagnostic: None,
+             #[cfg(any(test, feature = "test-support"))]
+             reconciled_prefixes: 0,
+         };
+@@ -481,6 +485,89 @@ impl<'a> WrappedParagraphPreparation<'a> {
+         }
+         Some(height)
+     }
++    pub fn diagnose_reconciliation(&mut self) {
++        self.diagnostic_budget = 8;
++    }
++    pub fn replay_diagnostic(&self) -> Option<&str> {
++        self.replay_diagnostic.as_deref()
++    }
++    fn prefix_diagnostic(
++        &self,
++        record: &ParagraphMeasurement,
++        rectangles: &[GlyphRectangle],
++    ) -> String {
++        let lookup = |glyph| {
++            rectangles
++                .binary_search_by_key(&glyph, |rect| rect.glyph)
++                .ok()
++                .map(|at| rectangles[at])
++        };
++        let mut zeros = 0;
++        let mut row_breaks = 0;
++        let mut words = 0;
++        let mut tails = 0;
++        let mut pairs = Vec::new();
++        for (at, expected) in self.expected.iter().enumerate().skip(1) {
++            let previous = self.expected[at - 1];
++            let Some(old) = lookup(expected.glyph) else {
++                continue;
++            };
++            let Some(old_previous) = lookup(previous.glyph) else {
++                continue;
++            };
++            if (expected.left == 0.0 || old.left == 0.0) && pairs.len() < 12 {
++                pairs.push((expected.glyph, previous, *expected, old_previous, old));
++            }
++            if expected.glyph != previous.glyph + 1 || expected.left != 0.0 || old.left != 0.0 {
++                continue;
++            }
++            zeros += 1;
++            if previous.top >= expected.top
++                || old_previous.top >= old.top
++                || previous.left + previous.width <= 0.0
++                || old_previous.left + old_previous.width <= 0.0
++                || self
++                    .expected
++                    .last()
++                    .is_none_or(|last| last.top <= expected.top)
++            {
++                continue;
++            }
++            row_breaks += 1;
++            let Some((byte, _)) = self.index.at(self.body, expected.glyph) else {
++                continue;
++            };
++            if byte
++                .checked_sub(1)
++                .and_then(|byte| self.body.as_bytes().get(byte))
++                != Some(&b' ')
++            {
++                continue;
++            }
++            words += 1;
++            let delta = expected.top - old.top;
++            if self.expected[at..].iter().all(|expected| {
++                lookup(expected.glyph).is_some_and(|old| {
++                    (old.left - expected.left).abs() <= TOLERANCE
++                        && (old.top + delta - expected.top).abs() <= TOLERANCE
++                        && (old.width - expected.width).abs() <= TOLERANCE
++                        && (old.height - expected.height).abs() <= TOLERANCE
++                })
++            }) {
++                tails += 1;
++            }
++        }
++        format!(
++            "start={} old_origin={} new_origin={} width={} overflow={:?} old_first={:?} new_first={:?} zeros={zeros} breaks={row_breaks} words={words} tails={tails} pairs={pairs:?}",
++            self.probe.bytes.start,
++            record.origin,
++            self.probe.origin,
++            record.width,
++            record.scroll_width,
++            rectangles.first(),
++            self.expected.first()
++        )
++    }
+     fn replay_record(
+         &mut self,
+         old_body: &str,
+@@ -563,6 +650,11 @@ impl<'a> WrappedParagraphPreparation<'a> {
+                 ..record.rectangles[at]
+             });
+         }
++        self.replay_diagnostic = None;
++        if self.diagnostic_budget > 0 && record.origin.to_bits() != probe.origin.to_bits() {
++            self.diagnostic_budget -= 1;
++            self.replay_diagnostic = Some(self.prefix_diagnostic(record, &rectangles));
++        }
+         let mut height = record.height;
+         #[cfg(any(test, feature = "test-support"))]
+         let mut reconciled_prefix = false;
+diff --git a/frontend/src/components/editor_rows.rs b/frontend/src/components/editor_rows.rs
+index 48a89e3..4f652bf 100644
+--- a/frontend/src/components/editor_rows.rs
++++ b/frontend/src/components/editor_rows.rs
+@@ -257,6 +257,9 @@ async fn measure_wrapped_paragraph(
+     let source_line = scope.projection.lines()[logical].source_line;
+     let body = scope.projection.line_body(logical).ok_or(())?;
+     let timing = ProbeTiming::installed();
++    if timing.is_some() {
++        plan.diagnose_reconciliation();
++    }
+     let mut probes = 0;
+     while let Some(probe) = plan.probe().cloned() {
+         if !current() {
+@@ -266,6 +269,14 @@ async fn measure_wrapped_paragraph(
+             #[cfg(feature = "test-support")]
+             let before = plan.reconciled_prefixes();
+             let reused = actions.resume_paragraph_suffix_batch(suffix, &mut plan);
++            if let (Some(timing), Some(diagnostic)) = (&timing, plan.replay_diagnostic()) {
++                timing.report(
++                    paint,
++                    &format!("wrapped-prefix-proof:{diagnostic}"),
++                    0.0,
++                    probe.bytes.start,
++                );
++            }
+             #[cfg(feature = "test-support")]
+             PREFIX_RECONCILIATIONS
+                 .set(PREFIX_RECONCILIATIONS.get() + plan.reconciled_prefixes() - before);

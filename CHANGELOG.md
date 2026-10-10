@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Record exact changed-phase wrapped-editor proof samples in both modes; archive the diagnostic patch separately from production code and retain the outstanding responsiveness work on the roadmap.
+
 - Warm editor burst measurements with the published parser result or terminal fallback through the shared syntax transport, keeping strict incremental repaint and row-reuse assertions.
 
 - Preserve retained editor row measurements across matching font notifications after an edit, while rejecting stale file, project, account, read and font scopes in both workspace modes.

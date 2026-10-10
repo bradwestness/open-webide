@@ -3980,3 +3980,47 @@ checkpoint `644ece9` passes the complete [147-test Linux editor component partit
 with CI's two existing matrix exclusions and unchanged 300-second run deadline
 (157.26 seconds). Its full CI run `38021534434` remains under observation; the
 complete editor and reliable-CI gates remain open.
+
+
+### Changed-phase word-start proof (2026-10-09)
+
+A second [diagnostic patch](editor-performance/wrapped-prefix-proof-diagnostic.patch)
+records the exact old/current glyph pairs considered by prefix reconnection,
+without changing any admission or replay rule. The bundle
+`openwebide-frontend-d2b75278f3616306.js` uses `338c7bd` plus that temporary patch.
+All five native wrapped paragraph contracts pass (0.34 s), and the diagnostic
+Trunk/PWA build passes. The patch is archived and removed from production source.
+
+The [observer script](editor-performance/wrapped-prefix-proof-measure.py) also
+compares complete probe child markup, incoming gaps, row style, font epoch,
+prepared-paint flag and computed probe CSS across nonadjacent probes. It only
+observes already requested bounds and reads markup; it does not retain or modify
+DOM. These observations include measurement overhead and are not latency wins.
+
+The [Linux samples](editor-performance/wrapped-prefix-proof-linux.jsonl) use the
+existing image, frozen backend (SHA recorded), 4 CPUs, 10 GiB memory and 1 GiB
+shared memory, with one fresh runtime/browser per mode and no concurrent builds.
+Both preserve actual 1,048,567-byte String styling, caret zero before input,
+complete source after input and 547,721-pixel height/264-pixel scroll width. Input
+paint takes 1110.8 ms locally and 1186.2 ms remotely; traces are untruncated.
+
+Each mode's eight sampled incoming-overlap proofs contains **zero shared
+source glyphs at visual-row starts**. The first probe shifts the incoming origin
+from 72.625 to 85.625 pixels. A glyph starting the current next row at zero is
+still at 195.53125 pixels on the cached first row; a cached next-row start is at
+48.359375 pixels in the current row. This rules out treating the incoming prefix
+as a small replaceable tail in these samples: the line-breaking phase remains
+different throughout the measured overlap. The observer also finds 149 distinct
+probe markup/layout identities and no within-phase or prior-phase matches in
+either mode. Nonadjacent identical-probe caching does not address this workload.
+
+The next implementation must expose exact **current viewport coverage** while
+complete paragraph extents continue preparing, rather than wait for full-row
+completion before publishing an origin viewport. Such coverage must carry current
+source/font/layout/account ownership, reject requests outside measured anchors,
+and never turn a partial height into complete source extents or synthesize a
+caret at its temporary endpoint. Nonorigin windows, composition, cancellation
+and failed native proofs must preserve complete fallback. The source-owned
+facade and shared core remain the entry points for both workspace adapters.
+Full changed-paragraph layout work, responsiveness and all remaining completion
+gates are still open.

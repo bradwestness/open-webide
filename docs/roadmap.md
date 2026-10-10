@@ -93,7 +93,12 @@ tracks the remaining work rather than every optimization already shipped.
   nonreconnecting wrapped updates: the
   near-limit beginning-edit trace matches source/run boundaries but rejects changed
   incoming wrapping phases through first-row overflow and dense overlap; the latest
-  repeated measurements still require 70 fresh probes and 1.1–1.2 seconds. Extend
+  repeated measurements still require 70 fresh probes and 1.1–1.2 seconds. New
+  exact overlap samples have no shared visual-row word starts, and nonadjacent
+  probe markup/layout identities also remain unique. Publish source-owned current
+  viewport coverage during long-row preparation without claiming complete extents
+  or fabricating a caret at a partial endpoint; retain nonorigin and failed-proof
+  fallbacks. Extend
   shifted suffix reuse to changed long-token and plain-run boundaries; avoid repeated prefix
   segmentation for over-limit styled run tables. Eligible styled measurement paths
   now prepare run tables in yielding batches, including uncapped unwrapped
