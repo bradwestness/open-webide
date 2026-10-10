@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Keep partial wrapped editor paint separate from complete document heights, and show proved viewport coverage at small positive scroll offsets while full geometry prepares in both workspace modes.
+
 - Resolve Linux compiler alternative symlinks inside isolated plugin builds, preserving source immutability and network isolation.
 
 - Add the public Rust plugin SDK and isolated host-side WASM preparation foundation, with capability and resource limits, immutable source receipts, and artifact validation. Executable tool dispatch and first-party behavior migrations remain roadmap work.

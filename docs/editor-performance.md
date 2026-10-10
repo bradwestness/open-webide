@@ -4084,3 +4084,46 @@ WASM lint passed. See [Linux results](editor-performance/partial-coverage-public
 This checkpoint does not establish production boundary latency/PSS improvements;
 those measurements and the full editor completion gates remain on the roadmap.
 CI for `3956122` completed successfully across all five jobs.
+
+
+### Partial coverage extents and positive viewport offsets
+
+Partial paragraph paint no longer advertises complete document height. The editor
+uses the same shared facade and measured coverage in both workspace modes, and
+accepts a positive scroll offset only when the complete visible viewport plus
+overscan lies within proved geometry. Completed-prefix selection and uncovered
+viewport fallback remain unchanged. The held-continuation regression covers cold
+origin, 2-pixel edit offsets and failed crop proofs at 19.5 pixels, retaining the
+independent complete-renderer, source ownership, endpoint and complete-height checks.
+
+Production Ctrl+Home leaves a 2-pixel scroll offset in this Linux browser. The old
+origin-only selector therefore delayed visible input paint until complete geometry.
+The [before-offset evidence](editor-performance/partial-coverage-milestones-before-offset-linux.jsonl)
+records first styled input paint at 1.26–1.37 seconds. Four fresh
+[after-offset repeats](editor-performance/partial-coverage-milestones-after-offset-linux.jsonl)
+(two per workspace mode) show styled viewport paint at 253–260 ms while complete
+geometry takes 1.18–1.24 seconds. All four early input paints precede complete
+extents. Cold viewport paint takes 1.57–1.62 seconds, with complete geometry at
+2.54–2.60 seconds. Peak Chrome PSS is 708,631–739,275 KiB. These are
+1,048,567-byte styled Rust paragraphs with exact beginning caret and edited-source
+verification; local-mode measurements use recovery data rather than a real granted
+folder handle. The measurement now separates visible paint from complete geometry
+and requires complete source extents for its original completion gate. Artifact
+hashes, image identity and resource limits accompany the evidence.
+
+CI run `38027092539` passed native/backend, Windows, Docker and production frontend
+jobs, including isolated Linux compiler preparation, but failed the UI partition.
+Its first failure was the new held-continuation fixture observing plain fragments
+before String styling. The waiter now requires actual String styling within the
+existing deadline; no geometry, source or fallback assertion was removed. The final
+regression passes in macOS Chrome in 2.70 seconds. Full Linux partition and new
+checkpoint CI results are tracked below. Full geometry costs, broader boundary
+workloads, physical PWA input and the complete editor goal remain open.
+
+The final compiled WASM passes all 149 Linux editor-partition contracts with the
+existing two font-matrix exclusions and unchanged 300-second deadline; see
+[final partition evidence](editor-performance/partial-coverage-final-linux.jsonl).
+Strict optimized WASM lint, formatting and Python compilation also pass. The
+previous two-contract Linux check is retained as
+[focused offset evidence](editor-performance/partial-coverage-offset-linux.jsonl).
+A successful new full CI run remains required.

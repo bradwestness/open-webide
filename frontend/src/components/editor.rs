@@ -1615,9 +1615,10 @@ fn HighlightOverlay(
     });
     let partial_geometry = Memo::new(move |_| {
         actions.measured_rows().is_none()
-            && actions.measured_prefix().is_some_and(|prefix| {
-                prefix.paint.word_wrap || !prefix.paint.projection.has_uniform_rows()
-            })
+            && (actions.paragraph_coverage().is_some()
+                || actions.measured_prefix().is_some_and(|prefix| {
+                    prefix.paint.word_wrap || !prefix.paint.projection.has_uniform_rows()
+                }))
     });
     let rendered = RwSignal::new(String::new());
     let rendered_scope = RwSignal::new(0_u64);
@@ -1758,7 +1759,10 @@ fn HighlightOverlay(
         rendered.set(html);
         presented_scope.set_value(presentation_scope.get_untracked());
         presentation.set(!viewport.get_untracked().rows.is_empty());
-        ready.set(!viewport.get_untracked().rows.is_empty() && !partial_geometry.get_untracked());
+        ready.set(
+            !viewport.get_untracked().rows.is_empty()
+                && (!partial_geometry.get_untracked() || actions.paragraph_coverage().is_some()),
+        );
         let published_generation = generation.get_value();
         // Re-align after the highlighted HTML reaches the DOM.
         leptos::leptos_dom::helpers::queue_microtask(move || {
@@ -2536,8 +2540,8 @@ pub fn Editor(
                     12.0,
                 );
             }
-            // Only origin paint is useful before complete source extents exist.
-            // Retain restored scroll requests until the complete table can place them.
+            // Completed-prefix paint is restricted to the origin until complete
+            // source extents can place restored scroll requests.
             if editor_actions.scroll().top == 0.0
                 && editor_actions.scroll().left == 0.0
                 && let Some(prefix) = editor_actions.measured_prefix()
@@ -2551,7 +2555,7 @@ pub fn Editor(
                     12.0,
                 );
             }
-            if editor_actions.scroll().top == 0.0
+            if editor_actions.scroll().top >= 0.0
                 && editor_actions.scroll().left == 0.0
                 && let Some(coverage) = editor_actions.paragraph_coverage()
                 && let Some(input) = ta.get()
@@ -2559,7 +2563,9 @@ pub fn Editor(
                 && super::editor_rows::metrics_identity(&input).as_ref()
                     == Some(&coverage.paint.metrics)
                 && coverage.coverage.covered_height()
-                    > f64::from(crate::viewport::editor_scroll(&input).client_height()) + 24.0
+                    > editor_actions.scroll().top
+                        + f64::from(crate::viewport::editor_scroll(&input).client_height())
+                        + 24.0
             {
                 return openwebide_core::editor::EditorViewport {
                     rows: 0..1,

@@ -103,9 +103,12 @@ tracks the remaining work rather than every optimization already shipped.
   source/style ownership policy as completed prefixes, with shared anchors and
   composition fallback. Eligible origin viewports now publish proved partial paint before complete
   extents, with independent full-renderer checks, failed-proof fallback and
-  partial-to-complete cache invalidation in both modes. Production boundary
-  latency and memory measurements, nonorigin coverage and the remaining full
-  measurement costs are still unfinished. Extend
+  partial-to-complete cache invalidation in both modes. Covered positive scroll
+  offsets also paint without advertising complete document heights. Four near-limit
+  beginning-edit production repeats show styled viewport paint in 253–260 ms,
+  while full geometry still takes 1.18–1.24 seconds; cold viewport paint takes
+  1.57–1.62 seconds. Broader boundary latency and memory measurements, arbitrary
+  nonorigin coverage and the remaining full measurement costs are still unfinished. Extend
   shifted suffix reuse to changed long-token and plain-run boundaries; avoid repeated prefix
   segmentation for over-limit styled run tables. Eligible styled measurement paths
   now prepare run tables in yielding batches, including uncapped unwrapped

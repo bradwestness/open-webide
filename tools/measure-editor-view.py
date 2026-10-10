@@ -9,6 +9,7 @@ than once; Linux PSS, when readable, apportions those pages across processes.
 """
 import argparse
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -121,6 +122,7 @@ class MemorySamples:
 
 
 READY = """
+    window.editorViewObservePaint?.();
     const input = document.querySelector('textarea[data-editor-path]');
     const paint = document.querySelector('.editor-highlight:not(.editor-caret-measure) .editor-highlight-content');
     const extent = input?.parentElement.querySelector('.editor-scroll-extent');
@@ -128,7 +130,8 @@ READY = """
         input.dataset.editorNativeGeneration && extent?.dataset.editorScope === input.dataset.editorScope;
     return input && paint && (input.value.length === arguments[0] || bound) &&
         paint.dataset.editorScope === input.dataset.editorScope &&
-        (getComputedStyle(input).whiteSpace !== 'pre-wrap' || Number(paint.dataset.documentHeight) > 0) &&
+        (getComputedStyle(input).whiteSpace !== 'pre-wrap' ||
+            (Number(extent?.dataset.sourceHeight) > 0 && extent.dataset.editorScope === input.dataset.editorScope)) &&
         input.parentElement.classList.contains('highlight-ready') &&
         (!arguments[1] || !!paint.querySelector('.tok-string'));
 """
@@ -184,6 +187,10 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                         return scroll && getComputedStyle(scroll).position === 'absolute' ? scroll : input;
                     };
                     window.editorViewMeasurement = {maxFrameMs: 0, inputAt: 0,
+                        coldViewportPaintMs: null, coldCompleteGeometryMs: null,
+                        inputViewportPaintMs: null, inputCompleteGeometryMs: null,
+                        coldViewportHadCompleteExtent: null, inputViewportHadCompleteExtent: null,
+                        inputPreviousScope: null, inputScrollTop: null, inputScrollLeft: null,
                         longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0, phase: "cold", probes: [], batches: [], workers: [], fonts: [], nativeEvents: [], traceTruncated: false};
                     if (__TRACE__) {
                         const batches = new WeakMap();
@@ -317,16 +324,52 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                             editorViewMeasurement.maxLongTaskMs = Math.max(editorViewMeasurement.maxLongTaskMs, entry.duration);
                         }
                     }).observe({type: 'longtask', buffered: true});
+                    window.editorViewObservePaint = () => {
+                        const input = document.querySelector('textarea[data-editor-path]');
+                        const paint = input?.parentElement.querySelector('.editor-highlight-content');
+                        const scope = input?.dataset.editorScope;
+                        if (scope && paint?.dataset.editorScope === scope &&
+                            input.parentElement.classList.contains('highlight-ready') &&
+                            (!__REQUIRE_STYLED__ || paint.querySelector('.tok-string'))) {
+                            const extent = input.parentElement.querySelector('.editor-scroll-extent');
+                            const complete = extent?.dataset.editorScope === scope &&
+                                Number(extent.dataset.sourceHeight) > 0;
+                            const measurement = editorViewMeasurement;
+                            if (measurement.phase === 'cold') {
+                                if (measurement.coldViewportPaintMs === null) {
+                                    measurement.coldViewportPaintMs = performance.now();
+                                    measurement.coldViewportHadCompleteExtent = complete;
+                                }
+                                if (complete && measurement.coldCompleteGeometryMs === null)
+                                    measurement.coldCompleteGeometryMs = performance.now();
+                            } else if (measurement.phase === 'input' && measurement.inputAt &&
+                                scope !== measurement.inputPreviousScope) {
+                                if (measurement.inputViewportPaintMs === null) {
+                                    measurement.inputViewportPaintMs = performance.now() - measurement.inputAt;
+                                    measurement.inputViewportHadCompleteExtent = complete;
+                                }
+                                if (complete && measurement.inputCompleteGeometryMs === null)
+                                    measurement.inputCompleteGeometryMs = performance.now() - measurement.inputAt;
+                            }
+                        }
+                    };
                     let last;
                     function tick(at) {
                         if (last !== undefined) editorViewMeasurement.maxFrameMs = Math.max(editorViewMeasurement.maxFrameMs, at-last);
+                        editorViewObservePaint();
                         last = at; requestAnimationFrame(tick);
                     }
                     requestAnimationFrame(tick);
                     document.addEventListener('beforeinput', event => {
-                        if (event.target.matches('textarea[data-editor-path]')) editorViewMeasurement.inputAt = performance.now();
+                        if (event.target.matches('textarea[data-editor-path]')) {
+                            editorViewMeasurement.inputAt = performance.now();
+                            editorViewMeasurement.inputPreviousScope = event.target.dataset.editorScope;
+                            const scroll = editorViewScroll(event.target);
+                            editorViewMeasurement.inputScrollTop = scroll?.scrollTop ?? null;
+                            editorViewMeasurement.inputScrollLeft = scroll?.scrollLeft ?? null;
+                        }
                     }, true);
-                """.replace("__TRACE__", json.dumps(trace))}})
+                """.replace("__TRACE__", json.dumps(trace)).replace("__REQUIRE_STYLED__", json.dumps(require_styled))}})
             started = time.monotonic()
             phase = "cold paint"
             browser.call("POST", "/url", {"url": runtime.url + "/"})
@@ -414,11 +457,14 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
             edited = browser.call("POST", "/execute/async", {"script": """
                 const done=arguments[arguments.length-1], inputPosition=arguments[0], requireStyled=arguments[1], deadline=performance.now()+10000;
                 function check() {
+                    editorViewObservePaint();
                     const input=document.querySelector('textarea[data-editor-path]');
                     const paint=document.querySelector('.editor-highlight-content');
                     if (performance.now()>deadline) return done({error:'Input paint timed out'});
                     if ((inputPosition === 'end' ? input.value.endsWith('z') : input.value.startsWith('z')) && paint.dataset.editorScope===input.dataset.editorScope &&
-                        (getComputedStyle(input).whiteSpace !== 'pre-wrap' || Number(paint.dataset.documentHeight)>0) &&
+                        (getComputedStyle(input).whiteSpace !== 'pre-wrap' ||
+                            (Number(input.parentElement.querySelector('.editor-scroll-extent')?.dataset.sourceHeight)>0 &&
+                             input.parentElement.querySelector('.editor-scroll-extent')?.dataset.editorScope===input.dataset.editorScope)) &&
                         input.parentElement.classList.contains('highlight-ready') && (!requireStyled || paint.querySelector('.tok-string')))
                         return done({inputToPaintMs:performance.now()-editorViewMeasurement.inputAt});
                     requestAnimationFrame(check);
@@ -446,6 +492,9 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                     "inputPosition": input_position, "verifiedSourceCaretBeforeInput": verified_source_caret,
                     "completeSourceAfterInputVerified": input_position in {"beginning", "end"}, "loadToPaintMs": load_ms, **snapshot, **scroll, **edited, **memory,
                     "afterInputMemory": process_memory(browser.process.pid), **sampled,
+                    **{key: tasks[key] for key in ["coldViewportPaintMs", "coldCompleteGeometryMs",
+                        "coldViewportHadCompleteExtent", "inputViewportPaintMs", "inputCompleteGeometryMs",
+                        "inputViewportHadCompleteExtent", "inputScrollTop", "inputScrollLeft"]},
                     "afterInputWasmCommittedBytes": tasks["wasmBytes"],
                     "longTasks": tasks["longTasks"], "longTaskMs": tasks["longTaskMs"],
                     "maxLongTaskMs": tasks["maxLongTaskMs"], "maxFrameIncludingInputMs": tasks["maxFrameMs"],
@@ -486,6 +535,14 @@ if __name__ == "__main__":
                       "repetitions": args.repeat,
                       "measurementImage": os.environ.get("EDITOR_VIEW_IMAGE"),
                       "inputTimingStart": "beforeinput", "inputPosition": args.input_position,
+                      "frontendWasmSha256": {
+                          path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                          for path in sorted((ROOT / "frontend/dist").glob("*.wasm"))
+                      },
+                      "backendWasmSha256": hashlib.sha256(
+                          (ROOT / "target/wasm32-wasip2/release/openwebide_backend.wasm").read_bytes()
+                      ).hexdigest(),
+                      "measurementScriptSha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                       "checkoutHead": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                       "browser": subprocess.check_output([os.environ["CHROME"], "--version"], text=True).strip() if os.environ.get("CHROME") else "WebDriver default"}), flush=True)
     for case in args.cases:

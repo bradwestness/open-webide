@@ -13572,6 +13572,23 @@ async fn wrapped_origin_paint_precedes_complete_geometry_in_both_modes() {
                         .native_input(expected.clone(), Selection::caret(phase), "insertText", 1.0)
                         .unwrap();
                 }
+                if phase != 0 {
+                    // Ctrl+Home can leave a small positive viewport offset in
+                    // production. Proved coverage must still paint that viewport.
+                    actions.request_scroll(
+                        mounted
+                            .state
+                            .projects
+                            .active_project
+                            .get_untracked()
+                            .unwrap(),
+                        "coverage.rs",
+                        actions.view_revision(),
+                        actions.account_generation(),
+                        if phase == 1 { 2.0 } else { 19.5 },
+                        0.0,
+                    );
+                }
                 // Timers and real frames remain active. Hold browser task yielding
                 // after the first committed styled probe.
                 for _ in 0..300 {
@@ -13587,7 +13604,7 @@ async fn wrapped_origin_paint_precedes_complete_geometry_in_both_modes() {
                             && mounted
                                 .root
                                 .query_selector(
-                                    ".editor-code.highlight-ready .editor-source-fragment",
+                                    ".editor-code.highlight-ready .editor-source-fragment .tok-string",
                                 )
                                 .ok()
                                 .flatten()
@@ -13608,6 +13625,12 @@ async fn wrapped_origin_paint_precedes_complete_geometry_in_both_modes() {
                 let extent_missing = mounted
                     .root
                     .query_selector("[data-source-height]")
+                    .ok()
+                    .flatten()
+                    .is_none();
+                let paint_extent_missing = mounted
+                    .root
+                    .query_selector(".editor-highlight-content[data-document-height]")
                     .ok()
                     .flatten()
                     .is_none();
@@ -13638,6 +13661,12 @@ async fn wrapped_origin_paint_precedes_complete_geometry_in_both_modes() {
                     complete_missing && extent_missing,
                     "coverage cannot publish complete extents"
                 );
+                if phase != 2 {
+                    assert!(
+                        paint_extent_missing,
+                        "partial paint cannot advertise complete height"
+                    );
+                }
                 if phase == 2 {
                     assert!(
                         failed_proof && snapshot.is_none(),
