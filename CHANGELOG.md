@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Share bounded Unicode source/context traversal between paint segmentation and resumable visual-index construction, visiting source characters once and publishing complete coordinates only. Cooperative document-loading integration remains roadmap work.
+
 - Reuse exact indexed boundaries for large Unicode graphemes during caret and paragraph-anchor queries, avoiding repeated interior/lookahead scans while preserving the original paint seams.
 
 - Suspend long-token paint segmentation between bounded Unicode chunks, including within a single large grapheme, while preserving complete run boundaries and rejecting stale editor ownership before publication.

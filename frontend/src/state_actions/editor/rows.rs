@@ -1448,7 +1448,13 @@ mod tests {
                     "word 文😀e\u{301} ".repeat(6000)
                 };
                 if giant {
-                    let index = openwebide_core::editor::VisualLineIndex::new(&body).unwrap();
+                    let mut preparation =
+                        openwebide_core::editor::VisualLinePreparation::new(&body).unwrap();
+                    assert!(!preparation.advance(1));
+                    while !preparation.advance(openwebide_core::editor::PAINT_RUN_BATCH_UNITS) {
+                        crate::util::yield_task().await;
+                    }
+                    let index = preparation.finish().unwrap();
                     let expected = openwebide_core::editor::visual_line_offsets(&body).unwrap();
                     for (glyph, &(byte, native)) in expected.iter().enumerate() {
                         assert_eq!(index.at(&body, glyph), Some((byte, native)));

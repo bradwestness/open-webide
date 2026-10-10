@@ -1,7 +1,7 @@
 //! Original styled text-run boundaries, prepared without restarting segmentation.
+use super::grapheme_scan::GraphemeScan;
 use crate::highlight::{Token, TokenKind};
 use std::{ops::Range, sync::Arc};
-use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 
 /// Maximum short-token/bounded-scan operations per cooperative preparation task.
 pub const PAINT_RUN_BATCH_UNITS: usize = 64;
@@ -64,9 +64,9 @@ impl<'a> PaintRunPreparation<'a> {
                     self.active = Some(RunScan::new(text));
                 }
                 let scan = self.active.as_mut().unwrap();
-                let before = scan.progress;
+                let before = scan.scan.progress();
                 let run = scan.advance();
-                self.scan_progress_bytes += scan.progress - before;
+                self.scan_progress_bytes += scan.scan.progress() - before;
                 if let Some(run) = run {
                     self.segmented_bytes += run.len();
                     if self.runs.len() >= self.max_runs {
@@ -117,74 +117,36 @@ impl<'a> PaintRunPreparation<'a> {
     }
 }
 
-/// A cursor sees at most 512 source bytes per chunk, including backward Unicode
-/// context. No complete grapheme must be materialized before a task can yield.
+/// Retain original paint-run seams while Unicode traversal can suspend inside
+/// an indivisible cluster. The source scanner is shared with index preparation.
 struct RunScan<'a> {
-    text: &'a str,
-    cursor: GraphemeCursor,
-    chunk: Range<usize>,
+    scan: GraphemeScan<'a>,
+    text_len: usize,
     start: usize,
-    progress: usize,
     done: bool,
 }
 impl<'a> RunScan<'a> {
     fn new(text: &'a str) -> Self {
         Self {
-            text,
-            cursor: GraphemeCursor::new(0, text.len(), true),
-            chunk: 0..text.floor_char_boundary(512.min(text.len())),
+            scan: GraphemeScan::new(text),
+            text_len: text.len(),
             start: 0,
-            progress: 0,
             done: false,
         }
     }
     fn advance(&mut self) -> Option<Range<usize>> {
-        let before = self.progress;
-        // Bound both source progress and cursor calls: a request for more input
-        // or Unicode context need not move the forward source cursor.
-        for _ in 0..512 {
-            if self.done || self.progress - before >= 512 {
-                break;
+        let mut run = None;
+        self.scan.advance(|step| {
+            if let Some(end) = step.boundary
+                && (end - self.start >= 512 || end == self.text_len)
+            {
+                run = Some(self.start..end);
+                self.start = end;
             }
-            let offset = self.cursor.cur_cursor();
-            let result = self
-                .cursor
-                .next_boundary(&self.text[self.chunk.clone()], self.chunk.start);
-            self.progress += self.cursor.cur_cursor() - offset;
-            match result {
-                Ok(Some(end)) => {
-                    if end - self.start >= 512 || end == self.text.len() {
-                        let run = self.start..end;
-                        self.start = end;
-                        self.done = end == self.text.len();
-                        return Some(run);
-                    }
-                }
-                Ok(None) => self.done = true,
-                Err(GraphemeIncomplete::NextChunk) => {
-                    // Keep the preceding scalar in the chunk. At an exact chunk
-                    // start the cursor requests regional-indicator context even
-                    // when its sequential parity is already known; supplying
-                    // that context again would count the preceding flags twice.
-                    let start = self
-                        .text
-                        .floor_char_boundary(self.chunk.end.saturating_sub(4));
-                    self.chunk = start
-                        ..self
-                            .text
-                            .floor_char_boundary((start + 512).min(self.text.len()));
-                }
-                Err(GraphemeIncomplete::PreContext(end)) => {
-                    let start = self.text.ceil_char_boundary(end.saturating_sub(512));
-                    self.cursor.provide_context(&self.text[start..end], start);
-                    self.progress += end - start;
-                }
-                Err(GraphemeIncomplete::PrevChunk | GraphemeIncomplete::InvalidOffset) => {
-                    unreachable!("forward cursor always retains its exact source chunk");
-                }
-            }
-        }
-        None
+            run.is_some()
+        });
+        self.done = self.scan.is_done();
+        run
     }
 }
 

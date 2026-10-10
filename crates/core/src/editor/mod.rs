@@ -20,6 +20,7 @@ mod pointer;
 pub use pointer::{PointerSelection, selection_scroll_delta};
 mod motion_queue;
 pub use motion_queue::{MotionQueue, MotionRequest};
+mod grapheme_scan;
 mod paint_runs;
 pub use paint_runs::{PAINT_RUN_BATCH_UNITS, PaintRunPreparation};
 mod paragraph_anchors;
@@ -33,7 +34,7 @@ pub use paragraph::{
     ParagraphReplay,
 };
 mod visual_motion;
-pub use visual_index::VisualLineIndex;
+pub use visual_index::{VisualLineIndex, VisualLinePreparation};
 mod visual_neighbors;
 pub use visual_motion::{
     MAX_VISUAL_CARETS, VisualCaret, VisualLayout, visual_caret_offsets, visual_line_offsets,

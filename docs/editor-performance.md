@@ -4376,6 +4376,9 @@ grouping subsequently passed all five jobs at `2eab2c2`. The
 [complete CI receipt](editor-performance/grouped-ci-2eab2c2.json) includes every
 planned group, both font matrices, the ordinary UI partition and browser storage
 workloads. Later implementation checkpoints still require complete verification.
+The next checkpoint, `54c814e`, also passed all five jobs with the same complete
+selection and unchanged browser limits; its [receipt](editor-performance/grouped-ci-54c814e.json)
+records the repeated execution of every group and both matrices.
 
 Fresh production cohorts compare the previous `7ea1367` frontend with the
 combined-pass frontend, four local/remote repetitions each. No host build
@@ -4438,3 +4441,24 @@ exact giant-cluster coordinate comparisons through the existing editor tests.
 [Browser evidence](editor-performance/long-cluster-query-browser.jsonl) records
 source/artifact hashes, unchanged limits and complete runner output. These scoped
 checks do not establish full production latency or memory gates.
+
+## Resumable visual-index construction
+
+Paint segmentation and visual-index construction now share the same bounded
+Unicode source/context scanner. The ordinary constructor consumes the resumable
+builder completely; cooperative callers can advance it in scan-unit budgets and
+publish only its completed index. Source visitation occurs once in forward byte
+order, including when one large cluster suspends across tasks; backward Unicode
+context does not repeat the character visitor. Paint seams, native/glyph totals,
+long-cluster metadata, tab detection and source-paint admission stay exact.
+
+All 258 shared editor tests pass, including independent complete segmentation and
+exact character-visit comparisons across budgets, Unicode context, EOF, RTL and
+CR/tab fixtures. Strict optimized core/frontend WASM lint passes. All 16 editor
+library tests pass on macOS and Linux Chrome; the giant-cluster fixture explicitly
+advances the new builder across yielding tasks before checking complete coordinates.
+[Browser evidence](editor-performance/cooperative-visual-browser.jsonl) records
+exact source/artifact hashes and complete runner output. This is preparation
+infrastructure: native/row/admission indexing, workspace-read and recovery
+integration still need cooperative construction/publication. Existing document
+calls remain synchronous, and production latency/memory gates are unfinished.
