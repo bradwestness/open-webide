@@ -177,6 +177,14 @@ tracks the remaining work rather than every optimization already shipped.
   and Linux Chrome PSS. Require actual near-1-MiB String styling through load,
   scrolling and input, plus repeated startup-scroll, initial-shaping and beginning
   edit samples. Existing multi-second results do not satisfy this gate.
+  Current production repeats cover both modes with wrapping on/off, but still show
+  157–199 ms near-byte-limit input, 707–789 ms long-line input and roughly
+  688–875 MiB peak Chrome PSS. Reduce these costs; successful rendering alone
+  does not satisfy the responsiveness/memory gate.
+  Neutral long-line paint currently waits for worker completion; avoid that wait
+  while preserving grammar paint coalescing, localized row reuse, file-switch
+  cancellation and bounded terminal fallback. An experimental retention change
+  failed those contracts and was withheld.
 - [ ] **Exact geometry and fallbacks:** retain complete-renderer extent/anchor/hit
   comparisons, font/feature/whitespace matrices, Unicode/caret mapping and failed-proof
   fallback contracts. Current painted coverage and exact retained caret anchors,
@@ -188,13 +196,15 @@ tracks the remaining work rather than every optimization already shipped.
 - [ ] **Reliable CI and release/PWA checks:** pass the complete native/WASI/WASM,
   platform, browser and release-app checks reliably.
   CI run `38045611820` failed wrapped startup readiness, highlight burst generations,
-  localized wrapped-row reuse and file-switch cancellation assertions; diagnose
-  these failures and verify the fixes in the full partition. The identical
+  localized wrapped-row reuse and file-switch cancellation assertions. The identical
   50-test group at `0bd6bbd` passes on macOS and Linux with four and two CPUs
   ([records](editor-performance/current-ci-group-browser.jsonl)). All 171 current
   editor tests, including both font matrices, also pass in the checked Linux
   runner ([record](editor-performance/current-complete-editor-browser.jsonl));
-  full current CI and repeated complete editor verification remain required.
+  `0bd6bbd` and `121fbbb` also passed all five CI jobs
+  ([first receipt](editor-performance/grouped-ci-0bd6bbd.json),
+  [second receipt](editor-performance/grouped-ci-121fbbb.json)); repeated complete
+  verification and the production responsiveness/memory gates remain required.
   Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
   Cold queued-input checks explicitly defer neighborhood paint while preserving

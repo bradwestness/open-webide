@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Keep editor process-memory measurements complete across short-lived Chrome subprocesses by retrying only incomplete memory snapshots and retaining strict PSS coverage checks.
+
 - Capture clean editor recovery snapshots without constructing unused document indexes, reusing source capacity decisions and skipping line-count scans when no folds are saved.
 
 - Keep capacity checks usable during document updates by falling back to the immutable source cache when document state is already borrowed.

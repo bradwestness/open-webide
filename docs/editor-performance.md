@@ -4568,3 +4568,42 @@ capacity failures. Existing stale disk/editor/account/cancel, hydration, permiss
 retry, save and normal/lossy read contracts remain covered without changing any
 readiness or runner deadlines. [Browser evidence](editor-performance/cooperative-review-browser.jsonl)
 records source/artifact hashes, selection inventory and complete output.
+
+## Production boundary measurements and neutral paint
+
+The release bundle at `121fbbb` was measured in isolated Linux Chromium
+154.0.8037.92, with four CPUs, 10 GiB container memory and 1 GiB shared memory.
+The frontend WASM SHA-256 is
+`0082cabf3ffcbb39e924507e66a2c230217e889e8b90a0918abfb4f69f4f6aec`;
+the backend WASM SHA-256 is
+`d6c06e54fb13fad2de610eca312726c538be8af03ecbdf10aa320b55eff02aa9`.
+[Unwrapped](editor-performance/current-production-boundaries-unwrapped.jsonl)
+and [wrapped](editor-performance/current-production-boundaries-wrapped.jsonl)
+records contain three repetitions per case and project mode, 36 samples total.
+They require complete Chrome PSS coverage and unchanged rendering deadlines.
+Local cases use database recovery fixtures and do not prove filesystem permissions.
+
+The cases contain 8,388,416 bytes, 99,999 short lines, and a 1,048,572-byte
+Unicode line. Near-byte-limit input takes 157–199 ms; long-line input takes
+707–789 ms. Peak Chrome PSS across these cases is roughly 688–875 MiB.
+The input occurs at the current scrolled native window; complete-source input
+verification is explicitly false in these measurement records. These observations
+do not complete the responsiveness/memory or physical PWA gates.
+
+The [wrapped long-line profile](editor-performance/current-production-long-line-profile.jsonl)
+shows that neutral text paint waits for a pending worker reply: input-to-paint is
+706 ms, with about 549 ms of main-thread idle time in that interval. Profiling
+adds overhead and is diagnostic evidence rather than a normal timing baseline.
+An experimental change to update neutral paint before worker completion was
+withheld: the complete browser group failed highlight coalescing, localized
+wrapped-row reuse and file-switch cancellation assertions. Removing retention
+also caused multi-second near-byte-limit input and increased process memory.
+The remaining fix must distinguish genuine neutral documents from temporary
+neutral paint for grammar-supported documents, while retaining the bounded
+terminal-fallback mapping. Existing production retention remains unchanged.
+
+Memory sampling retries an incomplete process-tree snapshot up to three times,
+without repeating editor operations. Persistent missing PSS remains a failure
+under `--require-pss`; partial process coverage is never reported as complete.
+Four deterministic sampler tests cover complete descendants, process retirement,
+persistent unreadable children and platforms without `/proc`.

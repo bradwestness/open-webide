@@ -38,6 +38,19 @@ def host_constraints():
 
 
 def process_memory(driver):
+    # Chrome can create or retire a utility process between ps and smaps reads.
+    # Retry only the snapshot, retaining None when coverage stays incomplete.
+    for attempt in range(1, 4):
+        result = process_memory_snapshot(driver)
+        result["memorySnapshotAttempts"] = attempt
+        if result["chrome_pss_kib"] is not None or not Path("/proc").is_dir():
+            return result
+        if attempt < 3:
+            time.sleep(.01)
+    return result
+
+
+def process_memory_snapshot(driver):
     records = {}
     for line in subprocess.check_output(["ps", "-axo", "pid=,ppid=,rss="], text=True).splitlines():
         pid, parent, rss = map(int, line.split())
