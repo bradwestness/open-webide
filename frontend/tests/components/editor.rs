@@ -9460,6 +9460,82 @@ async fn cooperative_worker_parser_source_comparison_preserves_warm_paint_in_bot
     }
 }
 
+#[wasm_bindgen_test]
+async fn neutral_edits_paint_before_pending_worker_reply_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::Selection};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        for wrapped in [false, true] {
+            let transport = std::rc::Rc::new(DeferredSyntax::default());
+            let installed = transport.clone();
+            let source = "文😀 words ".repeat(5000);
+            let initial = source.clone();
+            let mounted = mount_test(move |state| {
+                state.seed_project();
+                state
+                    .projects
+                    .projects
+                    .update(|projects| projects[0].mode = mode);
+                state.workspace.open_file.set(Some("neutral.txt".into()));
+                state.workspace.content.set(initial.into());
+                state
+                    .settings
+                    .editor_preferences
+                    .update(|preferences| preferences.word_wrap = wrapped);
+                EditorActions::new(state.workspace).install_syntax_transport(installed);
+                view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+            });
+            let actions = EditorActions::new(mounted.state.workspace);
+            wait_until("initial neutral worker request", || {
+                !transport.pending.borrow().is_empty()
+            })
+            .await;
+            transport.respond(true);
+            wait_until("completed neutral source paint", || {
+                let (prepared, tokens) = actions.syntax_paint();
+                !actions.syntax_is_pending()
+                    && !prepared
+                    && !tokens.is_empty()
+                    && mounted
+                        .element(".editor-code")
+                        .class_list()
+                        .contains("highlight-ready")
+            })
+            .await;
+            actions.paste("changed ", Selection::caret(0)).unwrap();
+            let expected = format!("changed {source}");
+            wait_until("changed neutral paint before worker reply", || {
+                actions.syntax_is_pending()
+                    && !transport.pending.borrow().is_empty()
+                    && mounted
+                        .root
+                        .query_selector(".editor-source-line[data-line='1']")
+                        .unwrap()
+                        .and_then(|line| line.text_content())
+                        .is_some_and(|text| text.starts_with("changed "))
+                    && mounted
+                        .element(".editor-code")
+                        .class_list()
+                        .contains("highlight-ready")
+            })
+            .await;
+            assert_eq!(actions.source(), expected);
+            let input = mounted.element(".editor-textarea").unchecked_into();
+            assert_editor_native_source(&input, mounted.state.workspace, &expected);
+            assert!(
+                mounted
+                    .root
+                    .query_selector(".tok-keyword")
+                    .unwrap()
+                    .is_none()
+            );
+            transport.respond(true);
+            wait_until("neutral analysis settles", || !actions.syntax_is_pending()).await;
+            assert_eq!(actions.source(), expected);
+        }
+    }
+}
+
 struct DeferredSyntaxReply {
     message: String,
     sender: futures::channel::oneshot::Sender<

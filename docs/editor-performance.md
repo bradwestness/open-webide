@@ -4609,3 +4609,46 @@ without repeating editor operations. Persistent missing PSS remains a failure
 under `--require-pss`; partial process coverage is never reported as complete.
 Four deterministic sampler tests cover complete descendants, process retirement,
 persistent unreadable children and platforms without `/proc`.
+
+## Pending plain-document paint
+
+The shared editor facade now allows current plain-document paint while a worker
+reply is pending. It continues to retain grammar-supported generations, including
+temporary neutral grammar paint, and keeps terminal fallback's bounded native
+mapping until complete row preparation. No local/remote feature path was added.
+A deferred-reply regression verifies source, native mapping and visible new text
+before reply publication in both project modes, wrapped and unwrapped. All 172
+editor tests pass across six independently inventoried Linux browser runs, including
+both font matrices and the coalescing, row-reuse and file-switch contracts that
+rejected the earlier experiment ([evidence](editor-performance/neutral-paint-browser.jsonl)).
+All 128 native frontend library tests and strict optimized frontend WASM lint pass.
+
+The production frontend WASM SHA-256 is
+`bb485a2f9dda9bfbcd5b18c0e86c2c08c5440dab9b89b6a601e0edf72b8f37c6`.
+The backend and container constraints match the preceding baseline. The complete
+Rust boundary matrix retains three repetitions per case/mode/wrapping setting
+([unwrapped](editor-performance/neutral-paint-rust-unwrapped.jsonl),
+[wrapped](editor-performance/neutral-paint-rust-wrapped.jsonl)); all 36 samples
+pass peak/final PSS checks and existing rendering deadlines. Rust long-line input
+still takes 714–771 ms. Near-byte-limit input takes 155–221 ms. Those costs remain
+open; this change does not complete the responsiveness/memory gate.
+
+The measurement tool's new `--file-name` option selects the actual production
+language policy without changing the source workload or default Rust fixture.
+The 1,048,572-byte Unicode line was also measured as `measure.txt`, with three
+repetitions per mode and wrapping setting for each release bundle.
+
+| Plain-file input | Baseline median / range (ms) | Current median / range (ms) |
+| --- | ---: | ---: |
+| Unwrapped | 143.2 / 140.1–146.4 | 126.0 / 123.8–150.2 |
+| Wrapped | 151.3 / 149.2–165.7 | 151.2 / 143.6–158.0 |
+
+Records: baseline [unwrapped](editor-performance/plain-neutral-before-unwrapped.jsonl)
+and [wrapped](editor-performance/plain-neutral-before-wrapped.jsonl); current
+[unwrapped](editor-performance/plain-neutral-after-unwrapped.jsonl) and
+[wrapped](editor-performance/plain-neutral-after-wrapped.jsonl). Peak PSS spans
+roughly 652–724 MiB across these runs, with no demonstrated memory improvement.
+The wrapped timing difference is immaterial. These are scrolled native-window
+input measurements, with complete-source verification explicitly false. Deferred
+worker tests prove early neutral publication; production timings do not prove
+that every large wrapped input avoids worker or geometry waits.

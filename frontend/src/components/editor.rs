@@ -1391,13 +1391,11 @@ fn HighlightOverlay(
         actions.indent_guides(indentation.get())
     });
     let retain_style = Callback::new(move |()| {
-        actions.syntax_is_pending()
-            && painted_syntax.with_value(|syntax| {
-                syntax
-                    .as_ref()
-                    .is_some_and(|syntax| syntax.0 || !syntax.1.is_empty())
-            })
-            && presented_scope.get_value() == presentation_scope.get_untracked()
+        painted_syntax.with_value(|syntax| {
+            syntax
+                .as_ref()
+                .is_some_and(|syntax| actions.retain_pending_paint(syntax.0, !syntax.1.is_empty()))
+        }) && presented_scope.get_value() == presentation_scope.get_untracked()
     });
     let fragment_cache =
         StoredValue::new(crate::state_actions::editor::EditorFragmentCache::default());

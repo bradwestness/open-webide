@@ -133,6 +133,20 @@ impl EditorActions {
             || !self.syntax_is_pending()
     }
 
+    /// Preserve grammar paint across pending analysis, even when the retained
+    /// generation is temporarily neutral. Plain documents can publish current
+    /// text immediately, once terminal fallback has its complete row table.
+    pub fn retain_pending_paint(self, prepared_source: bool, has_rows: bool) -> bool {
+        self.syntax_is_pending()
+            && (prepared_source
+                || (has_rows
+                    && (!self.full_row_paint_ready()
+                        || self.key().is_some_and(|key| {
+                            openwebide_core::highlight::language_from_path(&key.1)
+                                != openwebide_core::highlight::Language::Plain
+                        }))))
+    }
+
     /// Initial neutral viewport paint is independent of whole-file fallback tokens.
     /// Wrapped/nonuniform rows and large paint still require complete preparation.
     pub fn viewport_paint_ready(self, source_rows: &[usize]) -> bool {

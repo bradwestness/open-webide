@@ -151,7 +151,7 @@ READY = """
 """
 
 
-def measure(case, mode, wrapped, trace=False, repetition=1, input_position="start", profile=False):
+def measure(case, mode, wrapped, trace=False, repetition=1, input_position="start", profile=False, file_name="measure.rs"):
     source = source_for(case)
     require_styled = case in {"styled-long-line", "styled-long-line-following-row"}
     native = source.replace("\r\n", "\n")
@@ -172,10 +172,10 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
             project = runtime.request("POST", "/api/projects", {
                 "name": "View measurement", "mode": mode, "path": path,
             }, expected=201)
-            (Path(folder) / "measure.rs").write_bytes(source.encode())
+            (Path(folder) / file_name).write_bytes(source.encode())
             encoded = base64.b64encode(source.encode()).decode()
             recovery = {"format": 1, "root": {"mode": mode, "path": path if mode == "remote" else None},
-                        "selected": "measure.rs", "files": [{"path": "measure.rs",
+                        "selected": file_name, "files": [{"path": file_name,
                         "document": {"text": encoded, "saved": encoded,
                                      "selections": [{"anchor": 0, "head": 0}], "collapsed": []},
                         "scroll": {"top": 0, "left": 0}, "read_only": False}]}
@@ -521,7 +521,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                 metrics = browser.call("POST", "/goog/cdp/execute", {"cmd": "Performance.getMetrics", "params": {}})
                 cpu = browser.call("POST", "/goog/cdp/execute", {"cmd": "Profiler.stop", "params": {}})
                 profiling = {"cpuProfile": cpu["profile"], "cpuProfileMetrics": metrics["metrics"]}
-            return {**profiling, "cpuProfiling": profile, "case": case, "mode": mode, "wrap": wrapped, "repetition": repetition, "sourceBytes": len(source.encode()),
+            return {**profiling, "cpuProfiling": profile, "case": case, "fileName": file_name, "mode": mode, "wrap": wrapped, "repetition": repetition, "sourceBytes": len(source.encode()),
                     "inputPosition": input_position, "verifiedSourceCaretBeforeInput": verified_source_caret,
                     "completeSourceAfterInputVerified": input_position in {"beginning", "end"}, "loadToPaintMs": load_ms, **snapshot, **scroll, **edited, **memory,
                     "afterInputMemory": process_memory(browser.process.pid), **sampled,
@@ -535,7 +535,7 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
         except (AssertionError, TimeoutError, RuntimeError) as error:
             observed = samples.finish() if samples else {}
             samples = None
-            print(json.dumps({"case": case, "mode": mode, "wrap": wrapped, "repetition": repetition, "sourceBytes": len(source.encode()),
+            print(json.dumps({"case": case, "fileName": file_name, "mode": mode, "wrap": wrapped, "repetition": repetition, "sourceBytes": len(source.encode()),
                               "failedPhase": phase, "failure": type(error).__name__, **observed}), flush=True)
             raise
         finally:
@@ -558,15 +558,18 @@ if __name__ == "__main__":
     parser.add_argument("--trace", action="store_true", help="Record bounded probe/worker diagnostics; timings include instrumentation overhead")
     parser.add_argument("--profile", action="store_true", help="Capture a diagnostic main-thread CPU profile; timings and memory include profiler overhead")
     parser.add_argument("--input-position", choices=["start", "beginning", "end"], default="start", help="Use native-window start or verified complete-source Home/End navigation before typing")
+    parser.add_argument("--file-name", default="measure.rs", help="Fixture filename selects the production language policy")
     parser.add_argument("--repeat", type=int, default=1, help="Fresh browser/runtime runs for each case and mode")
     parser.add_argument("--require-pss", action="store_true", help="Fail if apportioned Chrome process memory cannot be measured")
     args = parser.parse_args()
     if args.repeat < 1:
         parser.error("--repeat must be positive")
+    if Path(args.file_name).name != args.file_name or args.file_name in {"", ".", ".."}:
+        parser.error("--file-name must be a single filename")
     assert os.environ.get("CHROMEDRIVER"), "Set CHROMEDRIVER to a compatible driver"
     print(json.dumps({"host": platform.platform(), "measurement": "production editor; process-tree memory",
                       **host_constraints(),
-                      "repetitions": args.repeat,
+                      "repetitions": args.repeat, "fileName": args.file_name,
                       "measurementImage": os.environ.get("EDITOR_VIEW_IMAGE"),
                       "inputTimingStart": "beforeinput", "inputPosition": args.input_position, "cpuProfiling": args.profile,
                       "frontendWasmSha256": {
@@ -582,7 +585,7 @@ if __name__ == "__main__":
     for case in args.cases:
         for mode in args.modes:
             for repetition in range(1, args.repeat + 1):
-                result = measure(case, mode, args.wrap, args.trace, repetition, args.input_position, args.profile)
+                result = measure(case, mode, args.wrap, args.trace, repetition, args.input_position, args.profile, args.file_name)
                 print(json.dumps(result), flush=True)
                 if args.require_pss:
                     assert result["peakChromePssKiB"] is not None, "Chrome peak PSS was unavailable"

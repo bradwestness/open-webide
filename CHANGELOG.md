@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Paint plain-document edits before pending worker replies while retaining grammar paint coalescing and bounded terminal fallback through the shared editor facade.
+
 - Keep editor process-memory measurements complete across short-lived Chrome subprocesses by retrying only incomplete memory snapshots and retaining strict PSS coverage checks.
 
 - Capture clean editor recovery snapshots without constructing unused document indexes, reusing source capacity decisions and skipping line-count scans when no folds are saved.

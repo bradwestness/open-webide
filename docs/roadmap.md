@@ -181,10 +181,11 @@ tracks the remaining work rather than every optimization already shipped.
   157–199 ms near-byte-limit input, 707–789 ms long-line input and roughly
   688–875 MiB peak Chrome PSS. Reduce these costs; successful rendering alone
   does not satisfy the responsiveness/memory gate.
-  Neutral long-line paint currently waits for worker completion; avoid that wait
-  while preserving grammar paint coalescing, localized row reuse, file-switch
-  cancellation and bounded terminal fallback. An experimental retention change
-  failed those contracts and was withheld.
+  Plain-document edits now paint during pending worker analysis. Rust long-line
+  input still waits for worker completion, and near-limit wrapped plain input
+  shows no material latency improvement. Remove those remaining waits while
+  preserving grammar paint coalescing, localized row reuse, file-switch
+  cancellation and bounded terminal fallback.
 - [ ] **Exact geometry and fallbacks:** retain complete-renderer extent/anchor/hit
   comparisons, font/feature/whitespace matrices, Unicode/caret mapping and failed-proof
   fallback contracts. Current painted coverage and exact retained caret anchors,
@@ -198,9 +199,9 @@ tracks the remaining work rather than every optimization already shipped.
   CI run `38045611820` failed wrapped startup readiness, highlight burst generations,
   localized wrapped-row reuse and file-switch cancellation assertions. The identical
   50-test group at `0bd6bbd` passes on macOS and Linux with four and two CPUs
-  ([records](editor-performance/current-ci-group-browser.jsonl)). All 171 current
+  ([records](editor-performance/current-ci-group-browser.jsonl)). All 172 current
   editor tests, including both font matrices, also pass in the checked Linux
-  runner ([record](editor-performance/current-complete-editor-browser.jsonl));
+  runner ([record](editor-performance/neutral-paint-browser.jsonl));
   `0bd6bbd` and `121fbbb` also passed all five CI jobs
   ([first receipt](editor-performance/grouped-ci-0bd6bbd.json),
   [second receipt](editor-performance/grouped-ci-121fbbb.json)); repeated complete
