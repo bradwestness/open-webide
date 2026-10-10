@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Resolve Linux compiler alternative symlinks inside isolated plugin builds, preserving source immutability and network isolation.
+
 - Add the public Rust plugin SDK and isolated host-side WASM preparation foundation, with capability and resource limits, immutable source receipts, and artifact validation. Executable tool dispatch and first-party behavior migrations remain roadmap work.
 
 - Show exactly measured origin paint while eligible wrapped paragraphs continue preparing complete geometry. Reject uncovered carets and failed crop proofs, and refresh affected fragments when complete geometry replaces partial coverage in both workspace modes.

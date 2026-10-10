@@ -159,7 +159,9 @@ fn sandbox(cargo: &Path, source: &Path, staging: &Path, rustup: &Path) -> Result
         "--dev",
         "/dev",
     ]);
-    for path in ["/usr", "/bin", "/lib", "/lib64"] {
+    // Distribution compiler/ld symlinks commonly resolve through this public
+    // system directory (for example /usr/bin/cc -> /etc/alternatives/cc).
+    for path in ["/usr", "/bin", "/lib", "/lib64", "/etc/alternatives"] {
         if Path::new(path).exists() {
             result.args(["--ro-bind", path, path]);
         }
