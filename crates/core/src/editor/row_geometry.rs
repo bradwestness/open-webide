@@ -214,6 +214,40 @@ impl HorizontalGeometry {
     }
 }
 
+/// Measured origin coverage while the remaining paragraph is still preparing.
+/// This is a lower bound, never a complete row extent or a temporary EOF.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WrappedCoverage {
+    geometry: WrappedGeometry,
+    covered_height: f64,
+}
+impl WrappedCoverage {
+    pub(super) fn new(geometry: WrappedGeometry, covered_height: f64) -> Option<Self> {
+        (covered_height.is_finite() && covered_height > 0.0).then_some(Self {
+            geometry,
+            covered_height,
+        })
+    }
+    pub fn covered_height(&self) -> f64 {
+        self.covered_height
+    }
+    /// First uncovered glyph, not the source end-of-file.
+    pub fn glyph_end(&self) -> usize {
+        self.geometry.glyphs
+    }
+    pub fn caret(&self, glyph: usize) -> Option<GlyphRectangle> {
+        // A partial endpoint has no measured next-glyph affinity.
+        (glyph < self.geometry.glyphs - 1)
+            .then(|| self.geometry.caret(glyph))
+            .flatten()
+    }
+    pub fn source_interval(&self, rows: Range<f64>) -> Option<Range<usize>> {
+        (rows.end <= self.covered_height)
+            .then(|| self.geometry.source_interval(rows))
+            .flatten()
+    }
+}
+
 /// Styled anchors for wrapped rows. Source order follows vertical layout;
 /// horizontal positions may reverse within a bidirectional visual row.
 #[derive(Clone, Debug, PartialEq)]

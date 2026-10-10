@@ -4024,3 +4024,18 @@ and failed native proofs must preserve complete fallback. The source-owned
 facade and shared core remain the entry points for both workspace adapters.
 Full changed-paragraph layout work, responsiveness and all remaining completion
 gates are still open.
+
+
+### Reboot checkpoint: measured coverage primitive
+
+The shared core can expose conservative origin coverage from committed paragraph
+anchors without reporting complete row extents. ASCII and Unicode regression
+coverage rejects uncovered ranges, invalid heights and temporary endpoint carets;
+complete measurement still preserves the actual EOF caret. All six native wrapped
+paragraph contracts pass. This primitive is not connected to browser publication
+yet and makes no new responsiveness claim.
+
+Resume with facade ownership and independent browser-renderer validation before
+activating partial paint. The unfinished integration and historical draft stashes
+are preserved locally under the ignored `ai_docs/pre-reboot-drafts/` directory;
+they are investigation material, not changes to apply wholesale.

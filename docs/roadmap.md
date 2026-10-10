@@ -98,7 +98,9 @@ tracks the remaining work rather than every optimization already shipped.
   probe markup/layout identities also remain unique. Publish source-owned current
   viewport coverage during long-row preparation without claiming complete extents
   or fabricating a caret at a partial endpoint; retain nonorigin and failed-proof
-  fallbacks. Extend
+  fallbacks. The shared core now exposes conservative measured coverage with
+  endpoint rejection; facade ownership, browser publication, independent renderer
+  parity and latency measurements remain unfinished. Extend
   shifted suffix reuse to changed long-token and plain-run boundaries; avoid repeated prefix
   segmentation for over-limit styled run tables. Eligible styled measurement paths
   now prepare run tables in yielding batches, including uncapped unwrapped

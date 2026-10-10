@@ -624,6 +624,22 @@ impl<'a> WrappedParagraphPreparation<'a> {
         }
         valid
     }
+    /// Only committed current anchors can cover an origin viewport. The final
+    /// anchor supplies context beyond the conservative lower height boundary.
+    pub fn viewport_coverage(&self, line_height: f64) -> Option<super::WrappedCoverage> {
+        if self.complete || !line_height.is_finite() || !(1.0..=4096.0).contains(&line_height) {
+            return None;
+        }
+        let last = self.anchors.last()?;
+        let covered_height = (last.top / line_height).floor() * line_height;
+        let geometry = WrappedGeometry::new(
+            last.glyph.checked_add(1)?,
+            self.width?,
+            covered_height,
+            self.anchors.clone(),
+        )?;
+        super::WrappedCoverage::new(geometry, covered_height)
+    }
     pub fn finish(self) -> Option<(f64, WrappedGeometry)> {
         self.finish_with_measurements()
             .map(|(width, geometry, _)| (width, geometry))
@@ -700,6 +716,41 @@ mod tests {
             ((offset + (end - probe.glyph_start) as f64) / 40.0).ceil() * 15.0,
             rectangles,
         )
+    }
+    #[test]
+    fn measured_origin_coverage_rejects_uncovered_rows_and_temporary_eof() {
+        for body in ["word ".repeat(40_000), "word 文😀e\u{301} ".repeat(12_000)] {
+            let index = VisualLineIndex::new(&body).unwrap();
+            let runs = index.text_run_boundaries().collect::<Vec<_>>().into();
+            let mut plan = WrappedParagraphPreparation::new(&body, index.clone(), runs).unwrap();
+            assert!(plan.viewport_coverage(15.0).is_none());
+            let (height, rectangles) = layout(&plan);
+            assert!(plan.record(280.0, height, 280.0, &rectangles));
+            let coverage = plan.viewport_coverage(15.0).unwrap();
+            assert!(coverage.glyph_end() < index.len() - 1);
+            assert!(coverage.covered_height() < height);
+            assert_eq!(coverage.caret(0).unwrap().top.to_bits(), 2.0_f64.to_bits());
+            assert!(coverage.caret(coverage.glyph_end()).is_none());
+            assert!(coverage.caret(coverage.glyph_end() - 1).is_none());
+            let interval = coverage.source_interval(0.0..300.0).unwrap();
+            assert!(interval.start == 0 && interval.end < coverage.glyph_end());
+            for bounds in [
+                0.0..coverage.covered_height() + 1.0,
+                -1.0..20.0,
+                0.0..f64::INFINITY,
+                f64::NAN..20.0,
+            ] {
+                assert!(coverage.source_interval(bounds).is_none());
+            }
+            assert!(plan.viewport_coverage(f64::NAN).is_none());
+            while plan.probe().is_some() {
+                let (height, rectangles) = layout(&plan);
+                assert!(plan.record(280.0, height, 280.0, &rectangles));
+            }
+            assert!(plan.viewport_coverage(15.0).is_none());
+            let (_, complete) = plan.finish().unwrap();
+            assert!(complete.caret(index.len() - 1).is_some());
+        }
     }
     #[test]
     fn bounded_wrapped_continuations_preserve_complete_extents_and_every_anchor() {
