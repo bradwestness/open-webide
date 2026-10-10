@@ -3685,3 +3685,33 @@ edits still measure 70 fresh probes; their traced browser bounds calls total
 reflow remain optimization targets. The PSS samples do not establish a general
 memory improvement. The bundle also includes the intervening status ordering and
 browser-fixture fixes, so the comparison does not isolate run preparation alone.
+
+Full CI for the browser-fixture/status-ordering checkpoint `3564938` completed
+successfully in run `38006010538`, including the complete browser partition.
+The subsequent cooperative-run checkpoint `a02d543` also passed all five jobs in
+run `38007304962`. These are repeated complete checkpoint results; the remaining
+performance, physical input and recovery gates stay open.
+
+### Uncapped unwrapped run preparation
+
+The shared editor facade now uses the same yielding run continuation for the
+uncapped unwrapped measurement fallback. Rejected retained tables still permit
+complete paragraph preparation, with the same original boundaries, tab policy
+and conservative layout fallback. Over-limit tables remain owned by the returned
+measurement plan rather than expanding the eight-row/16,384-run retained cache.
+The bounded and uncapped paths share source/account/project/read/layout checks
+before and after yields. Synchronous comparison callers retain the same core
+segmentation implementation.
+
+Repeated over-limit construction, complete plan validation and other synchronous
+initialization paths remain work. This change makes no wall-clock latency or
+memory improvement claim.
+
+Final optimized Chrome checks pass for uncapped yielding, unchanged negative
+cache limits and rejection after source/read/project/account/owner changes
+(0.03 s), the existing bounded preparation contract (0.03 s), both-mode uncapped
+preparation and capped-rescan avoidance (0.05 s), failed-overlap complete fallback
+(0.39 s), and shifted styled suffix geometry against the complete renderer
+(4.24 s). These times are test execution, excluding compilation and browser
+startup. Strict optimized WASM frontend library/test Clippy, formatting and the
+production Trunk/PWA build pass. Full CI for this new checkpoint remains required.

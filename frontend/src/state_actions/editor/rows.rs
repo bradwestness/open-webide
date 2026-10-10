@@ -197,6 +197,18 @@ fn cacheable_styled_row(paint: &EditorRowPaint, row: usize) -> Option<(&str, Pai
     let style = paint_row(paint, row)?;
     style.plain.is_none().then_some((body, style))
 }
+fn unwrapped_paragraph_row(
+    paint: &EditorRowPaint,
+    row: usize,
+) -> Option<(&str, openwebide_core::editor::VisualLineIndex, PaintRow<'_>)> {
+    let body = paint.projection.line_body(row)?;
+    let index = paint.projection.visual_line_index(row)?;
+    // Local overlap does not prove the complete paragraph's rounded tab grid.
+    if index.has_tabs() {
+        return None;
+    }
+    Some((body, index, paint_row(paint, row)?))
+}
 fn styled_paint_runs(body: &str, row: &PaintRow<'_>, max_runs: usize) -> Option<Arc<[usize]>> {
     if row.plain.is_some() {
         return None;
@@ -291,15 +303,7 @@ impl EditorActions {
         row: usize,
     ) -> Option<openwebide_core::editor::ParagraphMeasurementPlan<'_>> {
         use openwebide_core::editor::ParagraphMeasurementPlan;
-        let body = paint.projection.line_body(row)?;
-        let index = paint.projection.visual_line_index(row)?;
-        // A local tab overlap can agree while the complete paragraph's rounded
-        // extent differs. Retain complete preparation until the adapter proves
-        // the global tab grid as well as the local continuation.
-        if index.has_tabs() {
-            return None;
-        }
-        let row = paint_row(paint, row)?;
+        let (body, index, row) = unwrapped_paragraph_row(paint, row)?;
         if let Some(plain) = row.plain {
             return (plain == body)
                 .then(|| ParagraphMeasurementPlan::new(body, index))
@@ -318,11 +322,7 @@ impl EditorActions {
         if !self.row_paint_current(paint) {
             return None;
         }
-        let body = paint.projection.line_body(row)?;
-        let index = paint.projection.visual_line_index(row)?;
-        if index.has_tabs() {
-            return None;
-        }
+        let (body, index, _) = unwrapped_paragraph_row(paint, row)?;
         if let Some(runs) = self.cached_styled_paint_runs(paint, row) {
             return openwebide_core::editor::ParagraphMeasurementPlan::with_shared_run_boundaries(
                 body, index, runs,
@@ -1055,15 +1055,32 @@ impl EditorActions {
         let Some((body, style)) = cacheable_styled_row(paint, row) else {
             return true;
         };
+        let Ok(runs) = self
+            .prepare_row_runs(paint, row, body, &style, MAX_RETAINED_PAINT_RUNS)
+            .await
+        else {
+            return false;
+        };
+        self.retain_styled_paint_runs(paint, row, runs);
+        true
+    }
+    async fn prepare_row_runs(
+        self,
+        paint: &EditorRowPaint,
+        row: usize,
+        body: &str,
+        style: &PaintRow<'_>,
+        max_runs: usize,
+    ) -> Result<Option<Arc<[usize]>>, ()> {
         let mut preparation = openwebide_core::editor::PaintRunPreparation::new(
             style.tokens,
             body.len(),
             style.normalize_cr,
-            MAX_RETAINED_PAINT_RUNS,
+            max_runs,
         );
         loop {
             if !self.row_paint_current(paint) {
-                return false;
+                return Err(());
             }
             #[cfg(feature = "test-support")]
             let before = preparation.segmented_bytes();
@@ -1076,17 +1093,43 @@ impl EditorActions {
             }
             crate::util::yield_task().await;
             if !self.row_paint_current(paint) {
-                return false;
+                return Err(());
             }
-            if self.retained_styled_paint_runs(paint, row).is_some() {
-                return self.row_paint_current(paint);
+            if let Some(runs) = self.retained_styled_paint_runs(paint, row)
+                && (runs.is_some() || max_runs == MAX_RETAINED_PAINT_RUNS)
+            {
+                return Ok(runs);
             }
         }
         if !self.row_paint_current(paint) {
-            return false;
+            return Err(());
         }
-        self.retain_styled_paint_runs(paint, row, preparation.finish());
-        true
+        Ok(preparation.finish())
+    }
+    /// Preserve uncapped paragraph fallback without segmenting a complete styled
+    /// row in one task. Over-budget tables belong only to the returned plan.
+    pub async fn prepare_paragraph_measurements_cooperatively<'a>(
+        self,
+        paint: &'a EditorRowPaint,
+        row: usize,
+    ) -> Option<openwebide_core::editor::ParagraphMeasurementPlan<'a>> {
+        if !self.prepare_styled_paint_runs(paint, row).await {
+            return None;
+        }
+        let (body, index, style) = unwrapped_paragraph_row(paint, row)?;
+        if style.plain.is_some() {
+            return Self::paragraph_measurements(paint, row);
+        }
+        let runs = match self.retained_styled_paint_runs(paint, row) {
+            Some(Some(runs)) => runs,
+            _ => self
+                .prepare_row_runs(paint, row, body, &style, usize::MAX)
+                .await
+                .ok()??,
+        };
+        openwebide_core::editor::ParagraphMeasurementPlan::with_shared_run_boundaries(
+            body, index, runs,
+        )
     }
     fn cached_styled_paint_runs(self, paint: &EditorRowPaint, row: usize) -> Option<Arc<[usize]>> {
         if !self.row_paint_current(paint) {
@@ -1289,6 +1332,79 @@ mod tests {
                 assert_eq!(take_paint_run_segment_bytes(), 0);
             } else if stale != "dispose" {
                 assert!(workspace.editor_paint_runs.get_untracked().is_none());
+            }
+        }
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn uncapped_paragraph_runs_yield_without_expanding_the_retained_cache() {
+        use std::{
+            future::Future,
+            task::{Context, Poll, Waker},
+        };
+        for stale in [
+            "complete", "source", "read", "project", "account", "dispose",
+        ] {
+            let owner = Owner::new();
+            let (workspace, auth, actions, paint) = owner.with(|| {
+                let auth = crate::state::auth::AuthState::new();
+                provide_context(auth);
+                let workspace = crate::state::workspace::WorkspaceState::new();
+                workspace.active_project.set(Some(1));
+                workspace.open_file.set(Some("uncapped.rs".into()));
+                let tokens = vec![
+                    Token {
+                        kind: TokenKind::Keyword,
+                        text: "word".into()
+                    };
+                    MAX_RETAINED_PAINT_RUNS + 1000
+                ];
+                let body = "word".repeat(tokens.len());
+                workspace.content.set(body.clone().into());
+                let actions = EditorActions::new(workspace);
+                let paint = actions
+                    .row_paint_snapshot(
+                        "font metrics".into(),
+                        FoldProjection::new(&body, &Default::default()),
+                        (true, Arc::new(vec![tokens.into()])),
+                        Arc::from([]),
+                        Indentation::default(),
+                        false,
+                    )
+                    .unwrap();
+                (workspace, auth, actions, paint)
+            });
+            // Publish the existing negative cache first, so the first Pending
+            // below proves that the uncapped fallback itself yields.
+            assert!(actions.prepare_styled_paint_runs(&paint, 0).await);
+            assert_eq!(actions.retained_styled_paint_runs(&paint, 0), Some(None));
+            let mut preparation =
+                Box::pin(actions.prepare_paragraph_measurements_cooperatively(&paint, 0));
+            assert!(matches!(
+                preparation
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Pending
+            ));
+            match stale {
+                "source" => workspace.pending_epoch.update(|epoch| *epoch += 1),
+                "read" => workspace
+                    .editor_read_revision
+                    .update(|revision| *revision += 1),
+                "project" => workspace.active_project.set(Some(2)),
+                "account" => auth.generation.update(|generation| *generation += 1),
+                "dispose" => owner.cleanup(),
+                _ => {}
+            }
+            let plan = preparation.await;
+            assert_eq!(plan.is_some(), stale == "complete");
+            if let Some(plan) = plan {
+                let expected = EditorActions::paragraph_measurements(&paint, 0).unwrap();
+                assert_eq!(plan.probe().unwrap().bytes, expected.probe().unwrap().bytes);
+                assert_eq!(plan.targets(), expected.targets());
+            }
+            if stale != "dispose" {
+                assert_eq!(actions.retained_styled_paint_runs(&paint, 0), Some(None));
             }
         }
     }

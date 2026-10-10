@@ -13901,14 +13901,24 @@ async fn unavailable_styled_runs_skip_capped_rescans_but_prepare_paragraphs_in_b
             )
             .unwrap();
         take_paint_run_segment_bytes();
-        assert!(actions.prepare_paragraph_measurements(&paint, 0).is_some());
+        assert!(
+            actions
+                .prepare_paragraph_measurements_cooperatively(&paint, 0)
+                .await
+                .is_some()
+        );
         let initial = take_paint_run_segment_bytes();
         assert!(
             initial > complete_segment_bytes,
             "{mode:?}: first attempt includes capped and complete tables"
         );
         for _ in 0..3 {
-            assert!(actions.prepare_paragraph_measurements(&paint, 0).is_some());
+            assert!(
+                actions
+                    .prepare_paragraph_measurements_cooperatively(&paint, 0)
+                    .await
+                    .is_some()
+            );
             assert_eq!(
                 take_paint_run_segment_bytes(),
                 complete_segment_bytes,
@@ -13924,7 +13934,12 @@ async fn unavailable_styled_runs_skip_capped_rescans_but_prepare_paragraphs_in_b
         assert_eq!(cache.rows.len(), 1);
         assert!(cache.rows[0].1.is_none());
         mounted.state.workspace.active_project.set(Some(2));
-        assert!(actions.prepare_paragraph_measurements(&paint, 0).is_none());
+        assert!(
+            actions
+                .prepare_paragraph_measurements_cooperatively(&paint, 0)
+                .await
+                .is_none()
+        );
         assert_eq!(take_paint_run_segment_bytes(), 0);
         assert_eq!(
             mounted

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Yield while preparing uncapped styled run tables for unwrapped paragraph measurements, preserving the complete fallback after the retained cache limit is reached and rejecting canceled editor scopes.
+
 - Prepare eligible styled paragraph run boundaries cooperatively before wrapped and unwrapped measurements, keeping the exact Unicode segmentation and run cap and rejecting canceled editor scopes before publication.
 
 - Keep browser memory and skill persistence checks aligned with host-installed plugin tool availability, preserving tool-disable and context assertions. Give Output a distinct accessible label and keep syntax progress immediately before it, with Plugins before the reserved progress slot.
