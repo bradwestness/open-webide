@@ -20,6 +20,8 @@ mod pointer;
 pub use pointer::{PointerSelection, selection_scroll_delta};
 mod motion_queue;
 pub use motion_queue::{MotionQueue, MotionRequest};
+mod paint_runs;
+pub use paint_runs::{PAINT_RUN_BATCH_UNITS, PaintRunPreparation};
 mod paragraph;
 mod wrapped_paragraph;
 pub use wrapped_paragraph::WrappedParagraphPreparation;

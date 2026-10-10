@@ -145,6 +145,11 @@ async fn measure_paragraph(
     render: &impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
     actions: Option<EditorActions>,
 ) -> Result<Option<(f64, openwebide_core::editor::HorizontalGeometry)>, ()> {
+    if let Some(actions) = actions
+        && (!current() || !actions.prepare_styled_paint_runs(scope, logical).await || !current())
+    {
+        return Ok(None);
+    }
     let plan = actions.map_or_else(
         || EditorActions::paragraph_measurements(scope, logical),
         |actions| actions.prepare_paragraph_measurements(scope, logical),
@@ -226,6 +231,9 @@ async fn measure_wrapped_paragraph(
     current: &impl Fn() -> bool,
     render: &impl Fn(&[usize], bool, &[crate::state_actions::editor::EditorRowSourceSlice]) -> String,
 ) -> Result<Option<(f64, openwebide_core::editor::WrappedGeometry)>, ()> {
+    if !current() || !actions.prepare_styled_paint_runs(scope, logical).await || !current() {
+        return Ok(None);
+    }
     let Some(mut plan) = actions.prepare_wrapped_paragraph(scope, logical) else {
         return Ok(None);
     };

@@ -187,48 +187,30 @@ thread_local! { static PAINT_RUN_SEGMENT_BYTES: std::cell::Cell<usize> = const {
 pub(super) fn take_paint_run_segment_bytes() -> usize {
     PAINT_RUN_SEGMENT_BYTES.replace(0)
 }
+fn cacheable_styled_row(paint: &EditorRowPaint, row: usize) -> Option<(&str, PaintRow<'_>)> {
+    let body = paint.projection.line_body(row)?;
+    if body.len() <= openwebide_core::editor::MAX_MEASURE_BYTES
+        || body.len() > openwebide_core::editor::MAX_EDITOR_LINE_BYTES
+    {
+        return None;
+    }
+    let style = paint_row(paint, row)?;
+    style.plain.is_none().then_some((body, style))
+}
 fn styled_paint_runs(body: &str, row: &PaintRow<'_>, max_runs: usize) -> Option<Arc<[usize]>> {
-    use openwebide_core::editor::visual_text_run_ranges;
     if row.plain.is_some() {
         return None;
     }
-    let mut runs = Vec::new();
-    let mut offset = 0;
-    for (at, token) in row.tokens.iter().enumerate() {
-        let text = if row.normalize_cr && at + 1 == row.tokens.len() {
-            token.text.strip_suffix('\r').unwrap_or(&token.text)
-        } else {
-            &token.text
-        };
-        if text.len() > 512 {
-            if runs.len() >= max_runs {
-                return None;
-            }
-            for run in visual_text_run_ranges(text) {
-                #[cfg(feature = "test-support")]
-                PAINT_RUN_SEGMENT_BYTES.set(PAINT_RUN_SEGMENT_BYTES.get() + run.len());
-                if runs.len() >= max_runs {
-                    return None;
-                }
-                runs.push(offset + run.end);
-            }
-        } else if token.kind != openwebide_core::highlight::TokenKind::Plain
-            || row.tokens.get(at + 1).is_none_or(|next| {
-                next.kind != openwebide_core::highlight::TokenKind::Plain || next.text.len() > 512
-            })
-        {
-            if runs.len() >= max_runs {
-                return None;
-            }
-            runs.push(offset + text.len());
-        }
-        offset += text.len();
-    }
-    if offset != body.len() {
-        return None;
-    }
-    runs.dedup();
-    Some(runs.into())
+    let mut preparation = openwebide_core::editor::PaintRunPreparation::new(
+        row.tokens,
+        body.len(),
+        row.normalize_cr,
+        max_runs,
+    );
+    preparation.advance(usize::MAX);
+    #[cfg(feature = "test-support")]
+    PAINT_RUN_SEGMENT_BYTES.set(PAINT_RUN_SEGMENT_BYTES.get() + preparation.segmented_bytes());
+    preparation.finish()
 }
 fn same_measurement_environment(old: &EditorRowPaint, paint: &EditorRowPaint) -> bool {
     old.font_epoch == paint.font_epoch
@@ -566,6 +548,9 @@ impl EditorActions {
         )
     }
     pub(super) fn row_paint_current(self, paint: &EditorRowPaint) -> bool {
+        if self.workspace.content.is_disposed() || self.capacity.try_get_untracked().is_none() {
+            return false;
+        }
         self.preferences().word_wrap == paint.word_wrap
             && self.workspace.editor_font_epoch.get_untracked() == paint.font_epoch
             && self.workspace.editor_view_revision.get_untracked() == paint.view_revision
@@ -1014,11 +999,12 @@ impl EditorActions {
             paint_runs: None,
         })
     }
-    fn cached_styled_paint_runs(self, paint: &EditorRowPaint, row: usize) -> Option<Arc<[usize]>> {
-        if !self.row_paint_current(paint) {
-            return None;
-        }
-        if let Some(runs) = self.workspace.editor_paint_runs.with_untracked(|cache| {
+    fn retained_styled_paint_runs(
+        self,
+        paint: &EditorRowPaint,
+        row: usize,
+    ) -> Option<Option<Arc<[usize]>>> {
+        self.workspace.editor_paint_runs.with_untracked(|cache| {
             let cache = cache
                 .as_ref()
                 .filter(|old| same_paint_runs(&old.paint, paint))?;
@@ -1027,23 +1013,17 @@ impl EditorActions {
                 .iter()
                 .find(|(index, _)| *index == row)
                 .map(|(_, runs)| runs.clone())
-        }) {
-            return runs;
+        })
+    }
+    fn retain_styled_paint_runs(
+        self,
+        paint: &EditorRowPaint,
+        row: usize,
+        runs: Option<Arc<[usize]>>,
+    ) {
+        if !self.row_paint_current(paint) {
+            return;
         }
-        if self.workspace.editor_paint_runs.with_untracked(|cache| {
-            cache
-                .as_ref()
-                .is_some_and(|old| !same_paint_runs(&old.paint, paint))
-        }) {
-            self.workspace.editor_paint_runs.set(None);
-        }
-        let body = paint.projection.line_body(row)?;
-        if body.len() <= openwebide_core::editor::MAX_MEASURE_BYTES
-            || body.len() > openwebide_core::editor::MAX_EDITOR_LINE_BYTES
-        {
-            return None;
-        }
-        let runs = styled_paint_runs(body, &paint_row(paint, row)?, MAX_RETAINED_PAINT_RUNS);
         self.workspace.editor_paint_runs.update(|cache| {
             let cache = cache.get_or_insert_with(|| crate::state::workspace::EditorPaintRuns {
                 paint: paint.clone(),
@@ -1053,11 +1033,71 @@ impl EditorActions {
                 cache.paint = paint.clone();
                 cache.rows.clear();
             }
+            if let Some(entry) = cache.rows.iter_mut().find(|(index, _)| *index == row) {
+                entry.1 = runs;
+                return;
+            }
             if cache.rows.len() == MAX_PAINT_RUN_ROWS {
                 cache.rows.remove(0);
             }
-            cache.rows.push((row, runs.clone()));
+            cache.rows.push((row, runs));
         });
+    }
+    /// Prepare original styled runs above DOM measurement, yielding without
+    /// restarting Unicode segmentation or publishing an incomplete run table.
+    pub async fn prepare_styled_paint_runs(self, paint: &EditorRowPaint, row: usize) -> bool {
+        if !self.row_paint_current(paint) {
+            return false;
+        }
+        if self.retained_styled_paint_runs(paint, row).is_some() {
+            return true;
+        }
+        let Some((body, style)) = cacheable_styled_row(paint, row) else {
+            return true;
+        };
+        let mut preparation = openwebide_core::editor::PaintRunPreparation::new(
+            style.tokens,
+            body.len(),
+            style.normalize_cr,
+            MAX_RETAINED_PAINT_RUNS,
+        );
+        loop {
+            if !self.row_paint_current(paint) {
+                return false;
+            }
+            #[cfg(feature = "test-support")]
+            let before = preparation.segmented_bytes();
+            let done = preparation.advance(openwebide_core::editor::PAINT_RUN_BATCH_UNITS);
+            #[cfg(feature = "test-support")]
+            PAINT_RUN_SEGMENT_BYTES
+                .set(PAINT_RUN_SEGMENT_BYTES.get() + preparation.segmented_bytes() - before);
+            if done {
+                break;
+            }
+            crate::util::yield_task().await;
+            if !self.row_paint_current(paint) {
+                return false;
+            }
+            if self.retained_styled_paint_runs(paint, row).is_some() {
+                return self.row_paint_current(paint);
+            }
+        }
+        if !self.row_paint_current(paint) {
+            return false;
+        }
+        self.retain_styled_paint_runs(paint, row, preparation.finish());
+        true
+    }
+    fn cached_styled_paint_runs(self, paint: &EditorRowPaint, row: usize) -> Option<Arc<[usize]>> {
+        if !self.row_paint_current(paint) {
+            return None;
+        }
+        if let Some(runs) = self.retained_styled_paint_runs(paint, row) {
+            return runs;
+        }
+        let (body, style) = cacheable_styled_row(paint, row)?;
+        let runs = styled_paint_runs(body, &style, MAX_RETAINED_PAINT_RUNS);
+        self.retain_styled_paint_runs(paint, row, runs.clone());
         runs
     }
     fn paragraph_paint_run_start(
@@ -1178,6 +1218,80 @@ impl EditorActions {
 mod tests {
     use super::*;
     use openwebide_core::highlight::TokenKind;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn styled_run_preparation_yields_preserves_boundaries_and_rejects_stale_owners() {
+        use std::{
+            future::Future,
+            task::{Context, Poll, Waker},
+        };
+        for stale in [
+            "complete", "source", "read", "project", "account", "dispose",
+        ] {
+            let owner = Owner::new();
+            let body = "word 文😀e\u{301} ".repeat(6000);
+            let (workspace, auth, actions, paint, expected) = owner.with(|| {
+                let auth = crate::state::auth::AuthState::new();
+                provide_context(auth);
+                let workspace = crate::state::workspace::WorkspaceState::new();
+                workspace.active_project.set(Some(1));
+                workspace.open_file.set(Some("styled.rs".into()));
+                workspace.content.set(body.clone().into());
+                let actions = EditorActions::new(workspace);
+                let tokens = vec![Token {
+                    kind: TokenKind::String,
+                    text: body.clone(),
+                }];
+                let expected: Arc<[usize]> = openwebide_core::editor::visual_text_run_ranges(&body)
+                    .map(|run| run.end)
+                    .collect();
+                let paint = actions
+                    .row_paint_snapshot(
+                        "font metrics".into(),
+                        FoldProjection::new(&body, &Default::default()),
+                        (true, Arc::new(vec![tokens.into()])),
+                        Arc::from([]),
+                        Indentation::default(),
+                        false,
+                    )
+                    .unwrap();
+                (workspace, auth, actions, paint, expected)
+            });
+            take_paint_run_segment_bytes();
+            let mut preparation = Box::pin(actions.prepare_styled_paint_runs(&paint, 0));
+            assert!(matches!(
+                preparation
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Pending
+            ));
+            assert!(workspace.editor_paint_runs.get_untracked().is_none());
+            let scanned = take_paint_run_segment_bytes();
+            assert!(scanned > 0 && scanned < body.len());
+            match stale {
+                "source" => workspace.pending_epoch.update(|epoch| *epoch += 1),
+                "read" => workspace
+                    .editor_read_revision
+                    .update(|revision| *revision += 1),
+                "project" => workspace.active_project.set(Some(2)),
+                "account" => auth.generation.update(|generation| *generation += 1),
+                "dispose" => owner.cleanup(),
+                _ => {}
+            }
+            assert_eq!(preparation.await, stale == "complete");
+            if stale == "complete" {
+                assert_eq!(
+                    actions.cached_styled_paint_runs(&paint, 0).unwrap(),
+                    expected
+                );
+                take_paint_run_segment_bytes();
+                assert!(actions.prepare_styled_paint_runs(&paint, 0).await);
+                assert_eq!(take_paint_run_segment_bytes(), 0);
+            } else if stale != "dispose" {
+                assert!(workspace.editor_paint_runs.get_untracked().is_none());
+            }
+        }
+    }
 
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn unavailable_styled_run_tables_are_scoped_bounded_and_not_rescanned() {

@@ -84,7 +84,8 @@ tracks the remaining work rather than every optimization already shipped.
   source/style-proved suffixes now reuse completed probes in yielding batches,
   with fresh terminal dimensions. Finish nonreconnecting wrapped updates and extend shifted suffix
   reuse to changed long-token and plain-run boundaries; avoid repeated prefix
-  segmentation for over-limit styled run tables. Bound initial run-table
+  segmentation for over-limit styled run tables. Eligible styled measurement paths
+  now prepare run tables in yielding batches. Finish other initial run-table
   construction and the uncapped/unsupported-boundary fallbacks that still segment
   complete rows.
 - [ ] **Incremental syntax and structure:** finish larger retained-container reuse,

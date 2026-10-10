@@ -3632,3 +3632,27 @@ bundle also includes the intervening plugin integration, so differences from the
 preceding traces do not isolate prefix batching. Nonreconnecting geometry,
 individual replay cost, initial proof/run-table preparation and physical-device
 verification remain open.
+
+### Cooperative styled run preparation checkpoint
+
+Eligible wrapped and unwrapped measurements now prepare original styled run
+boundaries through one shared Rust continuation. It retains Unicode segmentation
+between batches of 64 token/run operations, preserving adjacent plain-token merges,
+CR normalization and the existing 16,384-run/eight-row cache limits. Synchronous
+callers drain the same implementation. The editor facade checks source, read,
+project, account and layout ownership before and after each yield, rejects disposed
+owners and publishes only complete tables or a scoped unavailable result.
+
+Validation passes 589 parser-enabled core tests, strict core and optimized WASM
+frontend Clippy, formatting, and the production Trunk/PWA build. Optimized Chrome
+checks pass for yielding and stale-owner rejection, unavailable-table caching,
+wrapped edits and unwrapped shifted suffixes against complete geometry in both
+workspace modes. Additional both-mode contracts pass for bounded styled wrapped
+geometry (24.50 s), cancellation (0.58 s), and near-limit bounded native startup
+(10.58 s).
+
+No production latency or memory improvement is claimed for this checkpoint.
+Repeat quiet Linux beginning/end input traces against the preceding prefix-batch
+baseline after resuming. A single indivisible grapheme can exceed the ordinary run
+size; unsupported and uncapped synchronous construction paths, nonreconnecting
+wrapped reflow, startup/memory and physical-device completion gates remain open.
