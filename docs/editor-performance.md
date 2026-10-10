@@ -4652,3 +4652,36 @@ The wrapped timing difference is immaterial. These are scrolled native-window
 input measurements, with complete-source verification explicitly false. Deferred
 worker tests prove early neutral publication; production timings do not prove
 that every large wrapped input avoids worker or geometry waits.
+
+## Parser budget rejection and worker reply diagnostics
+
+The Rust Unicode long-line worker trace shows fixed parser work-budget exhaustion,
+previously reported as cancellation. The shared `parse_step` now returns `TooLarge`
+for that limit and preserves `Cancelled` for stopped work; the check limit remains
+4,096 and cumulative across yields. Explicit cancellation takes precedence over
+budget exhaustion. Both synchronous and cooperative drivers use this policy.
+Rejected source remains editable through the existing neutral fallback, and a
+small valid replacement restores grammar preparation. No transport or mode policy
+was duplicated. Trace-only reply diagnostics now retain status, analysis presence,
+highlight-row count and message UTF-16 length, without copying source into logs.
+
+The [preceding production trace](editor-performance/parser-budget-before-worker.jsonl)
+contains `Cancelled` replies in both modes. The
+[current trace](editor-performance/parser-budget-worker.jsonl) contains `TooLarge`
+for cold and input requests in both modes, with successful paint/input and
+peak/final Chrome PSS checks. The current frontend WASM SHA-256 is
+`63a420c2c678783b02c973f2b429faa091f3c21357bb846adef13893f79c6f06`;
+the backend and container constraints match the preceding measurements.
+Input-to-paint remains 714–719 ms, including roughly 575–585 ms between worker
+request and reply. Tracing adds overhead; these are diagnosis samples rather
+than a latency improvement claim. Avoiding repeated rejected parsing, neutral
+layout identity invalidation and wrapped/memory costs remains open.
+
+All 468 native core tests, all 173 editor browser tests (including both font
+matrices), strict native core lint and strict optimized core/frontend WASM lint
+pass. [Verification evidence](editor-performance/parser-budget-browser.jsonl)
+includes exact artifacts, source hashes, complete native output and six independently
+inventoried browser runs. The new browser regression checks rejection, complete
+source retention, native mapping, explicit cancellation and recovery in both modes.
+The [preceding checkpoint](editor-performance/grouped-ci-c42bc47.json) passed
+all five CI jobs; current full CI remains required.

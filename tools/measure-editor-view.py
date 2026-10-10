@@ -327,7 +327,18 @@ def measure(case, mode, wrapped, trace=False, repetition=1, input_position="star
                         Worker = class extends OriginalWorker {
                             constructor(...args) {
                                 super(...args);
-                                this.addEventListener("message", () => recordEvent(editorViewMeasurement.workers, "reply"));
+                                this.addEventListener("message", event => {
+                                    const record = recordEvent(editorViewMeasurement.workers, "reply");
+                                    if (!record) return;
+                                    record.messageUtf16Units = typeof event.data === "string" ? event.data.length : null;
+                                    try {
+                                        const reply = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+                                        record.status = reply?.status ?? null;
+                                        record.hasAnalysis = !!reply?.analysis;
+                                        record.highlightRows = Array.isArray(reply?.analysis?.highlights)
+                                            ? reply.analysis.highlights.length : null;
+                                    } catch { record.status = "non-JSON control message"; }
+                                });
                             }
                             postMessage(...args) {
                                 recordEvent(editorViewMeasurement.workers, "request");

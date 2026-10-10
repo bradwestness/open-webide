@@ -9536,6 +9536,87 @@ async fn neutral_edits_paint_before_pending_worker_reply_in_both_modes() {
     }
 }
 
+#[wasm_bindgen_test]
+async fn parser_budget_rejection_preserves_source_and_recovers_in_both_modes() {
+    use openwebide_core::{WorkspaceMode, editor::SyntaxStatus};
+    use openwebide_frontend::state_actions::editor::EditorActions;
+    let unit = "文😀 words ";
+    let source = unit.repeat(1_048_576 / unit.len());
+    for mode in [WorkspaceMode::Local, WorkspaceMode::Remote] {
+        let transport = std::rc::Rc::new(DeferredSyntax::default());
+        let installed = transport.clone();
+        let initial = source.clone();
+        let mounted = mount_test(move |state| {
+            state.seed_project();
+            state
+                .projects
+                .projects
+                .update(|projects| projects[0].mode = mode);
+            state.workspace.open_file.set(Some("budget.rs".into()));
+            state.workspace.content.set(initial.into());
+            EditorActions::new(state.workspace).install_syntax_transport(installed);
+            view! { <style>{include_str!("../../styles.css")}</style><div style="display:flex;width:420px;height:320px">{editor_view(state)}</div> }
+        });
+        let actions = EditorActions::new(mounted.state.workspace);
+        wait_until("budget fixture worker request", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        transport.respond(true);
+        wait_until("typed parser budget fallback", || {
+            mounted
+                .state
+                .workspace
+                .editor_preparation
+                .with_untracked(|prepared| {
+                    prepared
+                        .as_ref()
+                        .is_some_and(|prepared| prepared.status == SyntaxStatus::TooLarge)
+                })
+                && !actions.syntax_is_pending()
+                && mounted
+                    .element(".editor-code")
+                    .class_list()
+                    .contains("highlight-ready")
+        })
+        .await;
+        assert_eq!(actions.source(), source);
+        assert!(actions.syntax_highlights().is_none());
+        let input = mounted.element(".editor-textarea").unchecked_into();
+        assert_editor_native_source(&input, mounted.state.workspace, &source);
+        assert_eq!(
+            actions.syntax_folds(|| false).unwrap().0,
+            SyntaxStatus::Cancelled
+        );
+        assert_eq!(actions.source(), source);
+        mounted
+            .state
+            .workspace
+            .content
+            .set("fn recovered() {}".into());
+        wait_until("replacement grammar request", || {
+            !transport.pending.borrow().is_empty()
+        })
+        .await;
+        transport.respond(true);
+        wait_until("grammar recovers after budget rejection", || {
+            actions.syntax_highlights().is_some()
+        })
+        .await;
+        assert_eq!(actions.source(), "fn recovered() {}");
+        assert!(matches!(
+            mounted
+                .state
+                .workspace
+                .editor_preparation
+                .get_untracked()
+                .unwrap()
+                .status,
+            SyntaxStatus::Ready { .. }
+        ));
+    }
+}
+
 struct DeferredSyntaxReply {
     message: String,
     sender: futures::channel::oneshot::Sender<

@@ -9,6 +9,8 @@ for what's still ahead.
 
 ## [Unreleased]
 
+- Report editor parser work-budget exhaustion as a capacity fallback, distinguishing it from cancellation while preserving file content and grammar recovery.
+
 - Paint plain-document edits before pending worker replies while retaining grammar paint coalescing and bounded terminal fallback through the shared editor facade.
 
 - Keep editor process-memory measurements complete across short-lived Chrome subprocesses by retrying only incomplete memory snapshots and retaining strict PSS coverage checks.

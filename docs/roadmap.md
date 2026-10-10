@@ -182,7 +182,7 @@ tracks the remaining work rather than every optimization already shipped.
   688–875 MiB peak Chrome PSS. Reduce these costs; successful rendering alone
   does not satisfy the responsiveness/memory gate.
   Plain-document edits now paint during pending worker analysis. Rust long-line
-  input still waits for worker completion, and near-limit wrapped plain input
+  input still repeats parser work-budget exhaustion before fallback, and near-limit wrapped plain input
   shows no material latency improvement. Remove those remaining waits while
   preserving grammar paint coalescing, localized row reuse, file-switch
   cancellation and bounded terminal fallback.
@@ -199,12 +199,13 @@ tracks the remaining work rather than every optimization already shipped.
   CI run `38045611820` failed wrapped startup readiness, highlight burst generations,
   localized wrapped-row reuse and file-switch cancellation assertions. The identical
   50-test group at `0bd6bbd` passes on macOS and Linux with four and two CPUs
-  ([records](editor-performance/current-ci-group-browser.jsonl)). All 172 current
+  ([records](editor-performance/current-ci-group-browser.jsonl)). All 173 current
   editor tests, including both font matrices, also pass in the checked Linux
-  runner ([record](editor-performance/neutral-paint-browser.jsonl));
-  `0bd6bbd` and `121fbbb` also passed all five CI jobs
+  runner ([record](editor-performance/parser-budget-browser.jsonl));
+  `0bd6bbd`, `121fbbb` and `c42bc47` also passed all five CI jobs
   ([first receipt](editor-performance/grouped-ci-0bd6bbd.json),
-  [second receipt](editor-performance/grouped-ci-121fbbb.json)); repeated complete
+  [second receipt](editor-performance/grouped-ci-121fbbb.json),
+  [third receipt](editor-performance/grouped-ci-c42bc47.json)); repeated complete
   verification and the production responsiveness/memory gates remain required.
   Validate bounded browser setup retries after the upstream Chrome download HTTP 502 failure. Repeat near-limit Linux
   readiness and the complete suites; a local run or one green checkpoint is insufficient.
